@@ -1,6 +1,8 @@
 # A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :declared
-# :packages :natives}`; each gets one line on stdout, `check/marker` and then the problems found
-# in `:file` as a JSON array, or `error` and the message as a JSON string. Like core `flycheck`,
+# :packages :natives}`; each gets one line on stdout, `check/marker` and then, as JSON,
+# `{:problems [...] :bindings {path [[name line col doc private] ...]}}`, or `error` and the
+# message as a JSON string. `:bindings` are the names macros bound, which the host cannot read
+# from the source: in `:file`, and in each module loaded since the previous request. Like core `flycheck`,
 # every form of the file is parsed and compiled and macros are expanded, but only forms known to
 # be safe run: definitions without side effects, imports, and anything with `:flycheck` metadata.
 # janet-zed: include ./json.janet ./project.janet
@@ -49,6 +51,23 @@
   (tabseq [name :in '[def def- var var- defn defn- defmacro defmacro- varfn defdyn
                       defglobal varglobal]]
     name true))
+
+# Where the top-level definitions of `text` start, `[line col]`: the host reads those itself.
+(defn- check/definition-starts [text]
+  (def starts @{})
+  (each form (or (try (parse-all text) ([_] nil)) [])
+    (when (and (tuple? form) (check/definers (first form)))
+      (put starts (tuple/slice (tuple/sourcemap form)) true)))
+  starts)
+
+# The names `env` binds from other forms of the file at `path`.
+(defn- check/bindings [env path text]
+  (def starts (check/definition-starts text))
+  (seq [[name binding] :pairs env
+        :when (and (symbol? name) (table? binding))
+        :let [[at line col] (or (get binding :source-map) [])]
+        :when (and (= at path) (not (starts [line col])))]
+    [(string name) line col (get binding :doc) (truthy? (get binding :private))]))
 
 # The top-level form compiling or running now: a failure is reported at it.
 (var- check/form nil)
@@ -155,12 +174,15 @@
     (unless (= (check/fingerprints path) (check/fingerprint path))
       (check/unload path))))
 
-(defn- check/remember-loaded []
+# Modules loaded since the last request, and what their macros bound into `bindings`.
+(defn- check/remember-loaded [bindings]
   (eachk path module/cache
     (when (and (string? path)
                (string/has-suffix? ".janet" path)
                (nil? (check/fingerprints path)))
-      (put check/fingerprints path (check/fingerprint path)))))
+      (put check/fingerprints path (check/fingerprint path))
+      (when-let [text (try (string (slurp path)) ([_] nil))]
+        (put bindings path (check/bindings (module/cache path) path text))))))
 
 (defn- check/clear [table]
   (each key (keys table) (put table key nil)))
@@ -233,8 +255,9 @@
                              (check/importers (check/form 0)))
                     (def [line col] (tuple/sourcemap check/form))
                     (check/report 1 (string value) line col)))})
-  (check/remember-loaded)
-  check/problems)
+  (def bindings @{file (check/bindings env file text)})
+  (check/remember-loaded bindings)
+  {:problems check/problems :bindings bindings})
 
 (loop [line :iterate (file/read stdin :line)]
   (def reply

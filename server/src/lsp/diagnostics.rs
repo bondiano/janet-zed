@@ -12,7 +12,7 @@ use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
 use crate::analysis::modules::Package;
-use crate::janet::{self, Problem};
+use crate::janet::{self, Problem, Report};
 use crate::syntax::{self, Document};
 
 /// Quiet time after the last edit before buffers are checked.
@@ -37,7 +37,7 @@ pub struct Job {
 pub struct Checked {
     pub uri: Uri,
     pub version: i32,
-    pub problems: Result<Vec<Problem>>,
+    pub report: Result<Report>,
 }
 
 /// Queues checks for the background thread.
@@ -65,8 +65,7 @@ fn check_queued(janet: &str, queue: &Receiver<Job>, done: &Sender<Checked>) {
     while let Ok(first) = queue.recv() {
         for job in coalesce(first, queue).into_values() {
             let started = Instant::now();
-            let problems =
-                worker.check(&job.path, &job.text, &job.cwd, &job.packages, &job.natives);
+            let report = worker.check(&job.path, &job.text, &job.cwd, &job.packages, &job.natives);
             tracing::debug!(
                 uri = job.uri.as_str(),
                 version = job.version,
@@ -76,7 +75,7 @@ fn check_queued(janet: &str, queue: &Receiver<Job>, done: &Sender<Checked>) {
             let checked = Checked {
                 uri: job.uri,
                 version: job.version,
-                problems,
+                report,
             };
             if done.send(checked).is_err() {
                 return;

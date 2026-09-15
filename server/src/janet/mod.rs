@@ -1,8 +1,9 @@
 //! Janet programs the server runs with the user's `janet`: one-shot scripts, and the long-lived
 //! checker.
 
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -41,6 +42,24 @@ pub struct Problem {
     pub col: Option<usize>,
 }
 
+/// What a check found.
+#[derive(Debug, Deserialize)]
+pub struct Report {
+    pub problems: Vec<Problem>,
+    /// Names macros bound, by file: in the checked one, and in modules loaded for this check.
+    pub bindings: HashMap<PathBuf, Vec<Binding>>,
+}
+
+/// A name a macro call bound, at the 1-based line and byte column of the call.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Binding {
+    pub name: String,
+    pub line: usize,
+    pub col: usize,
+    pub doc: Option<String>,
+    pub private: bool,
+}
+
 /// A long-lived `janet` running `check.janet`. The modules checked files import stay loaded
 /// between checks, so their top-level code does not run again for every check; a module whose
 /// file changed reloads together with its importers. A check that does not finish, or a `janet`
@@ -77,7 +96,7 @@ impl Worker {
         cwd: &Path,
         packages: &[Package],
         natives: &[Package],
-    ) -> Result<Vec<Problem>> {
+    ) -> Result<Report> {
         let request = request(path, text, cwd, packages, natives)?;
         let reply = self
             .exchange(&request)

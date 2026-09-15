@@ -79,7 +79,7 @@ pub fn resolve<'w>(
         };
         return Some((at(text), target));
     }
-    if file.definitions.contains_key(text) {
+    if workspace.definition(&file.path, text).is_some() {
         let target = Target::Module {
             file: file.path.clone(),
             name: text.to_string(),
@@ -188,7 +188,7 @@ pub fn declaration<'w>(workspace: &'w Workspace, target: &Target) -> Option<Occu
             let source = workspace.file(file)?;
             Some(Occurrence {
                 file: source,
-                range: source.definitions.get(name)?.name.clone(),
+                range: workspace.definition(file, name)?.name.clone(),
             })
         }
         Target::Core { .. } | Target::Peg { .. } | Target::Project { .. } | Target::Form { .. } => {
@@ -208,7 +208,7 @@ fn names_allow(names: Option<&[String]>, name: &str) -> bool {
 /// The file defining what `module` exports as `name`: `module` itself, or the file it re-exports
 /// the name from.
 fn defining(workspace: &Workspace, module: &Path, name: &str, hops: usize) -> Option<PathBuf> {
-    if workspace.file(module)?.definitions.contains_key(name) {
+    if workspace.definition(module, name).is_some() {
         return Some(module.to_path_buf());
     }
     workspace

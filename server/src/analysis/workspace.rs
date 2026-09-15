@@ -2,12 +2,17 @@
 //! module graph between files. An edit reparses one file; the graph is re-resolved only when a
 //! file's imports, a `project.janet` or the set of files change.
 
+use std::borrow::Cow;
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
 use super::config::Config;
 use super::modules::{Package, Search, native_modules, packages};
-use super::{SourceFile, canonical, uri_of};
+use super::{DefInfo, SourceFile, canonical, uri_of};
+use crate::janet::Binding;
+use tree_sitter::Node;
+
+use crate::syntax::{self, Document};
 
 /// A resolved import between two files.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,6 +41,10 @@ pub struct Workspace {
     external: HashMap<PathBuf, SourceFile>,
     imports: HashMap<PathBuf, Vec<Edge>>,
     importers: HashMap<PathBuf, Vec<Edge>>,
+    /// Names the checker saw macros bind, by file.
+    // ponytail: replaced by the next reply for a file, never dropped; a deleted file's names stay
+    // unreachable in memory.
+    expanded: HashMap<PathBuf, Vec<Binding>>,
     stale: bool,
 }
 
@@ -90,6 +99,48 @@ impl Workspace {
         for file in self.files.values_mut().chain(self.external.values_mut()) {
             file.reconfigure(&self.config);
         }
+    }
+
+    /// Takes the names a check saw macros bind.
+    pub fn expand(&mut self, bindings: HashMap<PathBuf, Vec<Binding>>) {
+        self.expanded.extend(
+            bindings
+                .into_iter()
+                .map(|(path, bindings)| (canonical(&path), bindings)),
+        );
+    }
+
+    /// The definition of `name` in `path`: read from the source, else bound by a macro call the
+    /// checker expanded.
+    pub fn definition(&self, path: &Path, name: &str) -> Option<Cow<'_, DefInfo>> {
+        let file = self.file(path)?;
+        if let Some(definition) = file.definitions.get(name) {
+            return Some(Cow::Borrowed(definition));
+        }
+        let binding = self.expanded.get(path)?.iter().find(|b| b.name == name)?;
+        expanded_definition(file, binding).map(Cow::Owned)
+    }
+
+    /// Every definition in `path`, as [`Self::definition`] finds them.
+    pub fn definitions(&self, path: &Path) -> Vec<(&str, Cow<'_, DefInfo>)> {
+        let Some(file) = self.file(path) else {
+            return Vec::new();
+        };
+        let expanded = self
+            .expanded
+            .get(path)
+            .into_iter()
+            .flatten()
+            .filter(|binding| !file.definitions.contains_key(&binding.name))
+            .filter_map(|binding| {
+                let definition = expanded_definition(file, binding)?;
+                Some((binding.name.as_str(), Cow::Owned(definition)))
+            });
+        file.definitions
+            .iter()
+            .map(|(name, definition)| (name.as_str(), Cow::Borrowed(definition)))
+            .chain(expanded)
+            .collect()
     }
 
     /// Modules the workspace projects declare with `declare-source`.
@@ -227,6 +278,49 @@ impl Workspace {
             })
             .collect();
     }
+}
+
+/// `binding` in the current text of `file`: the name among the arguments of the call at its line
+/// and column, or, when edits since the check moved it, of the first top-level form that has it.
+fn expanded_definition(file: &SourceFile, binding: &Binding) -> Option<DefInfo> {
+    let doc = &file.document;
+    let named = |form| named_call(doc, form, &binding.name);
+    let offset = doc.byte_offset(
+        binding.line.saturating_sub(1),
+        binding.col.saturating_sub(1),
+    );
+    let (form, head, name) = syntax::path_at(doc.root(), offset)
+        .into_iter()
+        .find(|node| node.kind() == syntax::LIST && node.start_byte() == offset)
+        .and_then(named)
+        .or_else(|| {
+            syntax::forms(doc.root())
+                .into_iter()
+                .filter(|form| form.kind() == syntax::LIST)
+                .find_map(named)
+        })?;
+    Some(DefInfo {
+        definer: doc.text_of(head).to_string(),
+        name: name.byte_range(),
+        form: form.byte_range(),
+        doc: binding.doc.clone(),
+        params: None,
+        private: binding.private,
+    })
+}
+
+/// `form`, its head and the argument symbol `name`, when it is a call with one.
+fn named_call<'d>(
+    doc: &'d Document,
+    form: Node<'d>,
+    name: &str,
+) -> Option<(Node<'d>, Node<'d>, Node<'d>)> {
+    let forms = syntax::forms(form);
+    let (head, args) = forms.split_first()?;
+    let symbol = args
+        .iter()
+        .find(|arg| arg.kind() == syntax::SYMBOL && doc.text_of(**arg) == name)?;
+    Some((form, *head, *symbol))
 }
 
 pub fn is_project(path: &Path) -> bool {

@@ -361,6 +361,16 @@ fn check(state: &State, checker: &Checker, uri: &Uri) {
 }
 
 fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Result<()> {
+    let report = match checked.report {
+        Ok(report) => report,
+        Err(err) => {
+            tracing::warn!("checking {} failed: {err:#}", checked.uri.as_str());
+            return Ok(());
+        }
+    };
+    // Even from a stale check: a module's bindings come once per load, and names are looked up
+    // in the current text.
+    state.workspace.expand(report.bindings);
     // A result for an older version, or for a closed buffer, is stale.
     if state.version(&checked.uri) != Some(checked.version) {
         tracing::trace!(
@@ -370,14 +380,7 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
         );
         return Ok(());
     }
-    let problems = match checked.problems {
-        Ok(problems) => problems,
-        Err(err) => {
-            tracing::warn!("checking {} failed: {err:#}", checked.uri.as_str());
-            return Ok(());
-        }
-    };
-    let diagnostics = diagnostics::diagnostics(state.document(&checked.uri)?, &problems);
+    let diagnostics = diagnostics::diagnostics(state.document(&checked.uri)?, &report.problems);
     // Kept for quick fixes: clients need not send them back with `codeAction`.
     state
         .diagnostics

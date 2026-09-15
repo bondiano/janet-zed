@@ -1,5 +1,6 @@
 //! What a symbol means to a reader: hover text, call signatures and completion candidates.
 
+use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
@@ -23,7 +24,7 @@ pub enum Info<'a> {
     Module {
         file: &'a SourceFile,
         name: &'a str,
-        definition: &'a DefInfo,
+        definition: Cow<'a, DefInfo>,
     },
     Core {
         name: &'a str,
@@ -48,8 +49,8 @@ pub fn info<'a>(
             Some(Info::Local { file, local })
         }
         Target::Module { file, name } => {
+            let definition = workspace.definition(file, name)?;
             let file = workspace.file(file)?;
-            let (name, definition) = file.definitions.get_key_value(name)?;
             Some(Info::Module {
                 file,
                 name,
@@ -188,23 +189,27 @@ pub fn completions(
             detail: Some("local".to_string()),
             origin: None,
         });
-    let own = file
-        .definitions
-        .iter()
-        .map(|(name, definition)| module_candidate(name, &file.path, name, definition));
+    let own = workspace
+        .definitions(&file.path)
+        .into_iter()
+        .map(|(name, definition)| module_candidate(name, &file.path, name, &definition));
     let imported = workspace
         .imports_of(&file.path)
         .iter()
         .filter_map(|edge| Some((edge, workspace.file(&edge.path)?)))
         .flat_map(|(edge, module)| {
-            module
-                .definitions
-                .iter()
+            workspace
+                .definitions(&module.path)
+                .into_iter()
                 .filter(|(_, definition)| edge.included || !definition.private)
-                .filter(|(name, _)| edge.names.as_ref().is_none_or(|names| names.contains(name)))
+                .filter(|(name, _)| {
+                    edge.names
+                        .as_ref()
+                        .is_none_or(|names| names.iter().any(|allowed| allowed == name))
+                })
                 .map(move |(name, definition)| {
                     let label = format!("{}{name}", edge.prefix);
-                    module_candidate(&label, &module.path, name, definition)
+                    module_candidate(&label, &module.path, name, &definition)
                 })
         });
     let project = stdlib

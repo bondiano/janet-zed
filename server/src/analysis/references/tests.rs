@@ -1,9 +1,10 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::ops::Range;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use super::*;
 use crate::analysis::config::Config;
+use crate::janet::Binding;
 use crate::test_support::mark;
 
 const FILES: [(&str, &str); 7] = [
@@ -162,13 +163,7 @@ fn library_macro_definition_through_an_import() {
         ),
     ];
     for (path, text) in files {
-        let uri = format!("file://{path}").parse().unwrap();
-        workspace.insert(SourceFile::new(
-            path.into(),
-            uri,
-            text.to_string(),
-            workspace.config(),
-        ));
+        insert(&mut workspace, path, text);
     }
     workspace.refresh();
     // Set after the files are read: they are read again.
@@ -178,4 +173,44 @@ fn library_macro_definition_through_an_import() {
         "/ws/admin.janet",
         "model/Delivery"
     ));
+}
+
+fn insert(workspace: &mut Workspace, path: &str, text: &str) {
+    let uri = format!("file://{path}").parse().unwrap();
+    let file = SourceFile::new(path.into(), uri, text.to_string(), workspace.config());
+    workspace.insert(file);
+}
+
+#[test]
+fn macro_definition_the_checker_expanded() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    let model = "(import void/db :as db)\n(db/defentity Delivery {:id :int})\n";
+    insert(&mut workspace, "/ws/model.janet", model);
+    insert(
+        &mut workspace,
+        "/ws/admin.janet",
+        "(import ./model)\n(defresource deliveries model/Delivery)\n",
+    );
+    workspace.refresh();
+    let binding = Binding {
+        name: "Delivery".to_string(),
+        line: 2,
+        col: 1,
+        doc: Some("A delivery.".to_string()),
+        private: false,
+    };
+    workspace.expand(HashMap::from([(
+        PathBuf::from("/ws/model.janet"),
+        vec![binding],
+    )]));
+    let checked = show_references(&workspace, "/ws/admin.janet", "model/Delivery");
+    // A line added since the check: the call is not at the line the checker reported.
+    insert(
+        &mut workspace,
+        "/ws/model.janet",
+        &format!("# moved\n{model}"),
+    );
+    workspace.refresh();
+    let edited = show_references(&workspace, "/ws/admin.janet", "model/Delivery");
+    insta::assert_snapshot!(format!("{checked}\n===== AFTER AN EDIT\n\n{edited}"));
 }

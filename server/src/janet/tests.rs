@@ -28,7 +28,9 @@ fn check(
     packages: &[Package],
     natives: &[Package],
 ) -> Result<Vec<Problem>> {
-    Worker::new(janet).check(path, text, cwd, packages, natives)
+    Worker::new(janet)
+        .check(path, text, cwd, packages, natives)
+        .map(|report| report.problems)
 }
 
 macro_rules! assert_format {
@@ -231,6 +233,7 @@ fn keeps_imports_loaded_until_their_files_change() {
         worker
             .check(&dir.join("a.janet"), "(import ./c)\n", &dir, &[], &[])
             .unwrap()
+            .problems
     };
 
     assert!(recheck().is_empty());
@@ -261,6 +264,53 @@ fn restarts_after_a_check_that_does_not_finish() {
     assert!(slow.unwrap_err().to_string().contains("did not finish"));
 
     worker.timeout = CHECK_TIMEOUT;
-    let problems = worker.check(&file, "(nope)\n", &dir, &[], &[]).unwrap();
+    let problems = worker
+        .check(&file, "(nope)\n", &dir, &[], &[])
+        .unwrap()
+        .problems;
     assert!(show_problems(&problems).contains("unknown symbol nope"));
+}
+
+#[test]
+fn reports_what_macros_bind() {
+    let dir = std::env::temp_dir().join("janet-zed-server-bindings-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("b.janet"),
+        "(defmacro defthing [name] ~(def ,name \"Made.\" 1))\n(defthing from-module)\n(def plain 1)\n",
+    )
+    .unwrap();
+    let source = "(import ./b)\n(b/defthing made)\n(def own 2)\n";
+    let file = dir.join("a.janet");
+    let mut worker = Worker::new("janet");
+    let made = |name: &str, line| Binding {
+        name: name.to_string(),
+        line,
+        col: 1,
+        doc: Some("Made.".to_string()),
+        private: false,
+    };
+    let bindings = |report: Report| -> HashMap<_, _> {
+        report
+            .bindings
+            .into_iter()
+            .map(|(path, bindings)| (crate::analysis::canonical(&path), bindings))
+            .collect()
+    };
+    let canonical = |name: &str| crate::analysis::canonical(&dir.join(name));
+
+    let first = worker.check(&file, source, &dir, &[], &[]).unwrap();
+    assert_eq!(
+        bindings(first),
+        HashMap::from([
+            (canonical("a.janet"), vec![made("made", 2)]),
+            (canonical("b.janet"), vec![made("from-module", 2)]),
+        ])
+    );
+    let again = worker.check(&file, source, &dir, &[], &[]).unwrap();
+    assert_eq!(
+        bindings(again),
+        HashMap::from([(canonical("a.janet"), vec![made("made", 2)])]),
+        "a loaded module is reported once"
+    );
 }
