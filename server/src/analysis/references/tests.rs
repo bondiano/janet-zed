@@ -3,6 +3,7 @@ use std::ops::Range;
 use std::path::Path;
 
 use super::*;
+use crate::analysis::config::Config;
 use crate::test_support::mark;
 
 const FILES: [(&str, &str); 7] = [
@@ -38,7 +39,12 @@ fn workspace() -> Workspace {
     let mut workspace = Workspace::new(vec!["/ws".into()], None);
     for (path, text) in FILES {
         let uri = format!("file://{path}").parse().unwrap();
-        workspace.insert(SourceFile::new(path.into(), uri, text.to_string()));
+        workspace.insert(SourceFile::new(
+            path.into(),
+            uri,
+            text.to_string(),
+            &Config::default(),
+        ));
     }
     workspace.refresh();
     workspace
@@ -54,19 +60,18 @@ fn show_in(file: &SourceFile, ranges: &[Range<usize>]) -> String {
 }
 
 /// What the symbol ending with the first `needle` in `path` refers to, and where it is.
-fn show_references(path: &str, needle: &str) -> String {
-    let workspace = workspace();
+fn show_references(workspace: &Workspace, path: &str, needle: &str) -> String {
     let source = workspace.file(Path::new(path)).unwrap();
     let offset = source.document.text.find(needle).unwrap() + needle.len() - 1;
     let (symbol, target) = resolve(
-        &workspace,
+        workspace,
         source,
         offset,
         |name| ["map", "import"].contains(&name),
         |_| false,
     )
     .unwrap();
-    let by_file = occurrences(&workspace, &target).into_iter().fold(
+    let by_file = occurrences(workspace, &target).into_iter().fold(
         BTreeMap::<&Path, (&SourceFile, Vec<Range<usize>>)>::new(),
         |mut files, occurrence| {
             files
@@ -81,7 +86,7 @@ fn show_references(path: &str, needle: &str) -> String {
         .values()
         .map(|(file, ranges)| show_in(file, ranges))
         .collect();
-    let declared = declaration(&workspace, &target).map_or_else(
+    let declared = declaration(workspace, &target).map_or_else(
         || "none".to_string(),
         |occurrence| show_in(occurrence.file, &[occurrence.range]),
     );
@@ -96,7 +101,7 @@ macro_rules! assert_references {
     ($path:literal, $needle:literal $(,)?) => {
         insta::assert_snapshot!(
             insta::internals::AutoName,
-            show_references($path, $needle),
+            show_references(&workspace(), $path, $needle),
             concat!($path, ": ", $needle)
         )
     };
@@ -141,4 +146,36 @@ fn core_binding() {
 #[test]
 fn unknown_name() {
     assert_references!("/ws/test/alias.janet", "(area");
+}
+
+#[test]
+fn library_macro_definition_through_an_import() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    let files = [
+        (
+            "/ws/model.janet",
+            "(import void/db :as db)\n(db/defentity Delivery {:id :int})\n",
+        ),
+        (
+            "/ws/admin.janet",
+            "(import ./model)\n(defresource deliveries model/Delivery)\n",
+        ),
+    ];
+    for (path, text) in files {
+        let uri = format!("file://{path}").parse().unwrap();
+        workspace.insert(SourceFile::new(
+            path.into(),
+            uri,
+            text.to_string(),
+            workspace.config(),
+        ));
+    }
+    workspace.refresh();
+    // Set after the files are read: they are read again.
+    workspace.set_config(Config::parse("{:lint-as {void/db/defentity def}}"));
+    insta::assert_snapshot!(show_references(
+        &workspace,
+        "/ws/admin.janet",
+        "model/Delivery"
+    ));
 }

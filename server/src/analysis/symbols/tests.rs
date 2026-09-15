@@ -1,11 +1,17 @@
 use super::*;
+use crate::analysis::config::Config;
 use crate::test_support::{cursor, mark};
 
 const SHAPES: &str = "(defn area \"Area.\" [shape] 1)\n(defn- hidden [] 2)";
 
 fn file(path: &str, text: &str) -> SourceFile {
     let uri = format!("file://{path}").parse().unwrap();
-    SourceFile::new(PathBuf::from(path), uri, text.to_string())
+    SourceFile::new(
+        PathBuf::from(path),
+        uri,
+        text.to_string(),
+        &Config::default(),
+    )
 }
 
 /// `/ws/shapes.janet` and `/ws/main.janet`.

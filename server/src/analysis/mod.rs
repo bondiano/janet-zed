@@ -1,5 +1,6 @@
 //! Read-only queries over parsed Janet sources.
 
+pub mod config;
 pub mod definitions;
 pub mod modules;
 pub mod peg;
@@ -18,6 +19,7 @@ use lsp_types::Uri;
 use url::Url;
 
 use crate::syntax::{self, Document};
+use config::Config;
 use modules::ImportSpec;
 use scopes::Scopes;
 
@@ -52,27 +54,10 @@ pub struct DefInfo {
 }
 
 impl SourceFile {
-    pub fn new(path: PathBuf, uri: Uri, text: String) -> Self {
+    pub fn new(path: PathBuf, uri: Uri, text: String, config: &Config) -> Self {
         let document = Document::new(text);
         let imports = modules::import_specs(&document);
-        // Reversed so that the first definition of a name wins.
-        let defined = definitions::definitions(&document, document.root())
-            .iter()
-            .rev()
-            .map(|definition| {
-                let info = DefInfo {
-                    definer: definition.definer.to_string(),
-                    name: definition.name.byte_range(),
-                    form: definition.form.byte_range(),
-                    doc: definition.doc.clone(),
-                    params: definition
-                        .params
-                        .map(|params| document.text_of(params).to_string()),
-                    private: definition.private,
-                };
-                (document.text_of(definition.name).to_string(), info)
-            })
-            .collect();
+        let defined = module_definitions(&document, &imports, config);
         let symbols = syntax::descendants(document.root())
             .filter(|node| node.kind() == syntax::SYMBOL)
             .fold(HashMap::<_, Vec<_>>::new(), |mut symbols, node| {
@@ -92,10 +77,41 @@ impl SourceFile {
         }
     }
 
-    pub fn read(path: PathBuf, uri: Uri) -> Option<Self> {
+    pub fn read(path: PathBuf, uri: Uri, config: &Config) -> Option<Self> {
         let text = std::fs::read_to_string(&path).ok()?;
-        Some(Self::new(path, uri, text))
+        Some(Self::new(path, uri, text, config))
     }
+
+    /// Reads the definitions again, under a changed config.
+    pub fn reconfigure(&mut self, config: &Config) {
+        self.definitions = module_definitions(&self.document, &self.imports, config);
+    }
+}
+
+fn module_definitions(
+    document: &Document,
+    imports: &[ImportSpec],
+    config: &Config,
+) -> HashMap<String, DefInfo> {
+    let lint_as = |head: &str| config.definer(head, imports);
+    // Reversed so that the first definition of a name wins.
+    definitions::definitions(document, document.root(), &lint_as)
+        .iter()
+        .rev()
+        .map(|definition| {
+            let info = DefInfo {
+                definer: definition.definer.to_string(),
+                name: definition.name.byte_range(),
+                form: definition.form.byte_range(),
+                doc: definition.doc.clone(),
+                params: definition
+                    .params
+                    .map(|params| document.text_of(params).to_string()),
+                private: definition.private,
+            };
+            (document.text_of(definition.name).to_string(), info)
+        })
+        .collect()
 }
 
 /// The path files are compared by; resolved lexically when it does not exist on disk. On Windows

@@ -35,38 +35,38 @@ pub struct Definition<'d> {
     pub children: Vec<Definition<'d>>,
 }
 
+/// The core definer a call head that is not one is read as: `:lint-as` from the config.
+pub type LintAs<'a> = &'a dyn Fn(&str) -> Option<&'static str>;
+
 /// Definitions under `node`. Ones in other forms (`comment`, `when`) surface at this level;
 /// ones in a definition's body become its children.
-pub fn definitions<'d>(doc: &'d Document, node: Node<'d>) -> Vec<Definition<'d>> {
+pub fn definitions<'d>(doc: &'d Document, node: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
     syntax::forms(node)
         .into_iter()
-        .flat_map(|form| collect(doc, form))
+        .flat_map(|form| collect(doc, form, lint_as))
         .collect()
+}
+
+/// `name` when it is a core definer.
+pub fn core(name: &str) -> Option<&'static str> {
+    DEFINERS.into_iter().find(|definer| *definer == name)
 }
 
 pub fn is_function(definer: &str) -> bool {
     FUNCTION_DEFINERS.contains(&definer)
 }
 
-/// A macro named like a definer, `db/defentity`, taken to bind the symbol after it, as the ones
-/// from core do.
-// ponytail: a naming guess; a `def*` macro that binds nothing names a phantom definition.
-fn is_library_definer(definer: &str) -> bool {
-    let name = definer.rsplit('/').next().unwrap_or(definer);
-    name.starts_with("def") && !matches!(name, "default" | "defer")
-}
-
-fn collect<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
-    let found = definition(doc, form);
+fn collect<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
+    let found = definition(doc, form, lint_as);
     if found.is_empty() {
-        definitions(doc, form)
+        definitions(doc, form, lint_as)
     } else {
         found
     }
 }
 
 /// The names `form` defines: one, or every symbol of a destructuring pattern.
-fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
+fn definition<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
     if form.kind() != syntax::LIST {
         return Vec::new();
     }
@@ -74,12 +74,15 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
     let [head, target, body @ ..] = forms.as_slice() else {
         return Vec::new();
     };
-    let definer = doc.text_of(*head);
-    let core = DEFINERS.contains(&definer);
-    if head.kind() != syntax::SYMBOL || !(core || is_library_definer(definer)) {
+    if head.kind() != syntax::SYMBOL {
         return Vec::new();
     }
-    let function = is_function(definer);
+    // Read by the rules of the core definer; named as written.
+    let definer = doc.text_of(*head);
+    let Some(core) = core(definer).or_else(|| lint_as(definer)) else {
+        return Vec::new();
+    };
+    let function = is_function(core);
     let params = body
         .iter()
         .position(|node| function && node.kind() == "sqr_tup_lit");
@@ -89,13 +92,12 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
     } else {
         body.len().saturating_sub(1)
     });
-    // A library macro's arguments are its own: `:singular "Delivery"` is no docstring.
-    let metadata = if core { &body[..metadata_end] } else { &[] };
+    let metadata = &body[..metadata_end];
     let docstring = metadata
         .iter()
         .find_map(|node| syntax::string_value(doc, *node));
     let private =
-        definer.ends_with('-') || metadata.iter().any(|node| doc.text_of(*node) == ":private");
+        core.ends_with('-') || metadata.iter().any(|node| doc.text_of(*node) == ":private");
 
     if target.kind() == syntax::SYMBOL {
         return vec![Definition {
@@ -105,7 +107,10 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
             doc: docstring,
             params: params.map(|index| body[index]),
             private,
-            children: body.iter().flat_map(|node| collect(doc, *node)).collect(),
+            children: body
+                .iter()
+                .flat_map(|node| collect(doc, *node, lint_as))
+                .collect(),
         }];
     }
     // `(def [a & rest] …)`, `(def {:k v} …)`

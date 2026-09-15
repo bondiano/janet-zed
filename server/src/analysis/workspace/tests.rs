@@ -1,8 +1,14 @@
 use super::*;
+use crate::analysis::config::Config;
 
 fn file(path: &str, text: &str) -> SourceFile {
     let uri = format!("file://{path}").parse().unwrap();
-    SourceFile::new(PathBuf::from(path), uri, text.to_string())
+    SourceFile::new(
+        PathBuf::from(path),
+        uri,
+        text.to_string(),
+        &Config::default(),
+    )
 }
 
 /// The files of `workspace` and the imports between them, seen from both ends.

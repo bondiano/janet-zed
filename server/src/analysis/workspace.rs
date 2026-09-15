@@ -5,6 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
+use super::config::Config;
 use super::modules::{Package, Search, native_modules, packages};
 use super::{SourceFile, canonical, uri_of};
 
@@ -26,6 +27,7 @@ pub struct Edge {
 #[derive(Debug, Default)]
 pub struct Workspace {
     search: Search,
+    config: Config,
     /// Native modules the workspace projects build.
     natives: Vec<Package>,
     files: HashMap<PathBuf, SourceFile>,
@@ -51,6 +53,26 @@ impl Workspace {
 
     pub fn roots(&self) -> &[PathBuf] {
         &self.search.roots
+    }
+
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
+    /// Reads the config at the roots again.
+    pub fn configure(&mut self) {
+        self.set_config(Config::read(&self.search.roots));
+    }
+
+    /// Definitions of every file are read again under a changed `config`.
+    pub fn set_config(&mut self, config: Config) {
+        if config == self.config {
+            return;
+        }
+        self.config = config;
+        for file in self.files.values_mut().chain(self.external.values_mut()) {
+            file.reconfigure(&self.config);
+        }
     }
 
     /// Modules the workspace projects declare with `declare-source`.
@@ -123,6 +145,7 @@ impl Workspace {
             .collect();
 
         let search = &self.search;
+        let config = &self.config;
         let exists =
             |candidate: &Path| files.contains_key(&canonical(candidate)) || candidate.is_file();
         self.imports = files
@@ -182,7 +205,7 @@ impl Workspace {
             .filter_map(|path| {
                 let file = loaded
                     .remove(path)
-                    .or_else(|| SourceFile::read(path.clone(), uri_of(path)?))?;
+                    .or_else(|| SourceFile::read(path.clone(), uri_of(path)?, config))?;
                 Some((path.clone(), file))
             })
             .collect();

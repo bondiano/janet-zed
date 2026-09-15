@@ -30,8 +30,12 @@ fn outline(document: &Document, definitions: &[Definition], depth: usize) -> Vec
 }
 
 fn show_definitions(source: &str) -> String {
+    show_definitions_as(source, &|_| None)
+}
+
+fn show_definitions_as(source: &str, lint_as: LintAs) -> String {
     let document = Document::new(source.to_string());
-    let found = definitions(&document, document.root());
+    let found = definitions(&document, document.root(), lint_as);
     format!(
         "----- SOURCE CODE\n{source}\n\n----- DEFINITIONS\n{}\n",
         outline(&document, &found, 0).join("\n")
@@ -84,12 +88,21 @@ fn long_string_docstring_is_dedented() {
 }
 
 #[test]
-fn library_definer_macro() {
-    assert_definitions!(
-        "(db/defentity User {:id :int} :db/table \"users\")\n\
-         (defresource users User :singular \"User\")\n\
-         (defn f [x] (default x 1) (defer (close x) x))"
-    );
+fn library_macro_is_not_a_definition() {
+    assert_definitions!("(db/defentity User {:id :int})\n(defn f [x] (default x 1) x)");
+}
+
+#[test]
+fn library_macro_read_as_a_core_definer() {
+    let lint_as = |head: &str| match head {
+        "db/defentity" => Some("def-"),
+        "defthing" => Some("defn"),
+        _ => None,
+    };
+    insta::assert_snapshot!(show_definitions_as(
+        "(db/defentity User {:id :int})\n(defthing make \"Makes.\" [x] (db/defentity Inner {}))",
+        &lint_as,
+    ));
 }
 
 #[test]

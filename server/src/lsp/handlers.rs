@@ -236,8 +236,10 @@ pub fn document_symbol(
     state: &State,
     params: DocumentSymbolParams,
 ) -> Result<Option<DocumentSymbolResponse>> {
-    let doc = state.document(&params.text_document.uri)?;
-    let symbols = document_symbols(doc, definitions(doc, doc.root()));
+    let file = state.file(&params.text_document.uri)?;
+    let doc = &file.document;
+    let lint_as = |head: &str| state.workspace.config().definer(head, &file.imports);
+    let symbols = document_symbols(doc, definitions(doc, doc.root(), &lint_as));
     Ok(Some(DocumentSymbolResponse::Nested(symbols)))
 }
 

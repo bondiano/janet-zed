@@ -174,13 +174,15 @@ fn watches_files(params: &InitializeParams) -> bool {
         .unwrap_or(false)
 }
 
-/// Asks the client to report `.janet` file changes, which keep the workspace index current.
+/// Asks the client to report `.janet` and config file changes, which keep the workspace index
+/// current.
 fn watch_files(connection: &Connection) -> Result<()> {
+    let watcher = |glob: &str| FileSystemWatcher {
+        glob_pattern: GlobPattern::String(glob.to_string()),
+        kind: None,
+    };
     let options = DidChangeWatchedFilesRegistrationOptions {
-        watchers: vec![FileSystemWatcher {
-            glob_pattern: GlobPattern::String("**/*.janet".to_string()),
-            kind: None,
-        }],
+        watchers: vec![watcher("**/*.janet"), watcher("**/.janet-zed/*.jdn")],
     };
     let params = RegistrationParams {
         registrations: vec![Registration {

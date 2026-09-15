@@ -9,7 +9,7 @@ use lsp_types::{Diagnostic, FileChangeType, FileEvent, Uri};
 use super::diagnostics::Job;
 use crate::analysis::stdlib::Stdlib;
 use crate::analysis::workspace::Workspace;
-use crate::analysis::{SourceFile, canonical, path_of, uri_of};
+use crate::analysis::{SourceFile, canonical, config, path_of, uri_of};
 use crate::syntax::Document;
 
 struct Buffer {
@@ -56,7 +56,8 @@ impl State {
             version,
         };
         self.open.insert(uri.clone(), buffer);
-        self.workspace.insert(SourceFile::new(path, uri, text));
+        let file = SourceFile::new(path, uri, text, self.workspace.config());
+        self.workspace.insert(file);
         self.workspace.refresh();
     }
 
@@ -108,16 +109,16 @@ impl State {
     pub fn changed(&mut self, events: Vec<FileEvent>) {
         let mut rescan = false;
         for event in events {
-            if event.typ != FileChangeType::CHANGED {
-                rescan = true;
-                continue;
-            }
             let Some(path) = path_of(&event.uri).map(|path| canonical(&path)) else {
                 continue;
             };
+            if event.typ != FileChangeType::CHANGED || config::is_config(&path) {
+                rescan = true;
+                continue;
+            }
             let is_open = self.open.values().any(|buffer| buffer.path == path);
             if self.workspace.contains(&path) && !is_open {
-                match SourceFile::read(path.clone(), event.uri) {
+                match SourceFile::read(path.clone(), event.uri, self.workspace.config()) {
                     Some(file) => self.workspace.insert(file),
                     None => self.workspace.remove(&path),
                 }
@@ -146,9 +147,10 @@ impl State {
         Ok(&self.file(uri)?.document)
     }
 
-    /// Brings the index in line with the `.janet` files under the roots (honoring .gitignore):
-    /// reads new files, drops deleted ones, leaves open buffers and known files alone.
+    /// Brings the index in line with the config and the `.janet` files under the roots (honoring
+    /// .gitignore): reads new files, drops deleted ones, leaves open buffers and known files alone.
     fn rescan(&mut self) {
+        self.workspace.configure();
         let found: BTreeMap<PathBuf, PathBuf> = self
             .workspace
             .roots()
@@ -178,7 +180,8 @@ impl State {
         }
         for (path, found_at) in found {
             if !self.workspace.contains(&path)
-                && let Some(file) = uri_of(&found_at).and_then(|uri| SourceFile::read(path, uri))
+                && let Some(file) = uri_of(&found_at)
+                    .and_then(|uri| SourceFile::read(path, uri, self.workspace.config()))
             {
                 self.workspace.insert(file);
             }
