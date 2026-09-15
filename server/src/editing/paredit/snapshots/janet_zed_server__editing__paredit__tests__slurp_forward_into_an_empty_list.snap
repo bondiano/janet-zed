@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: (|) c
+---
+----- BEFORE ACTION
+() c
+ ↑
+
+----- AFTER ACTION: Slurp forward
+(c)

@@ -1,0 +1,17 @@
+---
+source: server/src/editing/fixes/tests.rs
+expression: "(def x 1)\n\n(gre|et x)\n"
+---
+----- BEFORE FIX
+(def x 1)
+
+(greet x)
+    ↑
+
+
+----- AFTER FIX: Create function `greet`
+(def x 1)
+
+(defn greet [x])
+
+(greet x)

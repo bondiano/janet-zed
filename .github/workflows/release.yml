@@ -1,0 +1,56 @@
+name: Release
+
+# Pushing a `v*` tag publishes janet-zed-server binaries; the extension downloads the one for
+# the user's platform (see server_asset in src/lib.rs for the asset names).
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          # The Intel macOS images are retired: cross-compiled on Apple silicon.
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+          # Native, so `ring` and the grammar's C build without a cross toolchain.
+          - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add ${{ matrix.target }}
+      - run: cargo build -p janet-zed-server --release --locked --target ${{ matrix.target }}
+      - name: Package
+        if: runner.os != 'Windows'
+        run: tar -czf janet-zed-server-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release janet-zed-server
+      - name: Package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/janet-zed-server.exe -DestinationPath janet-zed-server-${{ matrix.target }}.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: janet-zed-server-${{ matrix.target }}.*
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: janet-zed-server-*

@@ -1,0 +1,4 @@
+{:name "fixture"
+ :shapes [{:kind :circle :r 2}
+          {:kind :rect :w 1 :h 5}]
+ :tags @["a" "b"]}

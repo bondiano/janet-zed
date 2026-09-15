@@ -1,0 +1,13 @@
+---
+source: server/src/analysis/symbols/tests.rs
+expression: (map f ind & inds)
+---
+----- PARAMETERS
+(map f ind & inds)
+     ▔ ▔▔▔   ▔▔▔▔
+
+----- ACTIVE PARAMETER
+argument 0: f
+argument 1: ind
+argument 2: inds
+argument 3: inds

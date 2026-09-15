@@ -1,0 +1,10 @@
+---
+source: server/src/editing/threading/tests.rs
+expression: (-> x| inc (f a))
+---
+----- BEFORE ACTION
+(-> x inc (f a))
+     ↑
+
+----- AFTER ACTION: Unthread
+(f (inc x) a)

@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: "(a [b| c] d)"
+---
+----- BEFORE ACTION
+(a [b c] d)
+     ↑
+
+----- AFTER ACTION: Splice
+(a b c d)

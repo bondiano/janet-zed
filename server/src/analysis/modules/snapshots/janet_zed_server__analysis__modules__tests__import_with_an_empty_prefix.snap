@@ -1,0 +1,9 @@
+---
+source: server/src/analysis/modules/tests.rs
+expression: "(import \"../b\" :prefix \"\")"
+---
+----- SOURCE CODE
+(import "../b" :prefix "")
+
+----- IMPORTS
+../b as ""

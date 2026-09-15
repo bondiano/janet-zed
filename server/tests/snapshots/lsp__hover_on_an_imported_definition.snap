@@ -1,0 +1,15 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- HOVER\\n{}\\n\",\nsession.cursor(\"shapes/area\", 8),\nhover[\"contents\"][\"value\"].as_str().unwrap())"
+---
+----- CURSOR
+       (map shapes/area)
+                    ↑
+
+----- HOVER
+```janet
+(area shape)
+```
+defn in `shapes.janet`
+
+Area of any shape.

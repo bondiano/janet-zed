@@ -1,0 +1,12 @@
+---
+source: server/src/analysis/modules/tests.rs
+expression: "# janet-zed: include ./json.janet ./project\n(import ./a)"
+---
+----- SOURCE CODE
+# janet-zed: include ./json.janet ./project
+(import ./a)
+
+----- IMPORTS
+./a as "a/"
+./json.janet as ""
+./project as ""

@@ -1,0 +1,13 @@
+---
+source: server/src/editing/threading/tests.rs
+expression: "  (reduce + 0\n|    (map inc xs))"
+---
+----- BEFORE ACTION
+  (reduce + 0
+    (map inc xs))
+↑
+
+----- AFTER ACTION: Thread last (->>)
+  (->> xs
+       (map inc)
+       (reduce + 0))

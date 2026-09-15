@@ -1,0 +1,52 @@
+{
+  "type": "object",
+  "required": ["request"],
+  "properties": {
+    "request": {
+      "type": "string",
+      "enum": ["launch", "attach"],
+      "description": "`launch` runs a program; `attach` connects to the REPL kernel's netrepl process",
+      "default": "launch"
+    },
+    "program": {
+      "type": "string",
+      "description": "launch: the Janet file to run"
+    },
+    "args": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "launch: command line arguments, also passed to `main`",
+      "default": []
+    },
+    "cwd": {
+      "type": "string",
+      "description": "launch: the working directory",
+      "default": "${ZED_WORKTREE_ROOT}"
+    },
+    "env": {
+      "type": "object",
+      "additionalProperties": { "type": "string" },
+      "description": "launch: environment variables on top of the worktree's",
+      "default": {}
+    },
+    "janet": {
+      "type": "string",
+      "description": "launch: the `janet` executable (default: `janet` on PATH)"
+    },
+    "stopOnEntry": {
+      "type": "boolean",
+      "description": "launch: stop before the first top-level form",
+      "default": false
+    },
+    "host": {
+      "type": "string",
+      "description": "attach: the netrepl host",
+      "default": "127.0.0.1"
+    },
+    "port": {
+      "type": "integer",
+      "description": "attach: the netrepl port (the REPL kernel's is 9365)",
+      "default": 9365
+    }
+  }
+}

@@ -1,0 +1,10 @@
+---
+source: server/src/analysis/definitions/tests.rs
+expression: "(def pi 3)\n(print 1)"
+---
+----- SOURCE CODE
+(def pi 3)
+(print 1)
+
+----- DEFINITIONS
+def pi

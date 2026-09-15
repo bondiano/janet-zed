@@ -1,0 +1,10 @@
+---
+source: server/src/analysis/definitions/tests.rs
+expression: "(def [a b] [1 2])"
+---
+----- SOURCE CODE
+(def [a b] [1 2])
+
+----- DEFINITIONS
+def a
+def b

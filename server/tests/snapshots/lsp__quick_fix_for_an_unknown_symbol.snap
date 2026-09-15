@@ -1,0 +1,20 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n(lenght items)\\n ↑\\n\\n----- ACTIONS\\n{}\\n\",\nactions.join(\"\\n\"))"
+---
+----- CURSOR
+(lenght items)
+ ↑
+
+----- ACTIONS
+Create function `lenght` (quickfix)
+Ignore `lenght` on this line (quickfix)
+Declare `lenght` in this file (quickfix)
+Slurp forward (refactor.rewrite)
+Slurp backward (refactor.rewrite)
+Barf forward (refactor.rewrite)
+Barf backward (refactor.rewrite)
+Raise (refactor.rewrite)
+Splice (refactor.rewrite)
+Wrap with ( ) (refactor.rewrite)
+Wrap with [ ] (refactor.rewrite)

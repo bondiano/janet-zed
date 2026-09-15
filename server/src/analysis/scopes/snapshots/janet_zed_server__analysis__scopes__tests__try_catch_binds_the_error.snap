@@ -1,0 +1,8 @@
+---
+source: server/src/analysis/scopes/tests.rs
+assertion_line: 205
+expression: "(defn f [e] (try (g) ([e] (print |e))))"
+---
+----- BINDING
+(defn f [e] (try (g) ([e] (print e))))
+                       ▔         ↑

@@ -1,0 +1,23 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 223
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n{}\\n\", hovers.join(\"\\n\\n\"))"
+---
+----- SOURCE CODE
+(peg/match ~(some (constant :x)) "a")
+
+----- HOVER some
+```janet
+(some patt)
+```
+PEG special
+
+Matches `patt` one or more times.
+
+----- HOVER constant
+```janet
+(constant value ?tag)
+```
+PEG special
+
+Captures `value`, consuming no input.

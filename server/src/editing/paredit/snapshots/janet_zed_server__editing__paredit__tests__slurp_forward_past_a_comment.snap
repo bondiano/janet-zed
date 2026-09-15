@@ -1,0 +1,12 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: "(|) # keep\n x"
+---
+----- BEFORE ACTION
+() # keep
+ ↑
+ x
+
+----- AFTER ACTION: Slurp forward
+( # keep
+ x)

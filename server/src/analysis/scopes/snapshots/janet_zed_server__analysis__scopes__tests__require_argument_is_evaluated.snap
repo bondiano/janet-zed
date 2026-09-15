@@ -1,0 +1,8 @@
+---
+source: server/src/analysis/scopes/tests.rs
+assertion_line: 165
+expression: "(defn run [module] (require |module))"
+---
+----- BINDING
+(defn run [module] (require module))
+           ▔▔▔▔▔▔           ↑

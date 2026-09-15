@@ -1,0 +1,11 @@
+---
+source: server/src/analysis/peg/tests.rs
+assertion_line: 26
+expression: (peg/compile ~(some (constant 1)))
+---
+----- SOURCE CODE
+(peg/compile ~(some (constant 1)))
+
+----- PEG SPECIALS
+(peg/compile ~(some (constant 1)))
+               ▔▔▔▔  ▔▔▔▔▔▔▔▔

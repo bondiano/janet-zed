@@ -1,0 +1,13 @@
+---
+source: server/src/kernel/netrepl/tests.rs
+expression: "(false \"oops\")"
+---
+----- REPLY
+(false "oops")
+
+----- EVALUATION
+Evaluation {
+    value: "",
+    output: "",
+    errors: "unexpected netrepl reply: (false \"oops\")",
+}

@@ -1,0 +1,20 @@
+---
+source: server/src/analysis/references/tests.rs
+expression: "/ws/src/report.janet: (map"
+---
+----- SYMBOL
+-- /ws/src/report.janet
+(import ./shapes)
+(defn total [xs] (map shapes/area xs))
+                  ▔▔▔
+(defn f [shape] shape)
+
+
+----- TARGET
+Core { name: "map" }
+
+----- REFERENCES
+
+
+----- DECLARATION
+none

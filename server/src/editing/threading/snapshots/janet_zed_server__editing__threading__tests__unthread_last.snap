@@ -1,0 +1,10 @@
+---
+source: server/src/editing/threading/tests.rs
+expression: "|(->> items (map f) (reduce + 0))"
+---
+----- BEFORE ACTION
+(->> items (map f) (reduce + 0))
+↑
+
+----- AFTER ACTION: Unthread
+(reduce + 0 (map f items))

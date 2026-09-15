@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: (foo |(bar x))
+---
+----- BEFORE ACTION
+(foo (bar x))
+     ↑
+
+----- AFTER ACTION: Raise
+(bar x)

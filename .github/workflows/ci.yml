@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Lint and test
+    # The server's tests run the real `janet`; Homebrew has it.
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install janet just
+      # The REPL kernel and the debugger's attach test run spork's netrepl.
+      - run: jpm install spork
+      # rust-toolchain.toml pins the toolchain; this installs it with its components and targets.
+      - run: rustup show
+      - run: just check

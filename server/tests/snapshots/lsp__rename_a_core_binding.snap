@@ -1,0 +1,10 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- ERROR\\n{refused}\\n\",\nsession.cursor(\"(map\", 2))"
+---
+----- CURSOR
+       (map shapes/area)
+         ↑
+
+----- ERROR
+`map` is a core binding

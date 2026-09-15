@@ -1,0 +1,9 @@
+---
+source: server/src/analysis/modules/tests.rs
+expression: "./pkg"
+---
+----- IMPORT
+./pkg from /ws/src/main.janet
+
+----- LOADS
+/ws/src/pkg/init.janet

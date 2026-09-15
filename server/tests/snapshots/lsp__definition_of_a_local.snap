@@ -1,0 +1,10 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- DEFINITION\\n{}\\n\",\nsession.cursor(\"(keys by-kind)\", 8),\nsession.show_location(location[\"uri\"].as_str().unwrap(), &location[\"range\"]))"
+---
+----- CURSOR
+                 (string/join (map string (sorted (keys by-kind))) ", ")))
+                                                          ↑
+
+----- DEFINITION
+src/report.janet 14:7-14:14

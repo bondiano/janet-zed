@@ -1,0 +1,28 @@
+id = "janet-plus"
+name = "Janet+"
+version = "0.0.1"
+schema_version = 1
+authors = ["bondiano <batbondik0@gmail.com>"]
+description = "Janet support: LSP, REPL, debugger and structural editing"
+repository = "https://github.com/bondiano/janet-zed"
+snippets = "./snippets/janet.json"
+
+[grammars.janet_simple]
+repository = "https://github.com/sogaiu/tree-sitter-janet-simple"
+rev = "3c1bdcfff374138da03a1db25c75efce623910fe"
+
+[language_servers.janet-zed-server]
+name = "Janet"
+languages = ["Janet"]
+
+# `janet-zed-server dap`; the launch and attach config is in debug_adapter_schemas/Janet.json.
+[debug_adapters.Janet]
+
+# Turns the `Janet: run` task into a debug scenario.
+[debug_locators.Janet]
+
+# `janet -e (prin janet/version)`: picks the Janet source tag for stdlib go-to-definition.
+[[capabilities]]
+kind = "process:exec"
+command = "*"
+args = ["-e", "(prin janet/version)"]

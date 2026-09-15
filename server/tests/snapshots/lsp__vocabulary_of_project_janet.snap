@@ -1,0 +1,8 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 495
+expression: "format!(\"----- SIGNATURE at :source\\n{}\\nactive parameter: {}\\n\",\nsignature[\"label\"].as_str().unwrap(), signature[\"activeParameter\"])"
+---
+----- SIGNATURE at :source
+(declare-source &named source prefix)
+active parameter: 0

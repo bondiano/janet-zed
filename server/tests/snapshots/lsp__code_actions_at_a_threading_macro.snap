@@ -1,0 +1,18 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- ACTIONS\\n{}\\n\",\nsession.cursor(\"(->> items\", 0), titles.join(\"\\n\"))"
+---
+----- CURSOR
+  (->> items
+  ↑
+
+----- ACTIONS
+Unthread
+Slurp forward
+Slurp backward
+Barf forward
+Barf backward
+Raise
+Splice
+Wrap with ( )
+Wrap with [ ]

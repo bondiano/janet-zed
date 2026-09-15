@@ -1,0 +1,271 @@
+{
+  "Function": {
+    "prefix": "defn",
+    "body": [
+      "(defn ${1:name}",
+      "  \"${2:Docstring.}\"",
+      "  [${3}]",
+      "  $0)"
+    ],
+    "description": "Public function with a docstring"
+  },
+  "Private function": {
+    "prefix": "defn-",
+    "body": [
+      "(defn- ${1:name}",
+      "  [${2}]",
+      "  $0)"
+    ],
+    "description": "Private function"
+  },
+  "Macro": {
+    "prefix": "defmacro",
+    "body": [
+      "(defmacro ${1:name}",
+      "  \"${2:Docstring.}\"",
+      "  [${3}]",
+      "  ~($0))"
+    ],
+    "description": "Macro returning a quasiquoted form"
+  },
+  "Main": {
+    "prefix": "main",
+    "body": [
+      "(defn main [& args]",
+      "  $0)"
+    ],
+    "description": "Script entry point, runnable from the gutter"
+  },
+  "Anonymous function": {
+    "prefix": "fn",
+    "body": "(fn [${1}] $0)",
+    "description": "Anonymous function"
+  },
+  "Let": {
+    "prefix": "let",
+    "body": [
+      "(let [${1:name} ${2:value}]",
+      "  $0)"
+    ],
+    "description": "Local bindings"
+  },
+  "If": {
+    "prefix": "if",
+    "body": [
+      "(if ${1:test}",
+      "  ${2:then}",
+      "  ${0:else})"
+    ],
+    "description": "Conditional with both branches"
+  },
+  "When": {
+    "prefix": "when",
+    "body": [
+      "(when ${1:test}",
+      "  $0)"
+    ],
+    "description": "Conditional without else"
+  },
+  "Cond": {
+    "prefix": "cond",
+    "body": [
+      "(cond",
+      "  ${1:test} ${2:result}",
+      "  ${0:default})"
+    ],
+    "description": "Chain of test/result pairs"
+  },
+  "Case": {
+    "prefix": "case",
+    "body": [
+      "(case ${1:value}",
+      "  ${2:option} ${3:result}",
+      "  ${0:default})"
+    ],
+    "description": "Dispatch on equal values"
+  },
+  "Match": {
+    "prefix": "match",
+    "body": [
+      "(match ${1:value}",
+      "  ${2:pattern} ${3:result}",
+      "  _ ${0:default})"
+    ],
+    "description": "Pattern matching"
+  },
+  "Each": {
+    "prefix": "each",
+    "body": [
+      "(each ${1:item} ${2:items}",
+      "  $0)"
+    ],
+    "description": "Loop over values"
+  },
+  "Eachp": {
+    "prefix": "eachp",
+    "body": [
+      "(eachp [${1:k} ${2:v}] ${3:dict}",
+      "  $0)"
+    ],
+    "description": "Loop over key/value pairs"
+  },
+  "For": {
+    "prefix": "for",
+    "body": [
+      "(for ${1:i} ${2:0} ${3:n}",
+      "  $0)"
+    ],
+    "description": "Numeric loop, end exclusive"
+  },
+  "Loop": {
+    "prefix": "loop",
+    "body": [
+      "(loop [${1:x} :in ${2:xs}]",
+      "  $0)"
+    ],
+    "description": "Loop with verbs and modifiers"
+  },
+  "Try": {
+    "prefix": "try",
+    "body": [
+      "(try",
+      "  $1",
+      "  ([${2:err} ${3:fib}]",
+      "    $0))"
+    ],
+    "description": "Catch an error"
+  },
+  "With resource": {
+    "prefix": "with",
+    "body": [
+      "(with [${1:f} (file/open ${2:path} :r)]",
+      "  $0)"
+    ],
+    "description": "Bind a resource closed on exit"
+  },
+  "Import": {
+    "prefix": "import",
+    "body": "(import ${1:./module}${2: :as ${3:alias}})",
+    "description": "Import a module"
+  },
+  "Use": {
+    "prefix": "use",
+    "body": "(use ${1:./module})",
+    "description": "Import a module without a prefix"
+  },
+  "PEG": {
+    "prefix": "peg",
+    "body": [
+      "(def ${1:grammar}",
+      "  (peg/compile",
+      "    ~{:main ${0}}))"
+    ],
+    "description": "Compiled PEG grammar"
+  },
+  "Comment block": {
+    "prefix": "comment",
+    "body": [
+      "(comment",
+      "  $0)"
+    ],
+    "description": "Forms kept out of the build, for REPL experiments"
+  },
+  "REPL cell": {
+    "prefix": "cell",
+    "body": [
+      "# %%",
+      "$0"
+    ],
+    "description": "Cell marker: `repl: run` inside it evaluates the whole cell"
+  },
+  "Project": {
+    "prefix": "declare-project",
+    "body": [
+      "(declare-project",
+      "  :name \"${1:name}\"",
+      "  :description \"${2:description}\"",
+      "  :dependencies [${3}])",
+      "",
+      "(declare-source",
+      "  :prefix \"${1:name}\"",
+      "  :source [\"${4:src}\"])"
+    ],
+    "description": "project.janet for jpm"
+  },
+  "Source modules": {
+    "prefix": "declare-source",
+    "body": [
+      "(declare-source",
+      "  :prefix \"${1:prefix}\"",
+      "  :source [\"${2:src}\"])"
+    ],
+    "description": "jpm: Janet modules to install"
+  },
+  "Native module": {
+    "prefix": "declare-native",
+    "body": [
+      "(declare-native",
+      "  :name \"${1:name}\"",
+      "  :source [\"${2:c/${1:name}.c}\"])"
+    ],
+    "description": "jpm: a native module built from C sources"
+  },
+  "Executable": {
+    "prefix": "declare-executable",
+    "body": [
+      "(declare-executable",
+      "  :name \"${1:name}\"",
+      "  :entry \"${2:src/main.janet}\"",
+      "  :install ${3:true})"
+    ],
+    "description": "jpm: a standalone executable from a file with main"
+  },
+  "Binscript": {
+    "prefix": "declare-binscript",
+    "body": [
+      "(declare-binscript",
+      "  :main \"${1:bin/name}\"",
+      "  :hardcode-syspath ${2:true}",
+      "  :is-janet true)"
+    ],
+    "description": "jpm: a script installed into the binary path"
+  },
+  "Archive": {
+    "prefix": "declare-archive",
+    "body": [
+      "(declare-archive",
+      "  :name \"${1:name}\"",
+      "  :entry \"${2:/src/main}\")"
+    ],
+    "description": "jpm: a .jimage of a module and its requires"
+  },
+  "jpm task": {
+    "prefix": "task",
+    "body": [
+      "(task \"${1:name}\" [${2}]",
+      "  $0)"
+    ],
+    "description": "jpm: a task run by `jpm run`"
+  },
+  "jpm rule": {
+    "prefix": "rule",
+    "body": [
+      "(rule \"${1:build/out}\" [\"${2:input}\"]",
+      "  $0)"
+    ],
+    "description": "jpm: a rule that produces a file"
+  },
+  "jpm shell task": {
+    "prefix": "sh-task",
+    "body": "(sh-task \"${1:name}\" [${2}] \"${0:command}\")",
+    "description": "jpm: a task that runs a shell command"
+  },
+  "Post deps": {
+    "prefix": "post-deps",
+    "body": [
+      "(post-deps",
+      "  $0)"
+    ],
+    "description": "jpm: code that needs installed dependencies"
+  }
+}

@@ -1,0 +1,9 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CHANGE\\n(length items) -> (lenght items)\\n\\n----- DIAGNOSTICS\\n{}\\n\",\nproblems.join(\"\\n\"))"
+---
+----- CHANGE
+(length items) -> (lenght items)
+
+----- DIAGNOSTICS
+src/report.janet 16:18-16:24 unknown symbol lenght

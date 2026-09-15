@@ -1,0 +1,12 @@
+---
+source: server/src/janet/tests.rs
+assertion_line: 91
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- PROBLEMS\\n{}\\n\",\nshow_problems(&problems))"
+---
+----- SOURCE CODE
+(defmacro m [] (prin "out") (eprin "err") nil)
+(m)
+(nope)
+
+----- PROBLEMS
+3:1 unknown symbol nope

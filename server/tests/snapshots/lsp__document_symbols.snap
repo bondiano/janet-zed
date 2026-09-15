@@ -1,0 +1,9 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SYMBOLS\\n{}\\n\", outline(&symbols, 0).join(\"\\n\"))"
+---
+----- SYMBOLS
+total-area
+summary
+  by-kind
+render

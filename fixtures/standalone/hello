@@ -1,0 +1,4 @@
+#!/usr/bin/env janet
+# No extension: language must be detected by the shebang.
+
+(print "hello from " (os/which))

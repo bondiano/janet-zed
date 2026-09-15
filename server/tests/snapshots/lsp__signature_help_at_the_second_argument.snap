@@ -1,0 +1,11 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- SIGNATURE\\n{}\\nactive parameter: {}\\n\",\nsession.cursor(\"(string/join lines \\\"\", 19),\nsignature[\"label\"].as_str().unwrap(), signature[\"activeParameter\"])"
+---
+----- CURSOR
+    (string/join lines "\n")))
+                       ↑
+
+----- SIGNATURE
+(string/join parts &opt sep)
+active parameter: 1

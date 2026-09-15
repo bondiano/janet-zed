@@ -1,0 +1,10 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- DEFINITION\\n{}\\n\",\nsession.cursor(\"(import ./shapes\", 10),\nsession.show_location(location[\"uri\"].as_str().unwrap(), &location[\"range\"]))"
+---
+----- CURSOR
+(import ./shapes)
+          ↑
+
+----- DEFINITION
+src/shapes.janet 0:0-0:0

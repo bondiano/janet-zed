@@ -1,0 +1,46 @@
+---
+source: server/src/analysis/references/tests.rs
+expression: "/ws/src/report.janet: shapes/area"
+---
+----- SYMBOL
+-- /ws/src/report.janet
+(import ./shapes)
+(defn total [xs] (map shapes/area xs))
+                             ▔▔▔▔
+(defn f [shape] shape)
+
+
+----- TARGET
+Module { file: "/ws/src/shapes.janet", name: "area" }
+
+----- REFERENCES
+-- /ws/src/report.janet
+(import ./shapes)
+(defn total [xs] (map shapes/area xs))
+                             ▔▔▔▔
+(defn f [shape] shape)
+
+-- /ws/src/shapes.janet
+(def pi 3)
+(defn area [shape] (* pi (shape :r)))
+      ▔▔▔▔
+(defn scale [area k] (* area k))
+
+-- /ws/test/alias.janet
+(import /src/shapes :as s)
+(s/area {:r 1})
+   ▔▔▔▔
+(area 1)
+
+-- /ws/test/pkg.janet
+(use fixture/shapes)
+(area 2)
+ ▔▔▔▔
+
+
+----- DECLARATION
+-- /ws/src/shapes.janet
+(def pi 3)
+(defn area [shape] (* pi (shape :r)))
+      ▔▔▔▔
+(defn scale [area k] (* area k))

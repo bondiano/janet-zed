@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: "<(a) b> c"
+---
+----- BEFORE ACTION
+(a) b c
+▔▔▔▔▔
+
+----- AFTER ACTION: Wrap with { }
+{(a) b} c

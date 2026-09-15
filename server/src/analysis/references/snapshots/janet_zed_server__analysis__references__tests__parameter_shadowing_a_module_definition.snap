@@ -1,0 +1,29 @@
+---
+source: server/src/analysis/references/tests.rs
+expression: "/ws/src/shapes.janet: * area"
+---
+----- SYMBOL
+-- /ws/src/shapes.janet
+(def pi 3)
+(defn area [shape] (* pi (shape :r)))
+(defn scale [area k] (* area k))
+                        ▔▔▔▔
+
+
+----- TARGET
+Local { file: "/ws/src/shapes.janet", binding: 1, name: "area" }
+
+----- REFERENCES
+-- /ws/src/shapes.janet
+(def pi 3)
+(defn area [shape] (* pi (shape :r)))
+(defn scale [area k] (* area k))
+             ▔▔▔▔       ▔▔▔▔
+
+
+----- DECLARATION
+-- /ws/src/shapes.janet
+(def pi 3)
+(defn area [shape] (* pi (shape :r)))
+(defn scale [area k] (* area k))
+             ▔▔▔▔

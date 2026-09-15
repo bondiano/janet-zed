@@ -1,0 +1,10 @@
+---
+source: server/src/editing/threading/tests.rs
+expression: (-> x (->> |ys (map f)) g)
+---
+----- BEFORE ACTION
+(-> x (->> ys (map f)) g)
+           ↑
+
+----- AFTER ACTION: Unthread
+(-> x (map f ys) g)

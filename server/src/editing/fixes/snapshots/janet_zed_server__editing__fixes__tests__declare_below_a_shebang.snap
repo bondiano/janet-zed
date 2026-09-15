@@ -1,0 +1,19 @@
+---
+source: server/src/editing/fixes/tests.rs
+expression: "#!/usr/bin/env janet\n(gre|et 1)\n"
+---
+----- BEFORE FIX
+#!/usr/bin/env janet
+(greet 1)
+    ↑
+
+
+----- AFTER FIX: Ignore `greet` on this line
+#!/usr/bin/env janet
+# janet-zed: ignore unknown-symbol greet
+(greet 1)
+
+----- AFTER FIX: Declare `greet` in this file
+#!/usr/bin/env janet
+# janet-zed: declare greet
+(greet 1)

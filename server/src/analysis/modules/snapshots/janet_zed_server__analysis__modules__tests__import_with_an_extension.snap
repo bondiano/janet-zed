@@ -1,0 +1,9 @@
+---
+source: server/src/analysis/modules/tests.rs
+expression: (import ./sub/e.janet)
+---
+----- SOURCE CODE
+(import ./sub/e.janet)
+
+----- IMPORTS
+./sub/e.janet as "e/"

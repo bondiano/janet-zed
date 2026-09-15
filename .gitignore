@@ -1,0 +1,7 @@
+/target
+/grammars
+*.wasm
+/fixtures/**/build
+/fixtures/**/jpm_tree
+*.snap.new
+*.pending-snap

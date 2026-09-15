@@ -1,0 +1,16 @@
+---
+source: server/src/analysis/symbols/tests.rs
+expression: "(defn area \"Area.\" [shape] 1)\n(defn- hidden [] 2)"
+---
+----- SOURCE CODE
+-- /ws/shapes.janet
+(defn area "Area." [shape] 1)
+(defn- hidden [] 2)
+
+----- HOVER
+```janet
+(area shape)
+```
+defn in `shapes.janet`
+
+Area.

@@ -1,0 +1,15 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- REFERENCES\\n{}\\n\",\nsession.cursor(\"shapes/area\", 8), locations.join(\"\\n\"))"
+---
+----- CURSOR
+       (map shapes/area)
+                    ↑
+
+----- REFERENCES
+src/report.janet 25:60-25:64
+src/report.janet 8:19-8:23
+src/shapes.janet 23:6-23:10
+test/shapes.janet 5:22-5:26
+test/shapes.janet 6:24-6:28
+test/shapes.janet 9:37-9:41

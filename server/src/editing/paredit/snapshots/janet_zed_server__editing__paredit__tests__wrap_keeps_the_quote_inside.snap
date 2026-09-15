@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: "(a '|b)"
+---
+----- BEFORE ACTION
+(a 'b)
+    ↑
+
+----- AFTER ACTION: Wrap with [ ]
+(a ['b])

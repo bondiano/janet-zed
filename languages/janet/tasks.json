@@ -1,0 +1,35 @@
+[
+  {
+    "label": "Janet: REPL",
+    "command": "janet",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true
+  },
+  {
+    "label": "Janet: attach to REPL kernel",
+    "command": "janet -e '(import spork/netrepl) (netrepl/client)'",
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "use_new_terminal": true
+  },
+  {
+    "label": "Janet: run $ZED_RELATIVE_FILE",
+    "command": "janet",
+    "args": ["$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-main"]
+  },
+  {
+    "label": "jpm test",
+    "command": "jpm",
+    "args": ["test"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "jpm build",
+    "command": "jpm",
+    "args": ["build"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  }
+]

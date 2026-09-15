@@ -1,0 +1,13 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- FORMATTED\\n{}\",\nedits[0][\"newText\"].as_str().unwrap())"
+---
+----- SOURCE CODE
+(defn f [x]
+(+ x
+1))
+
+----- FORMATTED
+(defn f [x]
+  (+ x
+     1))

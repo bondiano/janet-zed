@@ -1,0 +1,12 @@
+---
+source: server/src/janet/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- PROBLEMS\\n{}\\n\",\nshow_problems(&problems))"
+---
+----- SOURCE CODE
+# janet-zed: include ./helpers.janet
+# janet-zed: declare host/name
+(helper) host/name
+(json/encode 1)
+
+----- PROBLEMS
+4:1 unknown symbol json/encode

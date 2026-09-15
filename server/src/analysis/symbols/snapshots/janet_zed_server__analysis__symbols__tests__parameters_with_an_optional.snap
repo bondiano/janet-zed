@@ -1,0 +1,13 @@
+---
+source: server/src/analysis/symbols/tests.rs
+expression: (get ds key &opt dflt)
+---
+----- PARAMETERS
+(get ds key &opt dflt)
+     ▔▔ ▔▔▔      ▔▔▔▔
+
+----- ACTIVE PARAMETER
+argument 0: ds
+argument 1: key
+argument 2: dflt
+argument 3: none

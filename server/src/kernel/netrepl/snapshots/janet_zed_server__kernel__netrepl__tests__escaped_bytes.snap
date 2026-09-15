@@ -1,0 +1,13 @@
+---
+source: server/src/kernel/netrepl/tests.rs
+expression: "(true (\"\\\"\\xD0\\xB9\\\\\\\"\" \"\\e[32m\\0\" \"boom\"))"
+---
+----- REPLY
+(true ("\"\xD0\xB9\\\"" "\e[32m\0" "boom"))
+
+----- EVALUATION
+Evaluation {
+    value: "\"й\\\"",
+    output: "\u{1b}[32m\0",
+    errors: "boom",
+}

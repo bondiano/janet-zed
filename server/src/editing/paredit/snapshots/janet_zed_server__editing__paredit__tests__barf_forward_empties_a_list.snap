@@ -1,0 +1,10 @@
+---
+source: server/src/editing/paredit/tests.rs
+expression: (|a)
+---
+----- BEFORE ACTION
+(a)
+ ↑
+
+----- AFTER ACTION: Barf forward
+() a

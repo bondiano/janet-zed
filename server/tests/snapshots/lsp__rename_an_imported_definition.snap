@@ -1,0 +1,15 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- EDITS\\n{}\\n\",\nsession.cursor(\"shapes/area\", 8), edits.join(\"\\n\"))"
+---
+----- CURSOR
+       (map shapes/area)
+                    ↑
+
+----- EDITS
+src/report.janet 25:60-25:64 area-of
+src/report.janet 8:19-8:23 area-of
+src/shapes.janet 23:6-23:10 area-of
+test/shapes.janet 5:22-5:26 area-of
+test/shapes.janet 6:24-6:28 area-of
+test/shapes.janet 9:37-9:41 area-of

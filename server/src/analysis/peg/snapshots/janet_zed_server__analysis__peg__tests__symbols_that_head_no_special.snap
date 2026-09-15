@@ -1,0 +1,11 @@
+---
+source: server/src/analysis/peg/tests.rs
+assertion_line: 61
+expression: (peg/match ~(some any (frobnicate 1)) s)
+---
+----- SOURCE CODE
+(peg/match ~(some any (frobnicate 1)) s)
+
+----- PEG SPECIALS
+(peg/match ~(some any (frobnicate 1)) s)
+             ▔▔▔▔

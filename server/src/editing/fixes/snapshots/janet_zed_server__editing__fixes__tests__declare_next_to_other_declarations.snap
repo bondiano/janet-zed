@@ -1,0 +1,18 @@
+---
+source: server/src/editing/fixes/tests.rs
+expression: "# janet-zed: declare a\n(print a |b)\n"
+---
+----- BEFORE FIX
+# janet-zed: declare a
+(print a b)
+         ↑
+
+
+----- AFTER FIX: Ignore `b` on this line
+# janet-zed: declare a
+# janet-zed: ignore unknown-symbol b
+(print a b)
+
+----- AFTER FIX: Declare `b` in this file
+# janet-zed: declare a b
+(print a b)

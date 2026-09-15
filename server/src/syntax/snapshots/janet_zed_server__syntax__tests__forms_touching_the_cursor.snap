@@ -1,0 +1,13 @@
+---
+source: server/src/syntax/tests.rs
+expression: "(a '(b| c) # note\n d)"
+---
+----- SOURCE CODE
+(a '(b| c) # note
+ d)
+
+----- FORMS AT CURSOR
+par_tup_lit "(a '(b c) # note\n d)"
+quote_lit "'(b c)"
+par_tup_lit "(b c)"
+sym_lit "b"

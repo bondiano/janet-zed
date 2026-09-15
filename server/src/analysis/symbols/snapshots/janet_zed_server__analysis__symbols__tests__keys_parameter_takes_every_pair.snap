@@ -1,0 +1,16 @@
+---
+source: server/src/analysis/symbols/tests.rs
+assertion_line: 107
+expression: "(f a &keys {:b b}) (f 1 :b 2 :c 3)"
+---
+----- PARAMETERS
+(f a &keys {:b b})
+   ▔       ▔▔▔▔▔▔
+
+----- ACTIVE PARAMETER
+argument 0 (1): a
+argument 1 (:b): {:b b}
+argument 2 (2): {:b b}
+argument 3 (:c): {:b b}
+argument 4 (3): {:b b}
+argument 5: {:b b}

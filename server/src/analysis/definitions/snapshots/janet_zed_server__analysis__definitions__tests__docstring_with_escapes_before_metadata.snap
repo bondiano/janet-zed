@@ -1,0 +1,10 @@
+---
+source: server/src/analysis/definitions/tests.rs
+expression: "(defn- area \"Area of \\\"s\\\".\" :tag [shape & more] 1)"
+---
+----- SOURCE CODE
+(defn- area "Area of \"s\"." :tag [shape & more] 1)
+
+----- DEFINITIONS
+defn- area [shape & more] (private)
+  doc: "Area of \"s\"."

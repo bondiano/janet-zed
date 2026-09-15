@@ -1,0 +1,9 @@
+---
+source: server/src/analysis/definitions/tests.rs
+expression: (comment (var n 0))
+---
+----- SOURCE CODE
+(comment (var n 0))
+
+----- DEFINITIONS
+var n

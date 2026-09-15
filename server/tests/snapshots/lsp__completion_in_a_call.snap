@@ -1,0 +1,20 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- COMPLETIONS\\n{}\\n\",\nsession.cursor(\"(string/join lines\", 1), found.join(\"\\n\"))"
+---
+----- CURSOR
+    (string/join lines "\n")))
+     ↑
+
+----- COMPLETIONS
+items local
+lines local
+render (render items)
+shapes/area (shapes/area shape)
+shapes/circle (shapes/circle r)
+shapes/created var
+shapes/pi-ish def
+shapes/rect (shapes/rect w h)
+shapes/timed (shapes/timed & body)
+summary (summary items)
+total-area (total-area items)

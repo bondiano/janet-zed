@@ -1,0 +1,16 @@
+---
+source: server/src/editing/fixes/tests.rs
+expression: "(defn f [x]\n  (print x)\n  (+ x |y))\n"
+---
+----- BEFORE FIX
+(defn f [x]
+  (print x)
+  (+ x y))
+       ↑
+
+
+----- AFTER FIX: Define `y`
+(defn f [x]
+  (print x)
+  (def y nil)
+  (+ x y))

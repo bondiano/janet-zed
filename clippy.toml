@@ -1,0 +1,2 @@
+# `lsp_types::Uri` hashes and compares its string only; its interior cache does not affect keys.
+ignore-interior-mutability = ["lsp_types::Uri"]
