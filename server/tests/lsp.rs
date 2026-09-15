@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use janet_zed_server::kernel::netrepl::{Netrepl, Position};
 use lsp_server::{Connection, Message, Notification, Request, RequestId};
 use serde_json::{Value, json};
 use url::Url;
@@ -52,7 +53,7 @@ impl Session {
                 json!({
                     "capabilities": {},
                     "workspaceFolders": [{"uri": root_uri, "name": "project"}],
-                    "initializationOptions": {"janetPath": "janet"},
+                    "initializationOptions": {"janetPath": "janet", "replPort": repl_port()},
                 }),
             )
             .unwrap();
@@ -166,6 +167,12 @@ fn position(text: &str, needle: &str, delta: usize) -> Value {
     let offset = text.find(needle).unwrap() + delta;
     let line_start = text[..offset].rfind('\n').map_or(0, |index| index + 1);
     json!({"line": text[..offset].matches('\n').count(), "character": offset - line_start})
+}
+
+/// The REPL port sessions ask: not the kernel's, which a REPL of the developer's may hold. Below
+/// the ephemeral range, apart from the other tests' ports.
+fn repl_port() -> u16 {
+    40_000 + u16::try_from(std::process::id() % 9_000).unwrap()
 }
 
 fn uri(path: &Path) -> String {
@@ -583,6 +590,45 @@ fn formats_a_buffer_not_on_disk() {
     insta::assert_snapshot!(format!(
         "----- SOURCE CODE\n{source}\n----- FORMATTED\n{}",
         edits[0]["newText"].as_str().unwrap()
+    ));
+    session.finish();
+}
+
+#[test]
+fn hover_and_definition_from_a_running_repl() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut repl = runtime
+        .block_on(Netrepl::connect("janet", repl_port()))
+        .unwrap();
+    let mut session = Session::start();
+    // Sent as the REPL kernel sends code it finds in a file: from line 2 of `src/shapes.janet`.
+    let found_at = Position {
+        path: session.root.join("src/shapes.janet"),
+        line: 2,
+        column: 1,
+    };
+    let code = "(defn from-repl \"Only the REPL knows.\" [] 1)";
+    let evaluated = runtime.block_on(repl.eval(code, Some(&found_at))).unwrap();
+    assert_eq!(evaluated.errors, "");
+
+    let source = "(from-repl)\n";
+    let scratch = uri(&session.root.join("scratch.janet"));
+    session.open(&scratch, source);
+    let params = json!({
+        "textDocument": {"uri": scratch},
+        "position": position(source, "from-repl", 0),
+    });
+    let hover = session
+        .request("textDocument/hover", params.clone())
+        .unwrap();
+    let location = session.request("textDocument/definition", params).unwrap();
+    insta::assert_snapshot!(format!(
+        "----- REPL\n{code}\n\n----- SOURCE CODE\n{source}\n----- HOVER\n{}\n\n----- DEFINITION\n{}\n",
+        hover["contents"]["value"].as_str().unwrap(),
+        session.show_location(location["uri"].as_str().unwrap(), &location["range"])
     ));
     session.finish();
 }

@@ -27,9 +27,10 @@ use crate::analysis::modules;
 use crate::analysis::references::{self, Occurrence, Target};
 use crate::analysis::stdlib::SourceLocation;
 use crate::analysis::symbols::{self, CandidateKind, Origin, Parameters};
-use crate::analysis::{SourceFile, uri_of};
+use crate::analysis::{SourceFile, canonical, uri_of};
 use crate::editing;
 use crate::janet;
+use crate::kernel::lookup;
 use crate::syntax::{self, Document};
 
 pub fn definition(
@@ -43,7 +44,9 @@ pub fn definition(
         return Ok(Some(GotoDefinitionResponse::Scalar(location)));
     }
     let Some((_, target)) = resolve(state, &position)? else {
-        return Ok(native_location(state, file, offset).map(GotoDefinitionResponse::Scalar));
+        let location =
+            native_location(state, file, offset).or_else(|| repl_location(state, file, offset));
+        return Ok(location.map(GotoDefinitionResponse::Scalar));
     };
     let location = match &target {
         Target::Local { .. } | Target::Module { .. } => {
@@ -62,9 +65,43 @@ pub fn definition(
             .project(name)
             .and_then(|binding| binding.location.as_ref())
             .and_then(janet_location),
-        Target::Form { .. } => None,
+        Target::Form { .. } => repl_location(state, file, offset),
     };
     Ok(location.map(GotoDefinitionResponse::Scalar))
+}
+
+/// Where a running REPL says the symbol at `offset` was defined.
+fn repl_location(state: &State, file: &SourceFile, offset: usize) -> Option<Location> {
+    let (path, line, column) = repl_binding(state, file, offset)?.location?;
+    let point = Position::new(
+        u32::try_from(line.saturating_sub(1)).ok()?,
+        u32::try_from(column.saturating_sub(1)).ok()?,
+    );
+    Some(Location::new(
+        uri_of(&canonical(&path))?,
+        Range::new(point, point),
+    ))
+}
+
+/// What a running REPL binds the symbol at `offset` to: as written, in the file's module or the
+/// REPL's own env, else as a name of each module the file imports.
+fn repl_binding(state: &State, file: &SourceFile, offset: usize) -> Option<lookup::Binding> {
+    let symbol = syntax::symbol_at(file.document.root(), offset)?;
+    let text = file.document.text_of(symbol);
+    let imported = state
+        .workspace
+        .imports_of(&file.path)
+        .iter()
+        .filter_map(|edge| {
+            let name = text
+                .strip_prefix(edge.prefix.as_str())
+                .filter(|name| !name.is_empty())?;
+            Some((edge.path.clone(), name.to_string()))
+        });
+    let candidates: Vec<_> = std::iter::once((file.path.clone(), text.to_string()))
+        .chain(imported)
+        .collect();
+    state.repl_lookup(&candidates)
 }
 
 /// A place in the Janet sources.
@@ -120,15 +157,53 @@ fn import_location(state: &State, file: &SourceFile, offset: usize) -> Option<Lo
 }
 
 pub fn hover(state: &State, params: HoverParams) -> Result<Option<Hover>> {
-    let Some((occurrence, target)) = resolve(state, &params.text_document_position_params)? else {
-        return Ok(None);
-    };
-    Ok(
-        symbols::info(&state.workspace, &state.stdlib, &target).map(|info| Hover {
-            contents: HoverContents::Markup(markdown(info.markdown())),
-            range: Some(range_of(&occurrence)),
-        }),
+    let position = params.text_document_position_params;
+    let file = state.file(&position.text_document.uri)?;
+    let offset = file.document.offset(position.position);
+    let resolved = resolve(state, &position)?;
+    let info = resolved
+        .as_ref()
+        .and_then(|(_, target)| symbols::info(&state.workspace, &state.stdlib, target));
+    // Locals and core bindings are not the REPL's to tell.
+    let repl = matches!(
+        resolved,
+        None | Some((_, Target::Module { .. } | Target::Form { .. }))
     )
+    .then(|| repl_binding(state, file, offset))
+    .flatten();
+    let value = match (&info, repl) {
+        (None, None) => return Ok(None),
+        (Some(info), None) => info.markdown(),
+        (Some(info), Some(binding)) => {
+            // The REPL's doc only when the source has none.
+            let documented = !matches!(info, symbols::Info::Module { definition, .. } if definition.doc.is_none());
+            let doc = binding.doc.filter(|_| !documented);
+            let doc = doc.map_or_else(String::new, |doc| format!("\n\n{doc}"));
+            format!(
+                "{}\n\n---\n{} in the REPL{doc}",
+                info.markdown(),
+                binding.kind
+            )
+        }
+        (None, Some(binding)) => {
+            let symbol = syntax::symbol_at(file.document.root(), offset)
+                .map(|symbol| file.document.text_of(symbol))
+                .unwrap_or_default();
+            let doc = binding
+                .doc
+                .map_or_else(String::new, |doc| format!("\n\n{doc}"));
+            format!("```janet\n{symbol}\n```\n{} in the REPL{doc}", binding.kind)
+        }
+    };
+    let range = match &resolved {
+        Some((occurrence, _)) => Some(range_of(occurrence)),
+        None => syntax::symbol_at(file.document.root(), offset)
+            .map(|symbol| file.document.range(symbol.byte_range())),
+    };
+    Ok(Some(Hover {
+        contents: HoverContents::Markup(markdown(value)),
+        range,
+    }))
 }
 
 pub fn completion(state: &State, params: CompletionParams) -> Result<Option<CompletionResponse>> {

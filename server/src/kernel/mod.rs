@@ -1,6 +1,7 @@
 //! `janet-zed-server kernel <connection_file> <janet>`: a Jupyter kernel for Zed's REPL.
 //! Code runs in a shared netrepl process, so terminal clients (`netrepl/client`) see the same state.
 
+pub mod lookup;
 pub mod netrepl;
 mod snippet;
 

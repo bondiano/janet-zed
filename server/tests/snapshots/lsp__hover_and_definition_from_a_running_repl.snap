@@ -1,0 +1,22 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- REPL\\n{code}\\n\\n----- SOURCE CODE\\n{source}\\n----- HOVER\\n{}\\n\\n----- DEFINITION\\n{}\\n\",\nhover[\"contents\"][\"value\"].as_str().unwrap(),\nsession.show_location(location[\"uri\"].as_str().unwrap(), &location[\"range\"]))"
+---
+----- REPL
+(defn from-repl "Only the REPL knows." [] 1)
+
+----- SOURCE CODE
+(from-repl)
+
+----- HOVER
+```janet
+from-repl
+```
+function in the REPL
+
+(from-repl)
+
+Only the REPL knows.
+
+----- DEFINITION
+src/shapes.janet 1:0-1:0

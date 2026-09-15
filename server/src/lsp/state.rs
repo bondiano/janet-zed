@@ -1,5 +1,6 @@
 //! Server state: the workspace index, kept in step with open buffers and the file system.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
@@ -10,6 +11,7 @@ use super::diagnostics::Job;
 use crate::analysis::stdlib::Stdlib;
 use crate::analysis::workspace::Workspace;
 use crate::analysis::{SourceFile, canonical, config, path_of, uri_of};
+use crate::kernel::lookup::{self, Repl};
 use crate::syntax::Document;
 
 struct Buffer {
@@ -26,16 +28,21 @@ pub struct State {
     open: HashMap<Uri, Buffer>,
     /// The diagnostics last published for each open buffer.
     pub diagnostics: HashMap<Uri, Vec<Diagnostic>>,
+    repl_port: u16,
+    /// Requests take `&State`; the connection is kept between them and dropped on an error.
+    repl: RefCell<Option<Repl>>,
 }
 
 impl State {
-    pub fn new(workspace: Workspace, stdlib: Stdlib, janet: String) -> Self {
+    pub fn new(workspace: Workspace, stdlib: Stdlib, janet: String, repl_port: u16) -> Self {
         let mut state = Self {
             workspace,
             stdlib,
             janet,
             open: HashMap::new(),
             diagnostics: HashMap::new(),
+            repl_port,
+            repl: RefCell::new(None),
         };
         state.rescan();
         state
@@ -68,6 +75,17 @@ impl State {
             self.workspace.remove(&buffer.path);
             self.rescan();
         }
+    }
+
+    /// The first of `candidates` a running REPL binds; `None` without one.
+    pub fn repl_lookup(&self, candidates: &[(PathBuf, String)]) -> Option<lookup::Binding> {
+        let mut repl = self.repl.borrow_mut();
+        let found = match &mut *repl {
+            Some(connection) => connection.lookup(candidates),
+            None => Repl::attach(self.repl_port)
+                .and_then(|connection| repl.insert(connection).lookup(candidates)),
+        };
+        found.inspect_err(|_| *repl = None).ok().flatten()
     }
 
     pub fn version(&self, uri: &Uri) -> Option<i32> {

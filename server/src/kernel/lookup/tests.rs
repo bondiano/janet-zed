@@ -1,0 +1,70 @@
+use super::*;
+use crate::analysis::canonical;
+use crate::kernel::netrepl::Netrepl;
+
+#[test]
+fn looks_up_loaded_modules_then_the_repl() {
+    // Below the ephemeral range, apart from the dap tests' ports.
+    let port = 30_000 + u16::try_from(std::process::id() % 10_000).unwrap();
+    let dir = std::env::temp_dir().join("janet-zed-server-lookup-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let module = dir.join("made.janet");
+    std::fs::write(
+        &module,
+        "(defmacro defthing [name] ~(def ,name \"Made.\" @{}))\n(defthing thing)\n",
+    )
+    .unwrap();
+    let module = canonical(&module);
+    let unloaded = dir.join("unloaded.janet");
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut shared = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    // Relative to the REPL's directory, as `module/cache` then keys it.
+    let code = format!(
+        "(os/cd {:?})\n(import ./made)\n(def answer 42)",
+        dir.display().to_string()
+    );
+    let loaded = runtime.block_on(shared.eval(&code, None)).unwrap();
+    assert_eq!(loaded.errors, "");
+
+    let mut repl = Repl::attach(port).unwrap();
+    let mut lookup = |candidates: &[(&Path, &str)]| {
+        let candidates: Vec<_> = candidates
+            .iter()
+            .map(|(path, name)| (path.to_path_buf(), (*name).to_string()))
+            .collect();
+        repl.lookup(&candidates).unwrap().map(|binding| Binding {
+            location: binding
+                .location
+                .map(|(path, line, column)| (canonical(&path), line, column)),
+            ..binding
+        })
+    };
+
+    assert_eq!(
+        lookup(&[(&unloaded, "nope"), (&module, "thing")]),
+        Some(Binding {
+            location: Some((module.clone(), 2, 1)),
+            doc: Some("Made.".to_string()),
+            kind: "table".to_string(),
+        })
+    );
+    assert_eq!(lookup(&[(&module, "defthing")]).unwrap().kind, "macro");
+    assert_eq!(
+        lookup(&[(&unloaded, "answer")]),
+        Some(Binding {
+            location: None,
+            doc: None,
+            kind: "number".to_string(),
+        }),
+        "a module that is not loaded falls back to the REPL's own names"
+    );
+    assert_eq!(
+        lookup(&[(&module, "answer")]),
+        None,
+        "a loaded module does not"
+    );
+}

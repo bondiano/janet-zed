@@ -43,6 +43,8 @@ struct Options {
     janet_path: Option<String>,
     /// A Janet checkout matching the installed `janet`; enables stdlib go-to-definition.
     janet_source: Option<PathBuf>,
+    /// The netrepl port hover and go-to-definition ask, the REPL kernel's by default.
+    repl_port: Option<u16>,
 }
 
 /// Serves LSP over stdio.
@@ -110,7 +112,8 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let workspace = Workspace::new(roots, syspath);
     let (checker, results) = Checker::spawn(janet.to_string());
     let started = Instant::now();
-    let state = State::new(workspace, stdlib, janet.to_string());
+    let repl_port = options.repl_port.unwrap_or(kernel::netrepl::PORT);
+    let state = State::new(workspace, stdlib, janet.to_string(), repl_port);
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),

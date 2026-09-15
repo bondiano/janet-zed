@@ -150,7 +150,7 @@ fn parse_reply(reply: &str) -> Evaluation {
 }
 
 /// Decodes every string literal in a JDN text, in order.
-fn jdn_strings(jdn: &str) -> Vec<String> {
+pub(super) fn jdn_strings(jdn: &str) -> Vec<String> {
     let mut bytes = jdn.bytes();
     let mut strings = Vec::new();
     while bytes.any(|b| b == b'"') {
