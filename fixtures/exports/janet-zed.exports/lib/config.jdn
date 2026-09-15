@@ -1,0 +1,2 @@
+{:lint-as {lib/defthing def
+           lib/shared def}}

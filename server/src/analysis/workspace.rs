@@ -59,9 +59,26 @@ impl Workspace {
         &self.config
     }
 
-    /// Reads the config at the roots again.
+    /// Reads the configs again: those libraries export from `jpm_tree/lib`, the syspath and the
+    /// workspace projects (over installed copies), then the workspace's own.
+    // ponytail: exports outside the workspace are not watched; a newly installed one needs a
+    // rescan (a file created or deleted) or a server restart.
     pub fn configure(&mut self) {
-        self.set_config(Config::read(&self.search.roots));
+        let projects: BTreeSet<&Path> = self
+            .files
+            .keys()
+            .filter(|path| is_project(path))
+            .filter_map(|path| path.parent())
+            .collect();
+        let libraries: Vec<PathBuf> = self
+            .search
+            .roots
+            .iter()
+            .map(|root| root.join("jpm_tree/lib"))
+            .chain(self.search.syspath.clone())
+            .chain(projects.into_iter().map(Path::to_path_buf))
+            .collect();
+        self.set_config(Config::read(&libraries, &self.search.roots));
     }
 
     /// Definitions of every file are read again under a changed `config`.

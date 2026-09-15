@@ -1,5 +1,6 @@
 use super::*;
 use crate::analysis::modules::import_specs;
+use std::path::PathBuf;
 
 const CONFIG: &str = "{:lint-as {void/db/defentity def\n\
                       defthing defn\n\
@@ -35,4 +36,12 @@ fn head_is_named_through_the_imports() {
     assert_eq!(definer(imports, "defthing"), Some("defn"));
     assert_eq!(definer(imports, "defentity"), None);
     assert_eq!(definer("(import void/db)", "db/defentity"), Some("def"));
+}
+
+#[test]
+fn workspace_config_wins_over_exports() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/exports");
+    let config = Config::read(std::slice::from_ref(&dir), std::slice::from_ref(&dir));
+    assert_eq!(config.lint_as.get("lib/defthing"), Some(&"def"));
+    assert_eq!(config.lint_as.get("lib/shared"), Some(&"defn"));
 }

@@ -150,7 +150,6 @@ impl State {
     /// Brings the index in line with the config and the `.janet` files under the roots (honoring
     /// .gitignore): reads new files, drops deleted ones, leaves open buffers and known files alone.
     fn rescan(&mut self) {
-        self.workspace.configure();
         let found: BTreeMap<PathBuf, PathBuf> = self
             .workspace
             .roots()
@@ -186,6 +185,8 @@ impl State {
                 self.workspace.insert(file);
             }
         }
+        // After the files: exports are looked up in the projects among them.
+        self.workspace.configure();
         self.workspace.refresh();
     }
 }

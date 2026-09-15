@@ -4,6 +4,9 @@
 //! ```janet
 //! {:lint-as {void/db/defentity def}}
 //! ```
+//!
+//! A library ships its own as `janet-zed.exports/<lib>/config.jdn`, installed with
+//! `(declare-source :source ["janet-zed.exports"])`.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -15,6 +18,7 @@ use super::modules::ImportSpec;
 use crate::syntax::{self, Document};
 
 const FILE: &str = ".janet-zed/config.jdn";
+const EXPORTS: &str = "janet-zed.exports";
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -23,11 +27,23 @@ pub struct Config {
 }
 
 impl Config {
-    /// The configs at the workspace roots, merged.
-    pub fn read(roots: &[PathBuf]) -> Self {
-        roots
+    /// The configs libraries export from the directories in `libraries`, a later one winning, then
+    /// those at the workspace `roots`, which win over all of them.
+    pub fn read(libraries: &[PathBuf], roots: &[PathBuf]) -> Self {
+        let exported = libraries
             .iter()
-            .filter_map(|root| std::fs::read_to_string(root.join(FILE)).ok())
+            .filter_map(|dir| std::fs::read_dir(dir.join(EXPORTS)).ok())
+            .flat_map(|entries| {
+                let mut configs: Vec<_> = entries
+                    .flatten()
+                    .map(|entry| entry.path().join("config.jdn"))
+                    .collect();
+                configs.sort();
+                configs
+            });
+        exported
+            .chain(roots.iter().map(|root| root.join(FILE)))
+            .filter_map(|path| std::fs::read_to_string(path).ok())
             .map(|text| Self::parse(&text))
             .fold(Self::default(), |mut config, found| {
                 config.lint_as.extend(found.lint_as);
