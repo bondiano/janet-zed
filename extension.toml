@@ -1,6 +1,6 @@
 id = "janet-plus"
 name = "Janet+"
-version = "0.0.1"
+version = "0.1.0"
 schema_version = 1
 authors = ["bondiano <batbondik0@gmail.com>"]
 description = "Janet support: LSP, REPL, debugger and structural editing"
