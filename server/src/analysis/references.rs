@@ -2,7 +2,7 @@
 //! followed through the module graph into every file that imports it.
 
 use std::ops::Range;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::workspace::{self, Workspace};
 use super::{SourceFile, peg};
@@ -94,14 +94,14 @@ pub fn resolve<'w>(
     }
     let imported = workspace.imports_of(&file.path).iter().find_map(|import| {
         let name = text.strip_prefix(import.prefix.as_str())?;
-        let module = workspace.file(&import.path)?;
-        module.definitions.contains_key(name).then(|| {
-            let target = Target::Module {
-                file: import.path.clone(),
-                name: name.to_string(),
-            };
-            (at(name), target)
-        })
+        if !names_allow(import.names.as_deref(), name) {
+            return None;
+        }
+        let target = Target::Module {
+            file: defining(workspace, &import.path, name, MAX_REEXPORTS)?,
+            name: name.to_string(),
+        };
+        Some((at(name), target))
     });
     if imported.is_some() {
         return imported;
@@ -128,14 +128,10 @@ pub fn resolve<'w>(
 pub fn occurrences<'w>(workspace: &'w Workspace, target: &Target) -> Vec<Occurrence<'w>> {
     match target {
         Target::Module { file, name } => {
-            let module = workspace.file(file).map(|source| (source, ""));
-            let importers = workspace
-                .importers_of(file)
-                .iter()
-                .filter_map(|edge| Some((workspace.file(&edge.path)?, edge.prefix.as_str())));
+            let module = workspace.file(file).map(|source| (source, String::new()));
             module
                 .into_iter()
-                .chain(importers)
+                .chain(importers(workspace, file, name, MAX_REEXPORTS))
                 .flat_map(|(source, prefix)| {
                     named(
                         source,
@@ -199,6 +195,54 @@ pub fn declaration<'w>(workspace: &'w Workspace, target: &Target) -> Option<Occu
             None
         }
     }
+}
+
+/// How many re-exports a name is followed through, so that a cycle of them ends.
+const MAX_REEXPORTS: usize = 8;
+
+/// Whether an edge limited to `names` passes `name` on.
+fn names_allow(names: Option<&[String]>, name: &str) -> bool {
+    names.is_none_or(|names| names.iter().any(|allowed| allowed == name))
+}
+
+/// The file defining what `module` exports as `name`: `module` itself, or the file it re-exports
+/// the name from.
+fn defining(workspace: &Workspace, module: &Path, name: &str, hops: usize) -> Option<PathBuf> {
+    if workspace.file(module)?.definitions.contains_key(name) {
+        return Some(module.to_path_buf());
+    }
+    workspace
+        .imports_of(module)
+        .iter()
+        .filter(|edge| hops > 0 && edge.names.is_some() && names_allow(edge.names.as_deref(), name))
+        .find_map(|edge| defining(workspace, &edge.path, name, hops - 1))
+}
+
+/// The files that see `module`'s `name`, with the prefix each writes it under: its importers, and
+/// the importers of files that re-export it.
+fn importers<'w>(
+    workspace: &'w Workspace,
+    module: &Path,
+    name: &str,
+    hops: usize,
+) -> Vec<(&'w SourceFile, String)> {
+    workspace
+        .importers_of(module)
+        .iter()
+        .filter(|edge| names_allow(edge.names.as_deref(), name))
+        .flat_map(|edge| {
+            let further = if edge.names.is_some() && hops > 0 {
+                importers(workspace, &edge.path, name, hops - 1)
+            } else {
+                Vec::new()
+            };
+            workspace
+                .file(&edge.path)
+                .map(|source| (source, edge.prefix.clone()))
+                .into_iter()
+                .chain(further)
+        })
+        .collect()
 }
 
 /// Symbols spelled `text` in `source` within `within` that are not locals, narrowed to their last

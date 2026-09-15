@@ -201,6 +201,7 @@ pub fn completions(
                 .definitions
                 .iter()
                 .filter(|(_, definition)| edge.included || !definition.private)
+                .filter(|(name, _)| edge.names.as_ref().is_none_or(|names| names.contains(name)))
                 .map(move |(name, definition)| {
                     let label = format!("{}{name}", edge.prefix);
                     module_candidate(&label, &module.path, name, definition)

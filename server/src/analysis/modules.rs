@@ -20,6 +20,9 @@ pub struct ImportSpec {
     pub prefix: String,
     /// From `# janet-zed: include`: private names are visible too.
     pub included: bool,
+    /// Only these names, which the file binds as its own and so re-exports:
+    /// `(re-export "./x" ['a 'b])`.
+    pub names: Option<Vec<String>>,
 }
 
 /// A module a workspace project provides: `(declare-source :prefix "p" :source ["src/x.janet"])`
@@ -113,12 +116,14 @@ pub fn directive<'t>(text: &'t str, name: &str) -> impl Iterator<Item = &'t str>
         .flat_map(str::split_whitespace)
 }
 
-/// Top-level `import` and `use` forms, unresolved, then `# janet-zed: include` files.
+/// Top-level `import` and `use` forms and re-export calls, unresolved, then
+/// `# janet-zed: include` files.
 pub fn import_specs(doc: &Document) -> Vec<ImportSpec> {
     let included = directive(&doc.text, "include").map(|spec| ImportSpec {
         spec: spec.to_string(),
         prefix: String::new(),
         included: true,
+        names: None,
     });
     syntax::forms(doc.root())
         .into_iter()
@@ -132,6 +137,7 @@ pub fn import_specs(doc: &Document) -> Vec<ImportSpec> {
                     spec: spec.to_string(),
                     prefix: String::new(),
                     included: false,
+                    names: None,
                 })
                 .collect(),
             ("import", [spec, options @ ..]) => literal(doc, *spec)
@@ -140,6 +146,21 @@ pub fn import_specs(doc: &Document) -> Vec<ImportSpec> {
                         spec: spec.to_string(),
                         prefix: import_prefix(doc, spec, options),
                         included: false,
+                        names: None,
+                    }]
+                })
+                .unwrap_or_default(),
+            // A helper binding another module's names in this one at load time, which only
+            // its arguments show: `(re-export "./x" ['a 'b])`.
+            // ponytail: a guess from the call's shape; the edge only exists when the module does.
+            (_, [spec, names]) if spec.kind() == syntax::STRING => literal(doc, *spec)
+                .zip(quoted_names(doc, *names))
+                .map(|(spec, names)| {
+                    vec![ImportSpec {
+                        spec: spec.to_string(),
+                        prefix: String::new(),
+                        included: false,
+                        names: Some(names),
                     }]
                 })
                 .unwrap_or_default(),
@@ -199,17 +220,33 @@ pub fn natives(doc: &Document, project_dir: &Path, spec: &str) -> Vec<PathBuf> {
         .collect()
 }
 
-/// Where C `source` defines the function `name`: the start of its docstring, which by convention
-/// opens with the signature, `"(json/encode x &opt tab)`.
-pub fn c_function(source: &str, name: &str) -> Option<(u32, u32)> {
+/// Native modules `(declare-native :name "spec" …)` in a `project.janet` living in `project_dir`
+/// builds, at the `build/<spec>` `jpm build` leaves them, without the extension: Janet adds its
+/// own, `.so` or `.dll` on Windows.
+pub fn native_modules(doc: &Document, project_dir: &Path) -> Vec<Package> {
+    syntax::forms(doc.root())
+        .into_iter()
+        .filter_map(|form| call(doc, form))
+        .filter(|(head, _)| *head == "declare-native")
+        .filter_map(|(_, args)| option(doc, &args, ":name").and_then(|node| literal(doc, node)))
+        .map(|name| Package {
+            module: name.to_string(),
+            path: project_dir.join("build").join(name),
+        })
+        .collect()
+}
+
+/// Where C `source` defines the function whose name as its signature writes it, `json/encode`,
+/// is `named`: the start of its docstring, which by convention opens with the signature,
+/// `"(json/encode x &opt tab)`.
+pub fn c_function(source: &str, named: impl Fn(&str) -> bool) -> Option<(u32, u32)> {
     source.lines().enumerate().find_map(|(line, text)| {
         let column = text.find("\"(")?;
         let signature = &text[column + 2..];
         let called = signature
-            .split(|c: char| c.is_whitespace() || matches!(c, ')' | '"'))
+            .split(|c: char| c.is_whitespace() || matches!(c, ')' | '"' | '\\'))
             .next()?;
-        let unqualified = called.rsplit('/').next()?;
-        (unqualified == name).then(|| {
+        named(called).then(|| {
             (
                 u32::try_from(line).unwrap_or(u32::MAX),
                 u32::try_from(column).unwrap_or(u32::MAX),
@@ -272,6 +309,29 @@ fn sources<'d>(doc: &'d Document, args: &[Node<'d>]) -> Vec<&'d str> {
         .into_iter()
         .filter_map(|node| literal(doc, node))
         .collect()
+}
+
+/// The symbols of `['a 'b]` or `'[a b]`: a collection of quoted symbols only.
+fn quoted_names(doc: &Document, node: Node) -> Option<Vec<String>> {
+    fn quoted(node: Node<'_>) -> Option<Node<'_>> {
+        (node.kind() == "quote_lit")
+            .then(|| syntax::forms(node).into_iter().next())
+            .flatten()
+    }
+    let items = match quoted(node) {
+        Some(collection) if syntax::is_collection(collection) => syntax::forms(collection),
+        None if syntax::is_collection(node) => syntax::forms(node)
+            .into_iter()
+            .map(quoted)
+            .collect::<Option<Vec<_>>>()?,
+        _ => return None,
+    };
+    let names: Vec<String> = items
+        .iter()
+        .filter(|item| item.kind() == syntax::SYMBOL)
+        .map(|item| doc.text_of(*item).to_string())
+        .collect();
+    (!names.is_empty() && names.len() == items.len()).then_some(names)
 }
 
 fn literal<'d>(doc: &'d Document, node: Node) -> Option<&'d str> {

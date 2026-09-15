@@ -14,6 +14,11 @@ expression: "/ws/src/shapes.janet: defn area"
 Module { file: "/ws/src/shapes.janet", name: "area" }
 
 ----- REFERENCES
+-- /ws/src/facade.janet
+(defn- re-export [path names] nil)
+(re-export "./shapes" ['area])
+                        ▔▔▔▔
+
 -- /ws/src/report.janet
 (import ./shapes)
 (defn total [xs] (map shapes/area xs))
@@ -25,6 +30,11 @@ Module { file: "/ws/src/shapes.janet", name: "area" }
 (defn area [shape] (* pi (shape :r)))
       ▔▔▔▔
 (defn scale [area k] (* area k))
+
+-- /ws/src/user.janet
+(import ./facade)
+(facade/area {:r 1})
+        ▔▔▔▔
 
 -- /ws/test/alias.janet
 (import /src/shapes :as s)

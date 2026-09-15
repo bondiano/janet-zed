@@ -54,6 +54,8 @@ fn job(uri: &str, version: i32) -> Job {
         path: PathBuf::from("/ws/a.janet"),
         text: String::new(),
         cwd: PathBuf::from("/ws"),
+        packages: Vec::new(),
+        natives: Vec::new(),
     }
 }
 

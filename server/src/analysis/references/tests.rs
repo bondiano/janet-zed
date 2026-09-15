@@ -5,7 +5,15 @@ use std::path::Path;
 use super::*;
 use crate::test_support::mark;
 
-const FILES: [(&str, &str); 5] = [
+const FILES: [(&str, &str); 7] = [
+    (
+        "/ws/src/facade.janet",
+        "(defn- re-export [path names] nil)\n(re-export \"./shapes\" ['area])\n",
+    ),
+    (
+        "/ws/src/user.janet",
+        "(import ./facade)\n(facade/area {:r 1})\n",
+    ),
     (
         "/ws/project.janet",
         "(declare-project :name \"fixture\")\n\
@@ -108,6 +116,11 @@ fn module_definition_through_a_declared_package() {
 fn module_definition_at_its_declaration() {
     // The parameter shadowing it in `scale` is left out.
     assert_references!("/ws/src/shapes.janet", "defn area");
+}
+
+#[test]
+fn module_definition_through_a_re_export() {
+    assert_references!("/ws/src/user.janet", "facade/area");
 }
 
 #[test]

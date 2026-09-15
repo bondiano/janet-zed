@@ -1,18 +1,24 @@
-# Checks the source on stdin as the file `check/file` (defined by the caller). Like core
-# `flycheck`, every form is parsed and compiled and macros are expanded, but only forms known
-# to be safe run: definitions without side effects, imports, and anything with `:flycheck`
-# metadata. Prints the problems found in this file as one JSON array.
+# A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :declared
+# :packages :natives}`; each gets one line on stdout, `check/marker` and then the problems found
+# in `:file` as a JSON array, or `error` and the message as a JSON string. Like core `flycheck`,
+# every form of the file is parsed and compiled and macros are expanded, but only forms known to
+# be safe run: definitions without side effects, imports, and anything with `:flycheck` metadata.
 # janet-zed: include ./json.janet ./project.janet
-# janet-zed: declare script/root-env check/file check/vocabulary check/includes check/declared
+# janet-zed: declare script/root-env check/vocabulary
 
+# Checked code and imported modules may write to stdout too.
+(def- check/marker "\x01janet-zed ")
+(var- check/file nil)
 (def- check/problems @[])
 
 (defn- check/report [severity message line col]
   (array/push check/problems @{:severity severity :message message :line line :col col}))
 
-# `no-side-effects` and `is-safe-def` from boot.janet, where they are private.
+# `no-side-effects` and `is-safe-def` from boot.janet, where they are private. Unlike core,
+# quoted data such as `{'GET :get}` counts as pure.
 (defn- check/pure? [src]
   (cond
+    (and (tuple? src) (= :parens (tuple/type src)) (= 'quote (first src))) true
     (tuple? src) (if (= (tuple/type src) :brackets) (all check/pure? src))
     (array? src) (all check/pure? src)
     (dictionary? src) (and (all check/pure? (keys src)) (all check/pure? (values src)))
@@ -24,14 +30,21 @@
     (if (function? flycheck) (flycheck thunk source env where) (thunk))
     (if (check/pure? (last source)) (thunk))))
 
-(var- check/evaluator nil)
-
-(defn- check/use [thunk source env where]
-  (each module (drop 1 source)
-    (import* (string module) :prefix "" :evaluator check/evaluator)))
-
-(def- check/specials @{'def check/safe-def 'var check/safe-def 'use check/use})
 (def- check/importers {'import true 'import* true 'use true 'require true 'dofile true})
+# Unlike core `flycheck`, imported modules load as Janet loads them, fully run: names a module
+# binds at run time (a re-export loop, a table a call builds) exist for its importers. Only the
+# checked file itself follows the flycheck rules.
+# `import` and `use` name their module literally; the functions load only a path the form spells
+# out, not whatever a skipped definition left in a variable.
+(defn- check/literal-import [thunk source &]
+  (when (string? (get source 1)) (thunk)))
+(def- check/specials
+  (merge check/importers
+         {'import* check/literal-import 'require check/literal-import 'dofile check/literal-import
+          # Core runs a top-level `assert` while flychecking, but its result is never reported,
+          # and a test's assertions have side effects: written snapshots, started servers.
+          'assert false}
+         (tabseq [name :in '[def var def- var- defglobal varglobal]] name check/safe-def)))
 (def- check/definers
   (tabseq [name :in '[def def- var var- defn defn- defmacro defmacro- varfn defdyn
                       defglobal varglobal]]
@@ -48,73 +61,185 @@
              (symbol? (get check/form 1)))
     (put env (check/form 1) @{:value nil})))
 
-(set check/evaluator
-     (fn [thunk source env where]
-       (when (and (tuple? source) (= (tuple/type source) :parens))
-         (def head (source 0))
-         (def flycheck (get check/specials head (get (get env head {}) :flycheck)))
-         (cond
-           (function? flycheck) (flycheck thunk source env where)
-           flycheck (thunk)))))
+(defn- check/evaluator [thunk source env where]
+  (when (and (tuple? source) (= (tuple/type source) :parens))
+    (def head (source 0))
+    (def flycheck (get check/specials head (get (get env head {}) :flycheck)))
+    (cond
+      (function? flycheck) (flycheck thunk source env where)
+      flycheck (thunk))))
 
-(def- check/env (make-env script/root-env))
-(put check/env :flychecking true)
-# Output from checked code (macros, safe definitions, imports) must not corrupt the result.
-(put check/env :out @"")
-(put check/env :err @"")
-(put check/env *module-make-env* (fn [&] (make-env check/env)))
+# What imported modules load into. Their output must not corrupt the replies.
+(def- check/base (make-env script/root-env))
+(put check/base :flychecking true)
+(put check/base :out @"")
+(put check/base :err @"")
+(put check/base *module-make-env* (fn [&] (make-env check/base)))
 
-# `# janet-zed: declare` names get stand-ins; `# janet-zed: include` files load into this env,
-# as when the host concatenates them. A broken include is not this file's problem.
-(each name check/declared
-  (put check/env (symbol name) @{:value nil}))
-(each path check/includes
-  (protect (dofile path :env check/env :evaluator check/evaluator)))
-(put check/env :current-file check/file)
+# -- where modules are found -----------------------------------------------------------------
+
+# From the request: `[module path]` pairs for the workspace's `declare-source` modules (`path` is
+# a `.janet` file or a directory of modules) and its `declare-native` ones (`path` without the
+# extension); and the project's `jpm_tree/lib`, when it has one.
+(var- check/packages [])
+(var- check/natives [])
+(var- check/tree nil)
+
+# `.so`, or `.dll` on Windows.
+(def- check/native-extension (string (module/expand-path "" ":native:")))
+
+(defn- check/existing [& files]
+  (find |(= :file (os/stat $ :mode)) files))
+
+# Workspace sources come ahead of installed copies: a monorepo package imports its siblings.
+(defn- check/package-file [spec]
+  (some (fn [[module path]]
+          (cond
+            (= spec module) (check/existing path (string path "/init.janet"))
+            (string/has-prefix? (string module "/") spec)
+            (let [base (string path (string/slice spec (length module)))]
+              (check/existing (string base ".janet") (string base "/init.janet")))))
+        check/packages))
+
+(defn- check/native-file [spec]
+  (some (fn [[module path]]
+          (and (= spec module) (check/existing (string path check/native-extension))))
+        check/natives))
 
 # Dependencies installed with `jpm -l`.
-(when (os/stat "jpm_tree/lib")
-  (module/add-syspath "jpm_tree/lib"))
+(defn- check/in-tree [& suffixes]
+  (fn [spec]
+    (when (and check/tree (not (some |(string/has-prefix? $ spec) ["." "/" "@"])))
+      (check/existing ;(map |(string check/tree "/" spec $) suffixes)))))
 
-# project.janet's vocabulary: the bindings of the installed jpm and janet-pm, over stand-ins for
-# `check/vocabulary` (defined by the caller) when neither is installed.
-(when (string/has-suffix? "project.janet" check/file)
-  (each name check/vocabulary
-    (put check/env name @{:value (fn [& _] nil)}))
-  # `post-deps` would load dependencies while expanding.
-  (put check/env :jpm-no-deps true)
-  (each env (project/envs)
-    (eachp [name binding] env
-      (when (symbol? name)
-        (put check/env name binding)))))
+(array/insert module/paths 0 [(check/in-tree ".janet" "/init.janet") :source])
+(array/insert module/paths 0 [(check/in-tree check/native-extension) :native])
+(array/insert module/paths 0 [check/package-file :source])
+(array/insert module/paths 0 [check/native-file :native])
 
-(var- check/pending (file/read stdin :all))
+# -- the module cache ------------------------------------------------------------------------
 
-(run-context
-  {:env check/env
-   :source check/file
-   :chunks (fn [buf _]
-             (when check/pending
-               (buffer/push buf check/pending "\n")
-               (set check/pending nil)))
-   :expander (fn [source] (set check/form source))
-   :evaluator check/evaluator
-   :on-compile-error (fn [message _ where &opt line col]
-                       (when (= where check/file)
-                         (check/report 1 message line col)
-                         (check/stand-in check/env)))
-   :on-compile-warning (fn [message _ where &opt line col]
-                         (when (= where check/file) (check/report 2 message line col)))
-   :on-parse-error (fn [parser where]
-                     (def [line col] (parser/where parser))
-                     (check/report 1 (parser/error parser) line col))
-   # Only a failing import is worth reporting: other forms run on a partial environment
-   # (skipped definitions), so their runtime errors are mostly noise.
-   :on-status (fn [fiber value]
-                (when (and (not= :dead (fiber/status fiber))
-                           check/form
-                           (check/importers (check/form 0)))
-                  (def [line col] (tuple/sourcemap check/form))
-                  (check/report 1 (string value) line col)))})
+# Imported modules stay in `module/cache` between requests, so their top-level code runs once. A
+# module whose file changed is unloaded together with every module that imported it: they hold
+# its old bindings.
+(def- check/importers-of @{})
+(def- check/fingerprints @{})
+(var- check/finding false)
 
-(print (json/encode check/problems))
+# `require` asks `module/find` even for a cached module: this template records who imports what
+# and finds nothing itself.
+(defn- check/note-import [spec]
+  (def from (dyn :current-file))
+  (unless (or check/finding (nil? from))
+    (set check/finding true)
+    (def [path] (defer (set check/finding false) (module/find spec)))
+    (when path (put-in check/importers-of [path from] true)))
+  nil)
+(array/insert module/paths 0 [check/note-import :source])
+
+# ponytail: length and Janet's 32-bit `hash` of the contents; a collision keeps a stale module
+# until the file changes again.
+(defn- check/fingerprint [path]
+  (when-let [contents (try (string (slurp path)) ([_] nil))]
+    [(length contents) (hash contents)]))
+
+(defn- check/unload [path]
+  (put check/fingerprints path nil)
+  (when (in module/cache path)
+    (put module/cache path nil)
+    (eachk importer (get check/importers-of path {})
+      (check/unload importer))))
+
+(defn- check/unload-changed []
+  (each path (keys check/fingerprints)
+    (unless (= (check/fingerprints path) (check/fingerprint path))
+      (check/unload path))))
+
+(defn- check/remember-loaded []
+  (eachk path module/cache
+    (when (and (string? path)
+               (string/has-suffix? ".janet" path)
+               (nil? (check/fingerprints path)))
+      (put check/fingerprints path (check/fingerprint path)))))
+
+(defn- check/clear [table]
+  (each key (keys table) (put table key nil)))
+
+# -- checking --------------------------------------------------------------------------------
+
+(defn- check/run [request]
+  (def {:file file :cwd cwd :text text :includes includes :declared declared
+        :packages packages :natives natives} request)
+  (os/cd cwd)
+  (set check/tree (if (os/stat "jpm_tree/lib") (string cwd "/jpm_tree/lib")))
+  # Modules resolved against other workspace modules may hold the wrong imports.
+  (unless (= [packages natives] [check/packages check/natives])
+    (check/clear module/cache)
+    (check/clear check/fingerprints))
+  (set check/packages packages)
+  (set check/natives natives)
+  (check/unload-changed)
+  (set check/file file)
+  (set check/form nil)
+  (array/clear check/problems)
+  (buffer/clear (check/base :out))
+  (buffer/clear (check/base :err))
+
+  (def env (make-env check/base))
+  # `# janet-zed: declare` names get stand-ins; `# janet-zed: include` files load into this env,
+  # as when the host concatenates them. A broken include is not this file's problem.
+  (each name declared
+    (put env (symbol name) @{:value nil}))
+  (each path includes
+    (protect (dofile path :env env :evaluator check/evaluator)))
+  (put env :current-file file)
+
+  # project.janet's vocabulary: the bindings of the installed jpm and janet-pm, over stand-ins for
+  # `check/vocabulary` (defined by the host) when neither is installed.
+  (when (string/has-suffix? "project.janet" file)
+    (each name check/vocabulary
+      (put env name @{:value (fn [& _] nil)}))
+    # `post-deps` would load dependencies while expanding.
+    (put env :jpm-no-deps true)
+    (each project-env (project/envs)
+      (eachp [name binding] project-env
+        (when (symbol? name)
+          (put env name binding)))))
+
+  (var pending text)
+  (run-context
+    {:env env
+     :source file
+     :chunks (fn [buf _]
+               (when pending
+                 (buffer/push buf pending "\n")
+                 (set pending nil)))
+     :expander (fn [source] (set check/form source))
+     :evaluator check/evaluator
+     :on-compile-error (fn [message _ where &opt line col]
+                         (when (= where file)
+                           (check/report 1 message line col)
+                           (check/stand-in env)))
+     :on-compile-warning (fn [message _ where &opt line col]
+                           (when (= where file) (check/report 2 message line col)))
+     :on-parse-error (fn [parser where]
+                       (def [line col] (parser/where parser))
+                       (check/report 1 (parser/error parser) line col))
+     # Only a failing import is worth reporting: other forms run on a partial environment
+     # (skipped definitions), so their runtime errors are mostly noise.
+     :on-status (fn [fiber value]
+                  (when (and (not= :dead (fiber/status fiber))
+                             check/form
+                             (check/importers (check/form 0)))
+                    (def [line col] (tuple/sourcemap check/form))
+                    (check/report 1 (string value) line col)))})
+  (check/remember-loaded)
+  check/problems)
+
+(loop [line :iterate (file/read stdin :line)]
+  (def reply
+    (try
+      (string (json/encode (check/run (parse line))))
+      ([err] (string "error " (json/encode (string err))))))
+  (print check/marker reply)
+  (flush))

@@ -19,7 +19,13 @@ fn show_imports(source: &str) -> String {
     let doc = Document::new(source.to_string());
     let imports: Vec<_> = import_specs(&doc)
         .into_iter()
-        .map(|import| format!("{} as {:?}", import.spec, import.prefix))
+        .map(|import| {
+            let names = import
+                .names
+                .map(|names| format!(" only {}", names.join(" ")))
+                .unwrap_or_default();
+            format!("{} as {:?}{names}", import.spec, import.prefix)
+        })
         .collect();
     format!(
         "----- SOURCE CODE\n{source}\n\n----- IMPORTS\n{}\n",
@@ -118,6 +124,17 @@ fn include_directives_import_without_a_prefix() {
 }
 
 #[test]
+fn re_export_calls_import_their_quoted_names() {
+    assert_imports!(
+        r#"(re-export "./extension" ['contribute! 'declare-point!])
+(re-export "./semver" '[parse-version])
+(print "x" [1 2])
+(f "y" ['a b])
+(def x "doc" ['a])"#
+    );
+}
+
+#[test]
 fn other_forms_are_not_imports() {
     assert_imports!("(print 1)");
 }
@@ -210,7 +227,26 @@ fn c_functions_are_found_by_their_docstring_signature() {
     {"encode", json_encode,
         "(json/encode x &opt tab newline buf)\n\n"
 JANET_FN(cfun_crc, "(crc/make)", "doc")"#;
-    assert_eq!(c_function(source, "encode"), Some((4, 8)));
-    assert_eq!(c_function(source, "make"), Some((5, 19)));
-    assert_eq!(c_function(source, "enc"), None);
+    let unqualified = |name| move |called: &str| called.rsplit('/').next() == Some(name);
+    assert_eq!(c_function(source, unqualified("encode")), Some((4, 8)));
+    assert_eq!(c_function(source, unqualified("make")), Some((5, 19)));
+    assert_eq!(c_function(source, unqualified("enc")), None);
+    assert_eq!(c_function(source, |called| called == "encode"), None);
+    // Core's `JDOC("(length ds)\n\n"`: the name ends at the escape.
+    assert_eq!(
+        c_function(r#"JDOC("(length\n\n""#, |called| called == "length"),
+        Some((0, 5))
+    );
+}
+
+#[test]
+fn native_modules_are_where_jpm_builds_them() {
+    let doc = Document::new("(declare-native :name \"pkg/native\" :source [\"src/n.c\"])".into());
+    assert_eq!(
+        native_modules(&doc, Path::new("/ws")),
+        [Package {
+            module: "pkg/native".into(),
+            path: "/ws/build/pkg/native".into(),
+        }]
+    );
 }

@@ -1,0 +1,13 @@
+---
+source: server/src/analysis/definitions/tests.rs
+expression: "(db/defentity User {:id :int} :db/table \"users\")\n(defresource users User :singular \"User\")\n(defn f [x] (default x 1) (defer (close x) x))"
+---
+----- SOURCE CODE
+(db/defentity User {:id :int} :db/table "users")
+(defresource users User :singular "User")
+(defn f [x] (default x 1) (defer (close x) x))
+
+----- DEFINITIONS
+db/defentity User
+defresource users
+defn f [x]

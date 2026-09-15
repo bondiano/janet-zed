@@ -5,12 +5,14 @@ expression: show_bindings(None)
 ----- DUMP
 {"name":"map","kind":"function","doc":"(map f ind & inds)\n\nMap.","sm":["boot.janet",1098,1]}
 {"name":"os/clock","kind":"cfunction","doc":null,"sm":["src/core/os.c",1743,3]}
+{"name":"put","kind":"cfunction","doc":"(put ds key value)","sm":null}
 {"name":"missing","kind":"macro","doc":"Not a signature.","sm":["src/core/nope.c",1,1]}
 {"name":"pi","kind":"value","doc":null,"sm":null}
 
 ----- BINDINGS
 map: Function (map f ind & inds)
 os/clock: Cfunction
+put: Cfunction (put ds key value)
 missing: Macro
 pi: Value
 if: Special (if condition when-true &opt when-false)

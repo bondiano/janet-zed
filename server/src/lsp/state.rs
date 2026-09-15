@@ -99,6 +99,8 @@ impl State {
             path: buffer.path.clone(),
             text: file.document.text.clone(),
             cwd,
+            packages: self.workspace.packages().to_vec(),
+            natives: self.workspace.natives().to_vec(),
         })
     }
 

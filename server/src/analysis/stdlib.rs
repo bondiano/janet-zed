@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::{peg, project};
+use super::{modules, peg, project};
 use crate::janet;
 
 /// Compiled by Janet itself, so absent from `root-env`: name and signature.
@@ -118,8 +118,17 @@ impl Stdlib {
             .lines()
             .filter_map(|line| serde_json::from_str::<Row>(line).ok())
             .partition(|row| row.project);
+        let c_sources = source.map(core_sources).unwrap_or_default();
         let rows = core_rows.into_iter().map(|row| {
-            let location = source.zip(row.sm).and_then(|(root, sm)| locate(root, sm));
+            let location = source
+                .zip(row.sm)
+                .and_then(|(root, sm)| locate(root, sm))
+                // Core registers some C functions without a source map: `put`, `length`.
+                .or_else(|| {
+                    (row.kind == CoreKind::Cfunction)
+                        .then(|| c_location(&c_sources, &row.name))
+                        .flatten()
+                });
             let binding = CoreBinding {
                 kind: row.kind,
                 doc: row.doc,
@@ -179,6 +188,33 @@ impl Stdlib {
     pub fn location(&self, name: &str) -> Option<&SourceLocation> {
         self.bindings.get(name)?.location.as_ref()
     }
+}
+
+/// The C files of Janet's core in the checkout at `root`, with their text.
+fn core_sources(root: &Path) -> Vec<(PathBuf, String)> {
+    std::fs::read_dir(root.join("src/core"))
+        .into_iter()
+        .flatten()
+        .flatten()
+        .map(|entry| entry.path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "c"))
+        .filter_map(|path| {
+            let text = std::fs::read_to_string(&path).ok()?;
+            Some((path, text))
+        })
+        .collect()
+}
+
+/// Where a core C function is documented, found by its docstring signature.
+fn c_location(sources: &[(PathBuf, String)], name: &str) -> Option<SourceLocation> {
+    sources.iter().find_map(|(path, text)| {
+        let (line, column) = modules::c_function(text, |called| called == name)?;
+        Some(SourceLocation {
+            path: path.clone(),
+            line,
+            column,
+        })
+    })
 }
 
 fn locate(root: &Path, (file, line, column): (String, u32, u32)) -> Option<SourceLocation> {

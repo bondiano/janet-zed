@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 
-use super::modules::{Search, packages};
+use super::modules::{Package, Search, native_modules, packages};
 use super::{SourceFile, canonical, uri_of};
 
 /// A resolved import between two files.
@@ -17,6 +17,8 @@ pub struct Edge {
     pub prefix: String,
     /// From `# janet-zed: include`: private names are visible too.
     pub included: bool,
+    /// Only these names, re-exported: from `(re-export "./x" ['a 'b])`.
+    pub names: Option<Vec<String>>,
     /// The other end: the imported file in `imports_of`, the importing one in `importers_of`.
     pub path: PathBuf,
 }
@@ -24,6 +26,8 @@ pub struct Edge {
 #[derive(Debug, Default)]
 pub struct Workspace {
     search: Search,
+    /// Native modules the workspace projects build.
+    natives: Vec<Package>,
     files: HashMap<PathBuf, SourceFile>,
     /// Modules outside the roots that workspace files import: read-only.
     // ponytail: read once and not watched; an upgraded dependency needs a server restart.
@@ -47,6 +51,15 @@ impl Workspace {
 
     pub fn roots(&self) -> &[PathBuf] {
         &self.search.roots
+    }
+
+    /// Modules the workspace projects declare with `declare-source`.
+    pub fn packages(&self) -> &[Package] {
+        &self.search.packages
+    }
+
+    pub fn natives(&self) -> &[Package] {
+        &self.natives
     }
 
     /// Whether `path` is a workspace file (as opposed to a dependency or unknown).
@@ -96,13 +109,17 @@ impl Workspace {
             return;
         }
         let files = &self.files;
-        self.search.packages = files
-            .values()
-            .filter(|file| is_project(&file.path))
-            .flat_map(|file| {
-                let dir = file.path.parent().unwrap_or_else(|| Path::new(""));
-                packages(&file.document, dir)
-            })
+        let projects = || {
+            files
+                .values()
+                .filter(|file| is_project(&file.path))
+                .map(|file| (file, file.path.parent().unwrap_or_else(|| Path::new(""))))
+        };
+        self.search.packages = projects()
+            .flat_map(|(file, dir)| packages(&file.document, dir))
+            .collect();
+        self.natives = projects()
+            .flat_map(|(file, dir)| native_modules(&file.document, dir))
             .collect();
 
         let search = &self.search;
@@ -120,6 +137,7 @@ impl Workspace {
                             spec: import.spec.clone(),
                             prefix: import.prefix.clone(),
                             included: import.included,
+                            names: import.names.clone(),
                             path,
                         })
                     })
@@ -137,6 +155,7 @@ impl Workspace {
                         spec: edge.spec.clone(),
                         prefix: edge.prefix.clone(),
                         included: edge.included,
+                        names: edge.names.clone(),
                         path: importer.clone(),
                     };
                     (edge.path.clone(), reverse)

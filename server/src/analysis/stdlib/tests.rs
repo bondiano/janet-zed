@@ -1,19 +1,32 @@
 use super::*;
 
-const DUMP: [&str; 4] = [
+const DUMP: [&str; 5] = [
     r#"{"name":"map","kind":"function","doc":"(map f ind & inds)\n\nMap.","sm":["boot.janet",1098,1]}"#,
     r#"{"name":"os/clock","kind":"cfunction","doc":null,"sm":["src/core/os.c",1743,3]}"#,
+    r#"{"name":"put","kind":"cfunction","doc":"(put ds key value)","sm":null}"#,
     r#"{"name":"missing","kind":"macro","doc":"Not a signature.","sm":["src/core/nope.c",1,1]}"#,
     r#"{"name":"pi","kind":"value","doc":null,"sm":null}"#,
 ];
 
 /// A Janet checkout with the files `DUMP` points into.
 fn checkout() -> PathBuf {
-    let root = std::env::temp_dir().join("janet-zed-server-stdlib-test");
+    // Per thread: tests running at once would see each other's files half-written.
+    let root = std::env::temp_dir().join(format!(
+        "janet-zed-server-stdlib-test-{:?}",
+        std::thread::current().id()
+    ));
     std::fs::create_dir_all(root.join("src/boot")).unwrap();
     std::fs::create_dir_all(root.join("src/core")).unwrap();
     std::fs::write(root.join("src/boot/boot.janet"), "").unwrap();
     std::fs::write(root.join("src/core/os.c"), "").unwrap();
+    // `put` is registered without a source map, found by its docstring.
+    std::fs::write(
+        root.join("src/core/corelib.c"),
+        r#"static const JanetReg corelib_cfuns[] = {
+    {"put", janet_core_put, JDOC("(put ds key value)\n\n"
+"#,
+    )
+    .unwrap();
     root
 }
 
@@ -24,7 +37,7 @@ fn show_bindings(root: Option<&Path>) -> String {
         .into_iter()
         .flat_map(|root| [root.to_path_buf(), root.canonicalize().unwrap()])
         .collect();
-    let bindings: Vec<_> = ["map", "os/clock", "missing", "pi", "if"]
+    let bindings: Vec<_> = ["map", "os/clock", "put", "missing", "pi", "if"]
         .iter()
         .map(|name| {
             let binding = stdlib.get(name).unwrap();

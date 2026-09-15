@@ -11,6 +11,7 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
+use crate::analysis::modules::Package;
 use crate::janet::{self, Problem};
 use crate::syntax::{self, Document};
 
@@ -27,6 +28,10 @@ pub struct Job {
     pub text: String,
     /// The project root, where Janet resolves `/x` imports and `jpm_tree`.
     pub cwd: PathBuf,
+    /// Workspace modules Janet cannot find on its own: a monorepo's packages.
+    pub packages: Vec<Package>,
+    /// The native modules among them.
+    pub natives: Vec<Package>,
 }
 
 pub struct Checked {
@@ -56,10 +61,12 @@ impl Checker {
 }
 
 fn check_queued(janet: &str, queue: &Receiver<Job>, done: &Sender<Checked>) {
+    let mut worker = janet::Worker::new(janet);
     while let Ok(first) = queue.recv() {
         for job in coalesce(first, queue).into_values() {
             let started = Instant::now();
-            let problems = janet::check(janet, &job.path, &job.text, &job.cwd);
+            let problems =
+                worker.check(&job.path, &job.text, &job.cwd, &job.packages, &job.natives);
             tracing::debug!(
                 uri = job.uri.as_str(),
                 version = job.version,

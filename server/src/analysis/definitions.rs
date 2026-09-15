@@ -48,6 +48,14 @@ pub fn is_function(definer: &str) -> bool {
     FUNCTION_DEFINERS.contains(&definer)
 }
 
+/// A macro named like a definer, `db/defentity`, taken to bind the symbol after it, as the ones
+/// from core do.
+// ponytail: a naming guess; a `def*` macro that binds nothing names a phantom definition.
+fn is_library_definer(definer: &str) -> bool {
+    let name = definer.rsplit('/').next().unwrap_or(definer);
+    name.starts_with("def") && !matches!(name, "default" | "defer")
+}
+
 fn collect<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
     let found = definition(doc, form);
     if found.is_empty() {
@@ -67,7 +75,8 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
         return Vec::new();
     };
     let definer = doc.text_of(*head);
-    if head.kind() != syntax::SYMBOL || !DEFINERS.contains(&definer) {
+    let core = DEFINERS.contains(&definer);
+    if head.kind() != syntax::SYMBOL || !(core || is_library_definer(definer)) {
         return Vec::new();
     }
     let function = is_function(definer);
@@ -80,7 +89,8 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Definition<'d>> {
     } else {
         body.len().saturating_sub(1)
     });
-    let metadata = &body[..metadata_end];
+    // A library macro's arguments are its own: `:singular "Delivery"` is no docstring.
+    let metadata = if core { &body[..metadata_end] } else { &[] };
     let docstring = metadata
         .iter()
         .find_map(|node| syntax::string_value(doc, *node));

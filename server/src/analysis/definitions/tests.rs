@@ -84,6 +84,15 @@ fn long_string_docstring_is_dedented() {
 }
 
 #[test]
+fn library_definer_macro() {
+    assert_definitions!(
+        "(db/defentity User {:id :int} :db/table \"users\")\n\
+         (defresource users User :singular \"User\")\n\
+         (defn f [x] (default x 1) (defer (close x) x))"
+    );
+}
+
+#[test]
 fn string_value_is_not_a_docstring() {
     assert_definitions!(r#"(def x "not a doc")"#);
 }

@@ -88,7 +88,9 @@ fn native_location(state: &State, file: &SourceFile, offset: usize) -> Option<Lo
             .into_iter()
             .find_map(|source| {
                 let (line, column) =
-                    modules::c_function(&std::fs::read_to_string(&source).ok()?, name)?;
+                    modules::c_function(&std::fs::read_to_string(&source).ok()?, |called| {
+                        called.rsplit('/').next() == Some(name)
+                    })?;
                 let point = Position::new(line, column);
                 Some(Location::new(uri_of(&source)?, Range::new(point, point)))
             })
