@@ -106,6 +106,14 @@ pub fn resolve<'w>(
     if imported.is_some() {
         return imported;
     }
+    // Ambient declarations stand in for names the workspace never defines, core ones included.
+    if let Some(declared) = workspace.declared(text, &file.imports) {
+        let target = Target::Module {
+            file: declared.file.to_path_buf(),
+            name: declared.name.to_string(),
+        };
+        return Some((at(text), target));
+    }
     if is_core(text) {
         return Some((
             at(text),
@@ -198,7 +206,7 @@ pub fn declaration<'w>(workspace: &'w Workspace, target: &Target) -> Option<Occu
 }
 
 /// How many re-exports a name is followed through, so that a cycle of them ends.
-const MAX_REEXPORTS: usize = 8;
+pub(super) const MAX_REEXPORTS: usize = 8;
 
 /// Whether an edge limited to `names` passes `name` on.
 fn names_allow(names: Option<&[String]>, name: &str) -> bool {
@@ -207,7 +215,12 @@ fn names_allow(names: Option<&[String]>, name: &str) -> bool {
 
 /// The file defining what `module` exports as `name`: `module` itself, or the file it re-exports
 /// the name from.
-fn defining(workspace: &Workspace, module: &Path, name: &str, hops: usize) -> Option<PathBuf> {
+pub(super) fn defining(
+    workspace: &Workspace,
+    module: &Path,
+    name: &str,
+    hops: usize,
+) -> Option<PathBuf> {
     if workspace.definition(module, name).is_some() {
         return Some(module.to_path_buf());
     }

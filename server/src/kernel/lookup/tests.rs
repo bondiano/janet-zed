@@ -24,7 +24,7 @@ fn looks_up_loaded_modules_then_the_repl() {
     let mut shared = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
     // Relative to the REPL's directory, as `module/cache` then keys it.
     let code = format!(
-        "(os/cd {:?})\n(import ./made)\n(def answer 42)",
+        "(os/cd {:?})\n(import ./made)\n(def answer 42)\n         (defn asked {{:params [:number] :ret :string}} [id] (string id))",
         dir.display().to_string()
     );
     let loaded = runtime.block_on(shared.eval(&code, None)).unwrap();
@@ -50,6 +50,7 @@ fn looks_up_loaded_modules_then_the_repl() {
             location: Some((module.clone(), 2, 1)),
             doc: Some("Made.".to_string()),
             kind: "table".to_string(),
+            annotation: None,
         })
     );
     assert_eq!(lookup(&[(&module, "defthing")]).unwrap().kind, "macro");
@@ -59,6 +60,7 @@ fn looks_up_loaded_modules_then_the_repl() {
             location: None,
             doc: None,
             kind: "number".to_string(),
+            annotation: None,
         }),
         "a module that is not loaded falls back to the REPL's own names"
     );
@@ -66,5 +68,13 @@ fn looks_up_loaded_modules_then_the_repl() {
         lookup(&[(&module, "answer")]),
         None,
         "a loaded module does not"
+    );
+    assert_eq!(
+        lookup(&[(&unloaded, "asked")])
+            .unwrap()
+            .annotation
+            .as_deref(),
+        Some("{:params [:number] :ret :string}"),
+        "the types a REPL definition declares come back as they were written"
     );
 }

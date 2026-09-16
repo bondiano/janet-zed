@@ -11,8 +11,10 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
+use super::state::Reporting;
 use crate::analysis::modules::Package;
-use crate::janet::{self, Problem, Report};
+use crate::analysis::types::infer::Finding;
+use crate::janet::{self, Check, Problem, Report};
 use crate::syntax::{self, Document};
 
 /// Quiet time after the last edit before buffers are checked.
@@ -32,6 +34,8 @@ pub struct Job {
     pub packages: Vec<Package>,
     /// The native modules among them.
     pub natives: Vec<Package>,
+    /// Names declared for this file that Janet itself never binds.
+    pub declared: Vec<String>,
 }
 
 pub struct Checked {
@@ -65,7 +69,14 @@ fn check_queued(janet: &str, queue: &Receiver<Job>, done: &Sender<Checked>) {
     while let Ok(first) = queue.recv() {
         for job in coalesce(first, queue).into_values() {
             let started = Instant::now();
-            let report = worker.check(&job.path, &job.text, &job.cwd, &job.packages, &job.natives);
+            let report = worker.check(&Check {
+                path: &job.path,
+                text: &job.text,
+                cwd: &job.cwd,
+                packages: &job.packages,
+                natives: &job.natives,
+                declared: &job.declared,
+            });
             tracing::debug!(
                 uri = job.uri.as_str(),
                 version = job.version,
@@ -112,6 +123,24 @@ pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
             }),
             source: Some("janet".to_string()),
             message: problem.message.clone(),
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+/// What inference makes of the file, at the severity `types.diagnostics` asks for. Empty when it
+/// asks for none, which is the default: the types are hints, and a hint marks nothing up.
+pub fn inferred(doc: &Document, findings: &[Finding], reporting: Reporting) -> Vec<Diagnostic> {
+    let Some(severity) = reporting.severity() else {
+        return Vec::new();
+    };
+    findings
+        .iter()
+        .map(|finding| Diagnostic {
+            range: doc.range(finding.range.clone()),
+            severity: Some(severity),
+            source: Some("janet-zed".to_string()),
+            message: finding.message.clone(),
             ..Diagnostic::default()
         })
         .collect()

@@ -9,7 +9,7 @@ expression: "(defn area \"Area.\" [shape] 1)\n(defn- hidden [] 2)"
 
 ----- HOVER
 ```janet
-(area shape)
+(area shape) -> :number
 ```
 defn in `shapes.janet`
 

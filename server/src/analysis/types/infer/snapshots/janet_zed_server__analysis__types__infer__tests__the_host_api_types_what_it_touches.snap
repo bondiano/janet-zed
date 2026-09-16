@@ -1,0 +1,14 @@
+---
+source: server/src/analysis/types/infer/tests.rs
+expression: "format!(\"----- INFERRED\\n{}\\n\\n----- LOCALS\\nrequest of get-person: {}\\nrequest of add-person: {}\\nids: {}\\n\",\nshown(&facts), local_in(&doc, &scopes, &facts, \"(defn get-person\", \"request\"),\nlocal_in(&doc, &scopes, &facts, \"(defn add-person\", \"request\"),\nlocal(&scopes, &facts, \"ids\"),)"
+---
+----- INFERRED
+add-person: (fn [{:body {:email :any :name :any :age :any & r} & r}] {:status :number :body {:id Eid}})  throws :db/unique-violation
+get-person: (fn [{:params {:id :string & r} & r}] (or {:body Entity} {:status :number :body {:error :string}}))  throws :db/not-found
+list-people: (fn [{:query {:min-age :string & r} & r}] {:body @[{:id :any :name :any :age :any}]})
+schema: {:person/name {:db/type :string} :person/age {:db/type :number} :person/email {:db/type :string :db/unique :identity}}
+
+----- LOCALS
+request of get-person: {:params {:id :string & r} & r}
+request of add-person: {:body {:email :any :name :any :age :any & r} & r}
+ids: {:string Eid}

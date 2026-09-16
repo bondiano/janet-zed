@@ -210,14 +210,13 @@ fn downloaded_janet_source(id: &LanguageServerId, janet: &str) -> Result<PathBuf
     Ok(work_dir()?.join(root))
 }
 
-/// `lsp.janet-zed-server.settings.janet_source` in Zed settings: a local Janet checkout.
-fn configured_janet_source(worktree: &zed::Worktree) -> Option<String> {
+/// `lsp.janet-zed-server.settings.<key>` in Zed settings.
+fn configured(worktree: &zed::Worktree, key: &str) -> Option<serde_json::Value> {
     LspSettings::for_worktree(SERVER_ID, worktree)
         .ok()?
         .settings?
-        .get("janet_source")?
-        .as_str()
-        .map(str::to_string)
+        .get(key)
+        .cloned()
 }
 
 impl zed::Extension for JanetExtension {
@@ -259,21 +258,26 @@ impl zed::Extension for JanetExtension {
             eprintln!("`janet` is not in PATH: checks, formatting and core docs are off");
             return Ok(None);
         };
-        let janet_source = configured_janet_source(worktree).or_else(|| {
-            downloaded_janet_source(language_server_id, &janet)
-                .inspect_err(|err| {
-                    eprintln!("no Janet source, stdlib go-to-definition is off: {err}");
-                    zed::set_language_server_installation_status(
-                        language_server_id,
-                        &zed::LanguageServerInstallationStatus::None,
-                    );
-                })
-                .ok()
-                .map(|path| path.to_string_lossy().into_owned())
-        });
+        let janet_source = configured(worktree, "janet_source")
+            .and_then(|value| value.as_str().map(str::to_string))
+            .or_else(|| {
+                downloaded_janet_source(language_server_id, &janet)
+                    .inspect_err(|err| {
+                        eprintln!("no Janet source, stdlib go-to-definition is off: {err}");
+                        zed::set_language_server_installation_status(
+                            language_server_id,
+                            &zed::LanguageServerInstallationStatus::None,
+                        );
+                    })
+                    .ok()
+                    .map(|path| path.to_string_lossy().into_owned())
+            });
         Ok(Some(serde_json::json!({
             "janetPath": janet,
             "janetSource": janet_source,
+            // `{"diagnostics": "off" | "hint" | "warning"}`; the server changes it later on
+            // `didChangeConfiguration` too.
+            "types": configured(worktree, "types"),
         })))
     }
 

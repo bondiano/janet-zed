@@ -1,0 +1,9 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CALL\\n(map (fn [x] |) [1 2 3])\\n\\n----- SIGNATURE\\n{}\\n\",\nhelp[\"signatures\"][0][\"label\"].as_str().unwrap())"
+---
+----- CALL
+(map (fn [x] |) [1 2 3])
+
+----- SIGNATURE
+(fn [x: :number]) -> :nil

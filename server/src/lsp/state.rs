@@ -5,7 +5,8 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use lsp_types::{Diagnostic, FileChangeType, FileEvent, Uri};
+use lsp_types::{Diagnostic, DiagnosticSeverity, FileChangeType, FileEvent, Uri};
+use serde::Deserialize;
 
 use super::diagnostics::Job;
 use crate::analysis::stdlib::Stdlib;
@@ -17,6 +18,28 @@ use crate::syntax::Document;
 struct Buffer {
     path: PathBuf,
     version: i32,
+}
+
+/// `types.diagnostics`: how loudly what inference reads is reported, if at all. Off by default —
+/// the types are hints, and a hint is not a reason to mark someone's file up.
+#[derive(Debug, Clone, Copy, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Reporting {
+    #[default]
+    Off,
+    Hint,
+    Warning,
+}
+
+impl Reporting {
+    /// How a finding is shown, or `None` where none are.
+    pub fn severity(self) -> Option<DiagnosticSeverity> {
+        match self {
+            Self::Off => None,
+            Self::Hint => Some(DiagnosticSeverity::HINT),
+            Self::Warning => Some(DiagnosticSeverity::WARNING),
+        }
+    }
 }
 
 pub struct State {
@@ -31,10 +54,19 @@ pub struct State {
     repl_port: u16,
     /// Requests take `&State`; the connection is kept between them and dropped on an error.
     repl: RefCell<Option<Repl>>,
+    /// What `types.diagnostics` is set to, from `initializationOptions` and every
+    /// `didChangeConfiguration` after it.
+    pub reporting: Reporting,
 }
 
 impl State {
-    pub fn new(workspace: Workspace, stdlib: Stdlib, janet: String, repl_port: u16) -> Self {
+    pub fn new(
+        workspace: Workspace,
+        stdlib: Stdlib,
+        janet: String,
+        repl_port: u16,
+        reporting: Reporting,
+    ) -> Self {
         let mut state = Self {
             workspace,
             stdlib,
@@ -43,6 +75,7 @@ impl State {
             diagnostics: HashMap::new(),
             repl_port,
             repl: RefCell::new(None),
+            reporting,
         };
         state.rescan();
         state
@@ -88,6 +121,11 @@ impl State {
         found.inspect_err(|_| *repl = None).ok().flatten()
     }
 
+    /// Every open buffer, to check them all again when the settings change.
+    pub fn open_buffers(&self) -> Vec<Uri> {
+        self.open.keys().cloned().collect()
+    }
+
     pub fn version(&self, uri: &Uri) -> Option<i32> {
         self.open.get(uri).map(|buffer| buffer.version)
     }
@@ -112,6 +150,19 @@ impl State {
                     .find(|root| buffer.path.starts_with(root))
             })
             .or_else(|| buffer.path.parent().map(Path::to_path_buf))?;
+        // Ambient declarations and `(comment :declare …)` blocks: names Janet never binds.
+        let declared = self
+            .workspace
+            .declarations(&file.imports)
+            .into_iter()
+            .map(|declared| declared.label)
+            .chain(
+                file.definitions
+                    .iter()
+                    .filter(|(_, info)| info.declared)
+                    .map(|(name, _)| name.clone()),
+            )
+            .collect();
         Some(Job {
             uri: uri.clone(),
             version: buffer.version,
@@ -120,6 +171,7 @@ impl State {
             cwd,
             packages: self.workspace.packages().to_vec(),
             natives: self.workspace.natives().to_vec(),
+            declared,
         })
     }
 

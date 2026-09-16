@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use super::*;
 use crate::analysis::config::Config;
 use crate::test_support::{cursor, mark};
@@ -208,5 +210,218 @@ fn hover_on_a_module_definition() {
         insta::internals::AutoName,
         format!("----- SOURCE CODE\n-- /ws/shapes.janet\n{SHAPES}\n\n----- HOVER\n{hover}\n"),
         SHAPES
+    );
+}
+
+#[test]
+fn hover_on_a_name_a_macro_bound() {
+    let source = "(import ./queries)\n(queries/defquery ask)\n";
+    let mut workspace = workspace(source);
+    workspace.expand(HashMap::from([(
+        PathBuf::from("/ws/main.janet"),
+        vec![crate::janet::Binding {
+            name: "ask".to_string(),
+            line: 2,
+            col: 1,
+            doc: Some("Asked.".to_string()),
+            private: false,
+            annotation: Some(
+                "{:params [:number] :ret :string :throws [:db/not-found]}".to_string(),
+            ),
+        }],
+    )]));
+    let target = Target::Module {
+        file: "/ws/main.janet".into(),
+        name: "ask".into(),
+    };
+    let hover = info(&workspace, &Stdlib::default(), &target)
+        .unwrap()
+        .markdown();
+    insta::assert_snapshot!(
+        insta::internals::AutoName,
+        format!("----- SOURCE CODE\n{source}\n----- HOVER\n{hover}\n"),
+        source
+    );
+}
+
+/// The fixture project's `people.janet`, with the host declarations beside it.
+fn people() -> Workspace {
+    let fixture = |name: &str| {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../fixtures/project/src")
+            .join(name);
+        std::fs::read_to_string(&path).unwrap_or_else(|_| panic!("{} is a fixture", path.display()))
+    };
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file("/ws/host.d.janet", &fixture("host.d.janet")));
+    workspace.insert(file("/ws/people.janet", &fixture("people.janet")));
+    workspace.refresh();
+    workspace
+}
+
+/// What is offered where the keyword `written` stands in `path`, keys first.
+fn show_keys(workspace: &Workspace, path: &str, written: &str) -> String {
+    let file = workspace.file(Path::new(path)).expect("an indexed file");
+    let offset = file
+        .document
+        .text
+        .find(written)
+        .expect("a keyword written so");
+    let candidates = completions(workspace, &Stdlib::default(), file, offset);
+    let keys: Vec<String> = candidates
+        .iter()
+        .take_while(|candidate| candidate.kind == CandidateKind::Key)
+        .map(|candidate| {
+            let detail = candidate.detail.as_deref().unwrap_or_default();
+            format!("{} {detail}", candidate.label)
+        })
+        .collect();
+    let line = file.document.text[..offset]
+        .lines()
+        .next_back()
+        .unwrap_or_default();
+    format!("----- AT\n{line}|\n\n----- KEYS\n{}\n", keys.join("\n"))
+}
+
+#[test]
+fn completes_the_keys_a_form_is_read_by() {
+    let workspace = people();
+    insta::assert_snapshot!(show_keys(&workspace, "/ws/people.janet", ":body)"));
+}
+
+#[test]
+fn completes_the_keys_left_in_a_path() {
+    let workspace = people();
+    insta::assert_snapshot!(show_keys(&workspace, "/ws/people.janet", ":id]"));
+}
+
+#[test]
+fn completes_the_keys_of_a_destructured_value() {
+    let workspace = people();
+    insta::assert_snapshot!(show_keys(&workspace, "/ws/people.janet", ":tempids"));
+}
+
+#[test]
+fn completes_the_keys_of_a_form_read_from_a_parameter() {
+    let workspace = people();
+    insta::assert_snapshot!(show_keys(&workspace, "/ws/people.janet", ":email email"));
+}
+
+#[test]
+fn completes_the_values_of_an_enum_parameter() {
+    let source =
+        "(defn route {:params [(enum :get :post) :any]} [method handler] handler)\n(route |)";
+    let (offset, main) = cursor(source);
+    let workspace = workspace(&main);
+    let file = workspace.file(Path::new("/ws/main.janet")).unwrap();
+    let values: Vec<String> = completions(&workspace, &Stdlib::default(), file, offset)
+        .into_iter()
+        .take_while(|candidate| candidate.kind == CandidateKind::Key)
+        .map(|candidate| {
+            format!(
+                "{} {}",
+                candidate.label,
+                candidate.detail.unwrap_or_default()
+            )
+        })
+        .collect();
+    insta::assert_snapshot!(
+        insta::internals::AutoName,
+        format!(
+            "----- SOURCE CODE\n{source}\n\n----- VALUES\n{}\n",
+            values.join("\n")
+        ),
+        source
+    );
+}
+
+/// Keys are offered before everything else and instead of nothing: whatever was on the list
+/// without them is still on it.
+#[test]
+fn keys_are_offered_without_taking_anything_off() {
+    let workspace = people();
+    let file = workspace.file(Path::new("/ws/people.janet")).unwrap();
+    let at = |written: &str| {
+        let offset = file.document.text.find(written).expect("written so");
+        completions(&workspace, &Stdlib::default(), file, offset)
+    };
+    // Locals aside, since which ones are in scope depends on where the cursor is.
+    let names = |candidates: &[Candidate]| {
+        let mut names: Vec<String> = candidates
+            .iter()
+            .filter(|candidate| candidate.kind != CandidateKind::Key)
+            .filter(|candidate| candidate.origin.is_some())
+            .map(|candidate| candidate.label.clone())
+            .collect();
+        names.sort();
+        names
+    };
+    let keyed = at(":tempids");
+    let plain = at("(db/transact");
+    assert_eq!(
+        keyed.first().map(|candidate| candidate.kind),
+        Some(CandidateKind::Key)
+    );
+    assert!(names(&plain).iter().any(|label| label == "db/transact"));
+    assert_eq!(names(&keyed), names(&plain));
+}
+
+/// The signature offered at the cursor of `source`, with the core in scope.
+fn show_signature(workspace: &Workspace, path: &str, offset: usize) -> String {
+    let file = workspace.file(Path::new(path)).unwrap();
+    let (head, _) = call_at(&file.document, offset).expect("a call at the cursor");
+    if file.document.text_of(head) == "fn" {
+        return lambda(workspace, file, head.parent().unwrap()).expect("a typed lambda");
+    }
+    let (_, target) = crate::analysis::references::resolve(
+        workspace,
+        file,
+        head.start_byte(),
+        |_| false,
+        |_| false,
+    )
+    .expect("a resolved head");
+    let stdlib = Stdlib::default();
+    let info = info(workspace, &stdlib, &target).expect("a known head");
+    instantiated(workspace, file, &info, head, offset).expect("a declared signature")
+}
+
+#[test]
+fn a_signature_takes_the_types_of_the_arguments_written() {
+    let source = "(defn pair {:params [a a] :ret [a a]} [left right] [left right])\n(pair 1 |)";
+    let (offset, main) = cursor(source);
+    let workspace = workspace(&main);
+    let signature = show_signature(&workspace, "/ws/main.janet", offset);
+    insta::assert_snapshot!(
+        insta::internals::AutoName,
+        format!("----- SOURCE CODE\n{source}\n\n----- SIGNATURE\n{signature}\n"),
+        source
+    );
+}
+
+/// The argument being written is a hole: the ones after it still belong to their own parameters.
+#[test]
+fn a_signature_reads_the_arguments_past_the_one_being_written() {
+    let source = "(defn pair {:params [a a] :ret [a a]} [left right] [left right])\n(pair | \"s\")";
+    let (offset, main) = cursor(source);
+    let workspace = workspace(&main);
+    let signature = show_signature(&workspace, "/ws/main.janet", offset);
+    insta::assert_snapshot!(
+        insta::internals::AutoName,
+        format!("----- SOURCE CODE\n{source}\n\n----- SIGNATURE\n{signature}\n"),
+        source
+    );
+}
+
+#[test]
+fn a_lambda_shows_what_the_call_around_it_gives_its_parameters() {
+    let source = "(defn each-of {:params [(fn [a] :any) [a]]} [f items] (map f items))\n(each-of (fn [x] |) [1 2 3])";
+    let (offset, main) = cursor(source);
+    let workspace = workspace(&main);
+    let signature = show_signature(&workspace, "/ws/main.janet", offset);
+    insta::assert_snapshot!(
+        insta::internals::AutoName,
+        format!("----- SOURCE CODE\n{source}\n\n----- SIGNATURE\n{signature}\n"),
+        source
     );
 }

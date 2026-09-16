@@ -9,6 +9,7 @@ pub mod references;
 pub mod scopes;
 pub mod stdlib;
 pub mod symbols;
+pub mod types;
 pub mod workspace;
 
 use std::collections::HashMap;
@@ -50,6 +51,10 @@ pub struct DefInfo {
     pub doc: Option<String>,
     /// `[a b & more]`, for functions and macros.
     pub params: Option<String>,
+    /// The types its metadata declares. Boxed: most definitions have none.
+    pub annotation: Option<Box<types::Annotation>>,
+    /// Declared, not defined: from a `*.d.janet` file or a `(comment :declare …)` block.
+    pub declared: bool,
     pub private: bool,
 }
 
@@ -57,7 +62,7 @@ impl SourceFile {
     pub fn new(path: PathBuf, uri: Uri, text: String, config: &Config) -> Self {
         let document = Document::new(text);
         let imports = modules::import_specs(&document);
-        let defined = module_definitions(&document, &imports, config);
+        let defined = module_definitions(&document, &imports, config, is_declaration(&path));
         let symbols = syntax::descendants(document.root())
             .filter(|node| node.kind() == syntax::SYMBOL)
             .fold(HashMap::<_, Vec<_>>::new(), |mut symbols, node| {
@@ -84,7 +89,8 @@ impl SourceFile {
 
     /// Reads the definitions again, under a changed config.
     pub fn reconfigure(&mut self, config: &Config) {
-        self.definitions = module_definitions(&self.document, &self.imports, config);
+        let declared = is_declaration(&self.path);
+        self.definitions = module_definitions(&self.document, &self.imports, config, declared);
     }
 }
 
@@ -92,8 +98,10 @@ fn module_definitions(
     document: &Document,
     imports: &[ImportSpec],
     config: &Config,
+    file_declares: bool,
 ) -> HashMap<String, DefInfo> {
     let lint_as = |head: &str| config.definer(head, imports);
+    let blocks = declare_blocks(document);
     // Reversed so that the first definition of a name wins.
     definitions::definitions(document, document.root(), &lint_as)
         .iter()
@@ -107,11 +115,35 @@ fn module_definitions(
                 params: definition
                     .params
                     .map(|params| document.text_of(params).to_string()),
+                annotation: types::annotation(document, definition).map(Box::new),
+                declared: file_declares
+                    || blocks
+                        .iter()
+                        .any(|block| block.contains(&definition.form.start_byte())),
                 private: definition.private,
             };
             (document.text_of(definition.name).to_string(), info)
         })
         .collect()
+}
+
+/// `(comment :declare …)` blocks: what they define, the file declares but does not define.
+fn declare_blocks(document: &Document) -> Vec<Range<usize>> {
+    syntax::forms(document.root())
+        .into_iter()
+        .filter(|form| {
+            matches!(syntax::forms(*form).as_slice(), [head, marker, ..]
+                if document.text_of(*head) == "comment" && document.text_of(*marker) == ":declare")
+        })
+        .map(|form| form.byte_range())
+        .collect()
+}
+
+/// A `*.d.janet` file: ambient declarations for the whole workspace, never a module of its own.
+pub fn is_declaration(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|name| name.to_str())
+        .is_some_and(|name| name.ends_with(".d.janet"))
 }
 
 /// The path files are compared by; resolved lexically when it does not exist on disk. On Windows

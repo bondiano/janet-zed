@@ -8,7 +8,8 @@ expression: "format!(\"----- CURSOR\\n{}\\n\\n----- HOVER\\n{}\\n\",\nsession.cu
 
 ----- HOVER
 ```janet
-(area shape)
+(area shape: Shape) -> :number
+throws :string
 ```
 defn in `shapes.janet`
 

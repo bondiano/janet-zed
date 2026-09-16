@@ -1,11 +1,11 @@
 # A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :declared
 # :packages :natives}`; each gets one line on stdout, `check/marker` and then, as JSON,
-# `{:problems [...] :bindings {path [[name line col doc private] ...]}}`, or `error` and the
+# `{:problems [...] :bindings {path [[name line col doc private types] ...]}}`, or `error` and the
 # message as a JSON string. `:bindings` are the names macros bound, which the host cannot read
 # from the source: in `:file`, and in each module loaded since the previous request. Like core `flycheck`,
 # every form of the file is parsed and compiled and macros are expanded, but only forms known to
 # be safe run: definitions without side effects, imports, and anything with `:flycheck` metadata.
-# janet-zed: include ./json.janet ./project.janet
+# janet-zed: include ./json.janet ./project.janet ./types.janet
 # janet-zed: declare script/root-env check/vocabulary
 
 # Checked code and imported modules may write to stdout too.
@@ -60,14 +60,16 @@
       (put starts (tuple/slice (tuple/sourcemap form)) true)))
   starts)
 
-# The names `env` binds from other forms of the file at `path`.
+# The names `env` binds from other forms of the file at `path`, with the types their metadata
+# declares: the compiler records those when it compiles the `def` a macro expanded to.
 (defn- check/bindings [env path text]
   (def starts (check/definition-starts text))
   (seq [[name binding] :pairs env
         :when (and (symbol? name) (table? binding))
         :let [[at line col] (or (get binding :source-map) [])]
         :when (and (= at path) (not (starts [line col])))]
-    [(string name) line col (get binding :doc) (truthy? (get binding :private))]))
+    [(string name) line col (get binding :doc) (truthy? (get binding :private))
+     (types/declared binding)]))
 
 # The top-level form compiling or running now: a failure is reported at it.
 (var- check/form nil)

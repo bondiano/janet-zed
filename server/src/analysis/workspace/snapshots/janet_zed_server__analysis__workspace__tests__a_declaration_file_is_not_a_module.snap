@@ -1,0 +1,13 @@
+---
+source: server/src/analysis/workspace/tests.rs
+expression: show_graph(&workspace)
+---
+----- SOURCE CODE
+-- /ws/a.janet
+(import ./host.d)
+(db/pull [] 1)
+-- /ws/host.d.janet
+(defn spork/json/encode {:params [:any] :ret :string} "To JSON." [x])
+(defn db/pull {:params [[:keyword] :number] :ret :any} [pattern eid])
+
+----- MODULE GRAPH

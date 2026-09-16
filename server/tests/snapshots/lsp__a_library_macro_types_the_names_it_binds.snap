@@ -1,0 +1,21 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 1208
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(import lib)
+
+(lib/defthing wheel "Wheel")
+
+(lib/shared shout (string/ascii-upper text))
+
+----- HOVER
+```janet
+wheel: Thing
+```
+lib/defthing in `main.janet`
+```janet
+(shout :string) -> :string
+```
+lib/shared in `main.janet`

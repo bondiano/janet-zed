@@ -29,7 +29,14 @@ fn check(
     natives: &[Package],
 ) -> Result<Vec<Problem>> {
     Worker::new(janet)
-        .check(path, text, cwd, packages, natives)
+        .check(&Check {
+            path,
+            text,
+            cwd,
+            packages,
+            natives,
+            declared: &[],
+        })
         .map(|report| report.problems)
 }
 
@@ -231,7 +238,14 @@ fn keeps_imports_loaded_until_their_files_change() {
     let mut worker = Worker::new("janet");
     let mut recheck = || {
         worker
-            .check(&dir.join("a.janet"), "(import ./c)\n", &dir, &[], &[])
+            .check(&Check {
+                path: &dir.join("a.janet"),
+                text: "(import ./c)\n",
+                cwd: &dir,
+                packages: &[],
+                natives: &[],
+                declared: &[],
+            })
             .unwrap()
             .problems
     };
@@ -260,15 +274,63 @@ fn restarts_after_a_check_that_does_not_finish() {
     let file = dir.join("a.janet");
     let mut worker = Worker::new("janet");
     worker.timeout = Duration::from_millis(300);
-    let slow = worker.check(&file, "(import ./slow)\n", &dir, &[], &[]);
+    let slow = worker.check(&Check {
+        path: &file,
+        text: "(import ./slow)\n",
+        cwd: &dir,
+        packages: &[],
+        natives: &[],
+        declared: &[],
+    });
     assert!(slow.unwrap_err().to_string().contains("did not finish"));
 
     worker.timeout = CHECK_TIMEOUT;
     let problems = worker
-        .check(&file, "(nope)\n", &dir, &[], &[])
+        .check(&Check {
+            path: &file,
+            text: "(nope)\n",
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+        })
         .unwrap()
         .problems;
     assert!(show_problems(&problems).contains("unknown symbol nope"));
+}
+
+#[test]
+fn reports_the_types_a_macro_declares() {
+    let dir = std::env::temp_dir().join("janet-zed-server-binding-types-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("a.janet");
+    let source = concat!(
+        "(defmacro defquery [name]\n",
+        "  ~(defn ,name {:params [:number] :ret :string} \"Asked.\" [id] (string id)))\n",
+        "(defquery ask)\n",
+    );
+    let report = Worker::new("janet")
+        .check(&Check {
+            path: &file,
+            text: source,
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+        })
+        .unwrap();
+    let bound = report
+        .bindings
+        .into_iter()
+        .map(|(path, bindings)| (crate::analysis::canonical(&path), bindings))
+        .collect::<HashMap<_, _>>();
+    assert_eq!(
+        bound[&crate::analysis::canonical(&file)]
+            .iter()
+            .map(|binding| (binding.name.as_str(), binding.annotation.as_deref()))
+            .collect::<Vec<_>>(),
+        vec![("ask", Some("{:params [:number] :ret :string}"))]
+    );
 }
 
 #[test]
@@ -289,6 +351,7 @@ fn reports_what_macros_bind() {
         col: 1,
         doc: Some("Made.".to_string()),
         private: false,
+        annotation: None,
     };
     let bindings = |report: Report| -> HashMap<_, _> {
         report
@@ -299,7 +362,16 @@ fn reports_what_macros_bind() {
     };
     let canonical = |name: &str| crate::analysis::canonical(&dir.join(name));
 
-    let first = worker.check(&file, source, &dir, &[], &[]).unwrap();
+    let first = worker
+        .check(&Check {
+            path: &file,
+            text: source,
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+        })
+        .unwrap();
     assert_eq!(
         bindings(first),
         HashMap::from([
@@ -307,7 +379,16 @@ fn reports_what_macros_bind() {
             (canonical("b.janet"), vec![made("from-module", 2)]),
         ])
     );
-    let again = worker.check(&file, source, &dir, &[], &[]).unwrap();
+    let again = worker
+        .check(&Check {
+            path: &file,
+            text: source,
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+        })
+        .unwrap();
     assert_eq!(
         bindings(again),
         HashMap::from([(canonical("a.janet"), vec![made("made", 2)])]),

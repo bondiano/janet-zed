@@ -6,15 +6,16 @@
 //! ```
 //!
 //! A library ships its own as `janet-zed.exports/<lib>/config.jdn`, installed with
-//! `(declare-source :source ["janet-zed.exports"])`.
+//! `(declare-source :source ["janet-zed.exports"])`, and its type declarations as
+//! `janet-zed.exports/<lib>/*.d.janet` beside it.
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use tree_sitter::Node;
 
-use super::definitions;
 use super::modules::ImportSpec;
+use super::{definitions, is_declaration};
 use crate::syntax::{self, Document};
 
 const FILE: &str = ".janet-zed/config.jdn";
@@ -24,31 +25,39 @@ const EXPORTS: &str = "janet-zed.exports";
 pub struct Config {
     /// A macro's full name, `void/db/defentity`, and the core definer its calls are read as.
     lint_as: HashMap<String, &'static str>,
+    /// The `*.d.janet` files libraries export, in the order they are read.
+    declarations: Vec<PathBuf>,
 }
 
 impl Config {
     /// The configs libraries export from the directories in `libraries`, a later one winning, then
     /// those at the workspace `roots`, which win over all of them.
     pub fn read(libraries: &[PathBuf], roots: &[PathBuf]) -> Self {
-        let exported = libraries
+        let exported: Vec<PathBuf> = libraries
             .iter()
             .filter_map(|dir| std::fs::read_dir(dir.join(EXPORTS)).ok())
-            .flat_map(|entries| {
-                let mut configs: Vec<_> = entries
-                    .flatten()
-                    .map(|entry| entry.path().join("config.jdn"))
-                    .collect();
-                configs.sort();
-                configs
-            });
-        exported
+            .flat_map(|entries| sorted(entries.flatten().map(|entry| entry.path())))
+            .collect();
+        let declarations = exported.iter().flat_map(|dir| declarations(dir)).collect();
+        let lint_as = exported
+            .iter()
+            .map(|dir| dir.join("config.jdn"))
             .chain(roots.iter().map(|root| root.join(FILE)))
             .filter_map(|path| std::fs::read_to_string(path).ok())
             .map(|text| Self::parse(&text))
-            .fold(Self::default(), |mut config, found| {
-                config.lint_as.extend(found.lint_as);
-                config
-            })
+            .fold(HashMap::new(), |mut lint_as, found| {
+                lint_as.extend(found.lint_as);
+                lint_as
+            });
+        Self {
+            lint_as,
+            declarations,
+        }
+    }
+
+    /// The declaration files libraries export, lowest priority first.
+    pub fn declarations(&self) -> &[PathBuf] {
+        &self.declarations
     }
 
     /// Keys that are not symbols and `:lint-as` values that are not core definers are ignored.
@@ -68,7 +77,10 @@ impl Config {
                 ))
             })
             .collect();
-        Self { lint_as }
+        Self {
+            lint_as,
+            ..Self::default()
+        }
     }
 
     /// The core definer a call headed `head` is read as, in a file with `imports`: `db/defentity`
@@ -88,6 +100,22 @@ impl Config {
 
 pub fn is_config(path: &Path) -> bool {
     path.ends_with(FILE)
+}
+
+/// The `*.d.janet` files one exported directory holds.
+fn declarations(dir: &Path) -> Vec<PathBuf> {
+    let found = std::fs::read_dir(dir).into_iter().flatten().flatten();
+    sorted(
+        found
+            .map(|entry| entry.path())
+            .filter(|path| is_declaration(path)),
+    )
+}
+
+fn sorted(paths: impl Iterator<Item = PathBuf>) -> Vec<PathBuf> {
+    let mut paths: Vec<_> = paths.collect();
+    paths.sort();
+    paths
 }
 
 /// Key and value pairs of a struct or table literal.

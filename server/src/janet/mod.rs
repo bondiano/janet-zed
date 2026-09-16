@@ -19,7 +19,11 @@ use crate::analysis::project;
 const JSON: &str = include_str!("json.janet");
 /// Root-env bindings and those of `project.janet` as JSON lines.
 pub const DUMP: &str = concat!(include_str!("project.janet"), include_str!("dump.janet"));
-const CHECK: &str = concat!(include_str!("project.janet"), include_str!("check.janet"));
+const CHECK: &str = concat!(
+    include_str!("project.janet"),
+    include_str!("types.janet"),
+    include_str!("check.janet")
+);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Starts each reply of `check.janet`: checked code may write to stdout too.
 const MARKER: &str = "\u{1}janet-zed ";
@@ -58,6 +62,8 @@ pub struct Binding {
     pub col: usize,
     pub doc: Option<String>,
     pub private: bool,
+    /// The metadata struct its types were declared in, as Janet source: `{:ret :string}`.
+    pub annotation: Option<String>,
 }
 
 /// A long-lived `janet` running `check.janet`. The modules checked files import stay loaded
@@ -89,15 +95,8 @@ impl Worker {
     /// Flychecks `text` as the file at `path`: compiled and macro-expanded, not run. `janet`
     /// works in `cwd`, the project root, and finds `packages` and `natives` besides its own
     /// module paths.
-    pub fn check(
-        &mut self,
-        path: &Path,
-        text: &str,
-        cwd: &Path,
-        packages: &[Package],
-        natives: &[Package],
-    ) -> Result<Report> {
-        let request = request(path, text, cwd, packages, natives)?;
+    pub fn check(&mut self, request: &Check) -> Result<Report> {
+        let request = line(request)?;
         let reply = self
             .exchange(&request)
             .inspect_err(|_| self.process = None)?;
@@ -172,14 +171,23 @@ impl Drop for Process {
     }
 }
 
+/// What checking one buffer takes.
+pub struct Check<'c> {
+    pub path: &'c Path,
+    pub text: &'c str,
+    /// The project root, where Janet resolves `/x` imports and `jpm_tree`.
+    pub cwd: &'c Path,
+    /// Workspace modules Janet cannot find on its own: a monorepo's packages.
+    pub packages: &'c [Package],
+    /// The native modules among them.
+    pub natives: &'c [Package],
+    /// Names declared for this file that Janet itself never binds.
+    pub declared: &'c [String],
+}
+
 /// A request line for `check.janet`: a Janet struct.
-fn request(
-    path: &Path,
-    text: &str,
-    cwd: &Path,
-    packages: &[Package],
-    natives: &[Package],
-) -> Result<String> {
+fn line(job: &Check) -> Result<String> {
+    let (path, text) = (job.path, job.text);
     // A JSON string is a valid Janet string literal.
     let string = |value: &str| serde_json::to_string(value);
     let includes = modules::directive(text, "include")
@@ -187,7 +195,9 @@ fn request(
         .map(|include| string(&include.to_string_lossy()))
         .collect::<Result<Vec<_>, _>>()?
         .join(" ");
+    // The `# janet-zed: declare` directive and the names `*.d.janet` files declare.
     let declared = modules::directive(text, "declare")
+        .chain(job.declared.iter().map(String::as_str))
         .map(string)
         .collect::<Result<Vec<_>, _>>()?
         .join(" ");
@@ -195,10 +205,10 @@ fn request(
         "{{:file {} :cwd {} :text {} :includes [{includes}] :declared [{declared}] \
          :packages [{}] :natives [{}]}}",
         string(&path.to_string_lossy())?,
-        string(&cwd.to_string_lossy())?,
+        string(&job.cwd.to_string_lossy())?,
         string(text)?,
-        pairs(packages)?,
-        pairs(natives)?,
+        pairs(job.packages)?,
+        pairs(job.natives)?,
     ))
 }
 

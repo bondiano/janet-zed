@@ -27,6 +27,7 @@ use crate::analysis::modules;
 use crate::analysis::references::{self, Occurrence, Target};
 use crate::analysis::stdlib::SourceLocation;
 use crate::analysis::symbols::{self, CandidateKind, Origin, Parameters};
+use crate::analysis::types;
 use crate::analysis::{SourceFile, canonical, uri_of};
 use crate::editing;
 use crate::janet;
@@ -189,10 +190,20 @@ pub fn hover(state: &State, params: HoverParams) -> Result<Option<Hover>> {
             let symbol = syntax::symbol_at(file.document.root(), offset)
                 .map(|symbol| file.document.text_of(symbol))
                 .unwrap_or_default();
+            // Nothing in the workspace declares the name: the types are the REPL's to tell too.
+            let heading = binding
+                .annotation
+                .as_deref()
+                .and_then(types::declared)
+                .and_then(|declared| symbols::declared_heading(symbol, None, &declared))
+                .unwrap_or_else(|| symbol.to_string());
             let doc = binding
                 .doc
                 .map_or_else(String::new, |doc| format!("\n\n{doc}"));
-            format!("```janet\n{symbol}\n```\n{} in the REPL{doc}", binding.kind)
+            format!(
+                "```janet\n{heading}\n```\n{} in the REPL{doc}",
+                binding.kind
+            )
         }
     };
     let range = match &resolved {
@@ -220,6 +231,7 @@ pub fn completion(state: &State, params: CompletionParams) -> Result<Option<Comp
                 CandidateKind::Macro => CompletionItemKind::KEYWORD,
                 CandidateKind::Variable => CompletionItemKind::VARIABLE,
                 CandidateKind::Value => CompletionItemKind::CONSTANT,
+                CandidateKind::Key => CompletionItemKind::FIELD,
             }),
             detail: candidate.detail,
             // Keeps locals, then the file, then imports, then core among equal matches.
@@ -251,6 +263,12 @@ pub fn signature_help(state: &State, params: SignatureHelpParams) -> Result<Opti
     let file = state.file(&position.text_document.uri)?;
     let offset = file.document.offset(position.position);
     let call = symbols::call_at(&file.document, offset).and_then(|(head, argument)| {
+        // Inside a lambda the help is the lambda's own parameters, typed by the call it sits in.
+        if file.document.text_of(head) == "fn" {
+            let list = head.parent()?;
+            let label = symbols::lambda(&state.workspace, file, list)?;
+            return Some((label, argument, Vec::new()));
+        }
         let (_, target) = references::resolve(
             &state.workspace,
             file,
@@ -258,7 +276,9 @@ pub fn signature_help(state: &State, params: SignatureHelpParams) -> Result<Opti
             |name| state.stdlib.is_core(name),
             |name| state.stdlib.project(name).is_some(),
         )?;
-        let label = symbols::info(&state.workspace, &state.stdlib, &target)?.signature()?;
+        let info = symbols::info(&state.workspace, &state.stdlib, &target)?;
+        let label = symbols::instantiated(&state.workspace, file, &info, head, offset)
+            .or_else(|| info.signature())?;
         let arguments: Vec<&str> = head
             .parent()
             .map(|list| {

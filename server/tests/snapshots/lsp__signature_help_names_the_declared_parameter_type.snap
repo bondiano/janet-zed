@@ -1,0 +1,12 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- SIGNATURE\\n{}\\nparameters: {}\\nactive parameter: {}\\n\",\nsession.cursor(\"(shapes/area s\", 13), signature[\"label\"].as_str().unwrap(),\nparameters.join(\", \"), signature[\"activeParameter\"])"
+---
+----- CURSOR
+      (array/push lines (string "- " (s :kind) ": " (shapes/area s))))
+                                                                 ↑
+
+----- SIGNATURE
+(area shape: Shape) -> :number
+parameters: shape: Shape
+active parameter: 0

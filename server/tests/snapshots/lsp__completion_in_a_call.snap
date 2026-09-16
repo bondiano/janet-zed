@@ -7,14 +7,23 @@ expression: "format!(\"----- CURSOR\\n{}\\n\\n----- COMPLETIONS\\n{}\\n\",\nsess
      ↑
 
 ----- COMPLETIONS
+Eid def
+Entity def
+TxReport def
+db/pull (db/pull pattern: [:keyword] eid: Eid) -> Entity?
+db/q (db/q query: :tuple & inputs) -> [[:any]]
+db/transact (db/transact tx-data: [:any]) -> TxReport
 items local
 lines local
 render (render items)
-shapes/area (shapes/area shape)
-shapes/circle (shapes/circle r)
+shapes/Circle def
+shapes/Rect def
+shapes/Shape def
+shapes/area (shapes/area shape: Shape) -> :number
+shapes/circle (shapes/circle r: :number) -> Circle
 shapes/created var
 shapes/pi-ish def
-shapes/rect (shapes/rect w h)
+shapes/rect (shapes/rect w: :number h: :number) -> Rect
 shapes/timed (shapes/timed & body)
 summary (summary items)
 total-area (total-area items)

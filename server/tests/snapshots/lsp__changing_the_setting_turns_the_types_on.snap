@@ -1,0 +1,14 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 1122
+expression: "format!(\"----- OFF\\n{off}\\n\\n----- WARNING\\n{on}\\n\")"
+---
+----- OFF
+janet 1 78: unknown symbol no-such-function
+
+----- WARNING
+janet 1 78: unknown symbol no-such-function
+janet-zed 2 36: :radius is not a key: this form has :kind :r
+janet-zed 2 41: host/fetch takes 2 arguments, given 3
+janet-zed 2 46: host/fetch takes :number here, given :string
+janet-zed 2 51: host/limits is :struct, not a function

@@ -1,0 +1,21 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- BEFORE\\n{before}\\n\\n----- AFTER\\n{after}\\n\")"
+---
+----- BEFORE
+```janet
+(area shape: Shape) -> :number
+throws :string
+```
+defn in `shapes.janet`
+
+Area of any shape.
+
+----- AFTER
+```janet
+(area shape: {:kind :any :r :number & r}) -> (or :number :string)
+throws :string
+```
+defn in `shapes.janet`
+
+Area of any shape.

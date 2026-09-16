@@ -1,0 +1,22 @@
+---
+source: server/src/analysis/workspace/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{REPORT}\\n{SUMMARY}\\n----- INFERRED\\n{}\\n\",\ninferred(&workspace, \"/ws/report.janet\"))"
+---
+----- SOURCE CODE
+(import ./shapes)
+
+(defn total-area [items]
+  (->> items
+       (map shapes/area)
+       (reduce + 0)))
+
+(defn summary [items]
+  (def by-kind (group-by |($ :kind) items))
+  (string/format "%d shapes, total area %.2f, kinds: %s"
+                 (length items)
+                 (total-area items)
+                 (string/join (map string (sorted (keys by-kind))) ", ")))
+
+----- INFERRED
+summary: (fn [(or [a] @[a] [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :string)
+total-area: (fn [(or [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :number)

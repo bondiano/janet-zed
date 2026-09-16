@@ -1,8 +1,9 @@
 # Called through netrepl's 0xFF channel as `(this-fn candidates)`, `[[path name] ...]`: the first
 # name the REPL binds, as the module loaded from `path` does, or, when that module is not loaded,
 # as the shared REPL env does (names defined interactively). Returns strings, "" for unknown:
-# [cwd source line column doc type macro], or [] when no candidate is bound. `cwd` is there
-# because `source` may be relative to it.
+# [cwd source line column doc type macro types], or [] when no candidate is bound. `cwd` is there
+# because `source` may be relative to it; `types` is what `types/declared` reads of the binding.
+# janet-zed: include ../janet/types.janet
 (fn [candidates]
   (def repl (or (table/getproto (curenv)) (curenv)))
   (defn real [file] (try (os/realpath file) ([_] nil)))
@@ -16,6 +17,7 @@
                 (def [source line column] (or (binding :source-map) []))
                 (def value (if-let [ref (binding :ref)] (ref 0) (binding :value)))
                 [(os/cwd) (text source) (text line) (text column) (text (binding :doc))
-                 (string (type value)) (if (binding :macro) "macro" "")]))
+                 (string (type value)) (if (binding :macro) "macro" "")
+                 (text (types/declared binding))]))
             candidates)
       []))

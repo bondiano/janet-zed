@@ -1,0 +1,34 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 940
+expression: "format!(\"----- REPL\\n{code}\\n\\n----- SOURCE CODE\\n{source}\\n----- HOVER ON `typed-in-repl`\\n\\\n         {only_in_repl}\\n\\n----- HOVER ON `typed-in-source`\\n{in_both}\\n\")"
+---
+----- REPL
+(defn typed-in-repl {:params [:number] :ret :string} "Only the REPL knows."
+  [id] (string id))
+(defn typed-in-source {:params [:number] :ret :boolean} [x] x)
+
+----- SOURCE CODE
+(defn typed-in-source {:params [:string] :ret :nil} "The source knows." [x] nil)
+(typed-in-repl 1)
+
+----- HOVER ON `typed-in-repl`
+```janet
+(typed-in-repl :number) -> :string
+```
+function in the REPL
+
+(typed-in-repl id)
+
+Only the REPL knows.
+
+----- HOVER ON `typed-in-source`
+```janet
+(typed-in-source x: :string) -> :nil
+```
+defn in `scratch.janet`
+
+The source knows.
+
+---
+function in the REPL

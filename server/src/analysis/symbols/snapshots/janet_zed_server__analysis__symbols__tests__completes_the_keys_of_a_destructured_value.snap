@@ -1,0 +1,10 @@
+---
+source: server/src/analysis/symbols/tests.rs
+expression: "show_keys(&workspace, \"/ws/people.janet\", \":tempids\")"
+---
+----- AT
+  (def {|
+
+----- KEYS
+:tx Eid
+:tempids {:string Eid}

@@ -1,0 +1,13 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- (request |:body)\\n{}\\n\\n----- [:params |:id]\\n{}\\n\\n----- (def {{|:tempids ids}}\\n{}\\n\",\nkeys(&read).join(\"\\n\"), keys(&path).join(\"\\n\"),\nkeys(&destructured).join(\"\\n\"),)"
+---
+----- (request |:body)
+:body {:email :any :name :any :age :any & r}
+
+----- [:params |:id]
+:id :string
+
+----- (def {|:tempids ids}
+:tx Eid
+:tempids {:string Eid}

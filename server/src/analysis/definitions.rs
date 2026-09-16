@@ -29,6 +29,11 @@ pub struct Definition<'d> {
     pub doc: Option<String>,
     /// The parameter vector of a function or macro.
     pub params: Option<Node<'d>>,
+    /// The forms between the name and the parameters or the value: docstring, metadata struct,
+    /// keywords like `:private`.
+    pub metadata: Vec<Node<'d>>,
+    /// The value of a `def` or `var`: the last form.
+    pub value: Option<Node<'d>>,
     /// `defn-` and friends, or `:private` metadata.
     pub private: bool,
     /// Definitions inside this one's body.
@@ -106,6 +111,8 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Def
             form,
             doc: docstring,
             params: params.map(|index| body[index]),
+            metadata: metadata.to_vec(),
+            value: (!function).then(|| body.last().copied()).flatten(),
             private,
             children: body
                 .iter()
@@ -122,6 +129,8 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Def
             form,
             doc: None,
             params: None,
+            metadata: Vec::new(),
+            value: None,
             private,
             children: Vec::new(),
         })

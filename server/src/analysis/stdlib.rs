@@ -8,7 +8,8 @@ use std::time::Duration;
 use anyhow::Result;
 use serde::Deserialize;
 
-use super::{modules, peg, project};
+use super::types::Annotation;
+use super::{modules, peg, project, types};
 use crate::janet;
 
 /// Compiled by Janet itself, so absent from `root-env`: name and signature.
@@ -161,6 +162,17 @@ impl Stdlib {
 
     pub fn peg(&self, name: &str) -> Option<&CoreBinding> {
         self.peg.get(name)
+    }
+
+    /// The types `types/core.d.janet` declares for a binding this Janet has. A name the file
+    /// knows and this Janet dropped has no types, as it has no docs.
+    pub fn annotation(&self, name: &str) -> Option<&'static Annotation> {
+        self.get(name).and(types::core().binding(name))
+    }
+
+    /// The same for a PEG special, which lives in patterns rather than in the environment.
+    pub fn peg_annotation(&self, name: &str) -> Option<&'static Annotation> {
+        self.peg(name).and(types::core().peg(name))
     }
 
     pub fn project(&self, name: &str) -> Option<&CoreBinding> {

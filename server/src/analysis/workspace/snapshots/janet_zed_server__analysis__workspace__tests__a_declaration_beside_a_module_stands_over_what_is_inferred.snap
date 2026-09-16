@@ -1,0 +1,19 @@
+---
+source: server/src/analysis/workspace/tests.rs
+assertion_line: 444
+expression: "format!(\"----- INFERRED\\n{before}\\n{by_importer}\\n\\n----- DECLARED BESIDE\\n{}\\n{}\\n\",\nhover(&workspace, \"/ws/report.janet\", \"shapes/area\"),\ninferred(&workspace, \"/ws/report.janet\"),)"
+---
+----- INFERRED
+```janet
+(area shape: {:kind :any :r :number :w :number :h :number & r}) -> :number
+throws :string
+```
+defn in `shapes.janet`
+total-area: (fn [(or [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :number)
+
+----- DECLARED BESIDE
+```janet
+(area shape: :table) -> :string
+```
+defn in `shapes.janet`
+total-area: (fn [(or [:table] @[:table])] :number)

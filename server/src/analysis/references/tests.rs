@@ -198,6 +198,7 @@ fn macro_definition_the_checker_expanded() {
         col: 1,
         doc: Some("A delivery.".to_string()),
         private: false,
+        annotation: None,
     };
     workspace.expand(HashMap::from([(
         PathBuf::from("/ws/model.janet"),

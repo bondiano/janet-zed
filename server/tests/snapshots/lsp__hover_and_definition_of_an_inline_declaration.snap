@@ -1,0 +1,19 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{}\\n\\n----- DEFINITION\\n{}\\n\",\nhover[\"contents\"][\"value\"].as_str().unwrap(),\nsession.show_location(definition[\"uri\"].as_str().unwrap(),\n&definition[\"range\"]))"
+---
+----- SOURCE CODE
+(comment :declare
+  (defn host/now {:params [] :ret :number} "Seconds since the epoch." []))
+(host/now)
+
+----- HOVER
+```janet
+(host/now) -> :number
+```
+declared in `scratch.janet`
+
+Seconds since the epoch.
+
+----- DEFINITION
+src/scratch.janet 1:8-1:16

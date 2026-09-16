@@ -1,0 +1,10 @@
+---
+source: server/src/analysis/symbols/tests.rs
+expression: "(defn pair {:params [a a] :ret [a a]} [left right] [left right])\n(pair | \"s\")"
+---
+----- SOURCE CODE
+(defn pair {:params [a a] :ret [a a]} [left right] [left right])
+(pair | "s")
+
+----- SIGNATURE
+(pair left: :string right: :string) -> [:string :string]

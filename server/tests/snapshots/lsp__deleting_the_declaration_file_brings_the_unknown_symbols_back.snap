@@ -1,0 +1,8 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- PROBLEMS\\n{}\\n\", unknown.join(\"\\n\"))"
+---
+----- PROBLEMS
+unknown symbol db/pull
+unknown symbol db/q
+unknown symbol db/transact

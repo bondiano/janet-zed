@@ -1,0 +1,22 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 1237
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(import spork/json)
+
+(defn parse [text]
+  (json/decode text))
+
+----- HOVER
+```janet
+(spork/json/decode json-source: (or :string :buffer) &opt keywords: :boolean? nils: :boolean?) -> {:string :any}
+```
+declared in `spork.d.janet`
+
+Parse JSON. `keywords` makes string keys keywords, `nils` makes null nil rather than `:null`.
+```janet
+(parse text: (or :string :buffer)) -> {:string :any}
+```
+defn in `main.janet`

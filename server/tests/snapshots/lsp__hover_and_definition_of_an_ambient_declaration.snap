@@ -1,0 +1,15 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- HOVER\\n{}\\n\\n----- DEFINITION\\n{}\\n\",\nhover[\"contents\"][\"value\"].as_str().unwrap(),\nsession.show_location(definition[\"uri\"].as_str().unwrap(),\n&definition[\"range\"]))"
+---
+----- HOVER
+```janet
+(db/pull pattern: [:keyword] eid: Eid) -> Entity?
+throws :db/not-found
+```
+declared in `host.d.janet`
+
+Entity attributes selected by a pull pattern.
+
+----- DEFINITION
+src/host.d.janet 7:6-7:13

@@ -9,8 +9,8 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument, DidOpenTextDocument,
-    Notification as LspNotification, PublishDiagnostics,
+    DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument,
+    DidOpenTextDocument, Notification as LspNotification, PublishDiagnostics,
 };
 use lsp_types::request::Formatting;
 use lsp_types::request::{
@@ -34,7 +34,7 @@ use crate::analysis::workspace::Workspace;
 use crate::analysis::{modules, path_of};
 use crate::kernel;
 use diagnostics::{Checked, Checker};
-use state::State;
+use state::{Reporting, State};
 
 /// `initializationOptions` sent by the Zed extension.
 #[derive(Debug, Default, Deserialize)]
@@ -45,6 +45,24 @@ struct Options {
     janet_source: Option<PathBuf>,
     /// The netrepl port hover and go-to-definition ask, the REPL kernel's by default.
     repl_port: Option<u16>,
+    /// What the client can change later with `didChangeConfiguration`.
+    #[serde(default)]
+    types: Types,
+}
+
+/// The `types` block of the settings, in `initializationOptions` and in `didChangeConfiguration`.
+#[derive(Debug, Default, Deserialize)]
+struct Types {
+    #[serde(default)]
+    diagnostics: Reporting,
+}
+
+/// What `didChangeConfiguration` carries. Everything is optional: a client that sends settings
+/// of its own, or none, leaves the defaults standing rather than failing the notification.
+#[derive(Debug, Default, Deserialize)]
+struct Settings {
+    #[serde(default)]
+    types: Types,
 }
 
 /// Serves LSP over stdio.
@@ -113,7 +131,8 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let (checker, results) = Checker::spawn(janet.to_string());
     let started = Instant::now();
     let repl_port = options.repl_port.unwrap_or(kernel::netrepl::PORT);
-    let state = State::new(workspace, stdlib, janet.to_string(), repl_port);
+    let reporting = options.types.diagnostics;
+    let state = State::new(workspace, stdlib, janet.to_string(), repl_port, reporting);
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),
@@ -348,6 +367,21 @@ fn sync(
             tracing::debug!(files = changes.len(), "changed on disk");
             state.changed(changes);
         }
+        DidChangeConfiguration::METHOD => {
+            let settings = extract::<DidChangeConfiguration>(notification)?.settings;
+            let reporting = serde_json::from_value::<Settings>(settings)
+                .unwrap_or_default()
+                .types
+                .diagnostics;
+            tracing::debug!(?reporting, "configured");
+            if state.reporting != reporting {
+                state.reporting = reporting;
+                // The buffers are marked up again, or their marks taken off.
+                for uri in state.open_buffers() {
+                    check(state, checker, &uri);
+                }
+            }
+        }
         method => tracing::trace!(method, "ignored notification"),
     }
     Ok(())
@@ -383,7 +417,17 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
         );
         return Ok(());
     }
-    let diagnostics = diagnostics::diagnostics(state.document(&checked.uri)?, &report.problems);
+    // Off, nothing is inferred for this: the types are only read when someone asks to see them.
+    let path = (state.reporting != Reporting::Off)
+        .then(|| state.file(&checked.uri).map(|file| file.path.clone()))
+        .transpose()?;
+    let facts = path.map(|path| state.workspace.facts(&path));
+    let findings = facts.as_deref().map_or(&[][..], |facts| &facts.findings);
+    let document = state.document(&checked.uri)?;
+    // Both sets go out together, under the version that was checked: the types add to what the
+    // checker found rather than replacing it.
+    let mut diagnostics = diagnostics::diagnostics(document, &report.problems);
+    diagnostics.extend(diagnostics::inferred(document, findings, state.reporting));
     // Kept for quick fixes: clients need not send them back with `codeAction`.
     state
         .diagnostics

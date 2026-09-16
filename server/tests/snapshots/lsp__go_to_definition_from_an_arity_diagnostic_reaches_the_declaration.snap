@@ -1,0 +1,10 @@
+---
+source: server/tests/lsp.rs
+assertion_line: 1159
+expression: "format!(\"----- DIAGNOSTIC\\n{}\\n\\n----- DEFINITION\\n{declaration}\\n\",\narity[\"message\"].as_str().unwrap())"
+---
+----- DIAGNOSTIC
+host/fetch takes 2 arguments, given 3
+
+----- DEFINITION
+src/mistakes.janet 7:8-7:18

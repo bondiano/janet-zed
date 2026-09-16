@@ -10,6 +10,8 @@ use std::time::Duration;
 use super::netrepl::{HOST, jdn_strings};
 
 const LOOKUP: &str = include_str!("lookup.janet");
+/// How a binding's declared types are written back, for `lookup.janet` to call.
+const TYPES: &str = include_str!("../janet/types.janet");
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(50);
 const READ_TIMEOUT: Duration = Duration::from_millis(300);
 
@@ -21,6 +23,8 @@ pub struct Binding {
     pub doc: Option<String>,
     /// `macro`, or the type of the value: `function`, `table`, …
     pub kind: String,
+    /// The metadata struct its types were declared in, as Janet source: `{:ret :string}`.
+    pub annotation: Option<String>,
 }
 
 pub struct Repl {
@@ -54,7 +58,9 @@ impl Repl {
             })
             .collect::<Result<Vec<_>, serde_json::Error>>()?
             .join(" ");
-        self.send(&[&[0xFF], format!("({LOOKUP} [{candidates}])").as_bytes()].concat())?;
+        // The helpers are defined inside the form: the REPL's own environment stays as it was.
+        let code = format!("(do {TYPES} ({LOOKUP} [{candidates}]))");
+        self.send(&[&[0xFF], code.as_bytes()].concat())?;
         let reply = String::from_utf8_lossy(&self.recv()?).into_owned();
         Ok(parse_reply(&reply))
     }
@@ -75,13 +81,14 @@ impl Repl {
     }
 }
 
-/// `(true ("cwd" "source" "line" "column" "doc" "type" "macro"))`, `(true ())` when nothing is
-/// bound.
+/// `(true ("cwd" "source" "line" "column" "doc" "type" "macro" "types"))`, `(true ())` when
+/// nothing is bound.
 fn parse_reply(reply: &str) -> Option<Binding> {
     if !reply.starts_with("(true") {
         return None;
     }
-    let [cwd, source, line, column, doc, kind, is_macro] = jdn_strings(reply).try_into().ok()?;
+    let [cwd, source, line, column, doc, kind, is_macro, types] =
+        jdn_strings(reply).try_into().ok()?;
     // Code typed into the REPL has no file: its source is `:zed`.
     let file = Path::new(&cwd).join(source);
     let location = match (line.parse(), column.parse()) {
@@ -92,6 +99,7 @@ fn parse_reply(reply: &str) -> Option<Binding> {
         location,
         doc: Some(doc).filter(|doc| !doc.is_empty()),
         kind: if is_macro.is_empty() { kind } else { is_macro },
+        annotation: Some(types).filter(|types| !types.is_empty()),
     })
 }
 

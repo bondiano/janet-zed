@@ -1,0 +1,9 @@
+---
+source: server/src/analysis/types/infer/tests.rs
+expression: shown(&facts)
+---
+also-grows: (fn [:any] :any)
+even-ish: (fn [:number] :any)
+grows-more: (fn [:any] :any)
+grows: (fn [:any] :any)
+odd-ish: (fn [:number] :any)

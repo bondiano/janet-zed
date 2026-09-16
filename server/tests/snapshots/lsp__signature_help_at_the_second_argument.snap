@@ -7,5 +7,5 @@ expression: "format!(\"----- CURSOR\\n{}\\n\\n----- SIGNATURE\\n{}\\nactive para
                        ↑
 
 ----- SIGNATURE
-(string/join parts &opt sep)
+(string/join parts: (or :tuple :array) &opt sep: (or :string :buffer :symbol :keyword)) -> :string
 active parameter: 1

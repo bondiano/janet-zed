@@ -39,6 +39,18 @@ fn head_is_named_through_the_imports() {
 }
 
 #[test]
+fn declaration_files_come_with_the_exported_config() {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/exports");
+    let config = Config::read(std::slice::from_ref(&dir), std::slice::from_ref(&dir));
+    let names: Vec<_> = config
+        .declarations()
+        .iter()
+        .filter_map(|path| path.file_name()?.to_str())
+        .collect();
+    assert_eq!(names, ["lib.d.janet"]);
+}
+
+#[test]
 fn workspace_config_wins_over_exports() {
     let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/exports");
     let config = Config::read(std::slice::from_ref(&dir), std::slice::from_ref(&dir));

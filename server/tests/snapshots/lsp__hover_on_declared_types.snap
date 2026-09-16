@@ -1,0 +1,26 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- HOVER\\n{}\\n\", shown.join(\"\\n\\n\"))"
+---
+----- HOVER
+-- defn circle
+```janet
+(circle r: :number) -> Circle
+```
+defn in `shapes.janet`
+
+Make a circle with radius `r`.
+
+-- def Shape
+```janet
+(or {:kind :circle :r :number} {:kind :rect :w :number :h :number})
+```
+def in `shapes.janet`
+
+-- defmacro timed
+```janet
+(timed & body: a) -> [:symbol [:symbol [:symbol] :symbol [:symbol [a]]] [:symbol [:symbol [:symbol] :symbol]]]
+```
+defmacro in `shapes.janet`
+
+Evaluate `body`, return `[result seconds]`.

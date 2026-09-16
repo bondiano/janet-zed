@@ -56,6 +56,7 @@ fn job(uri: &str, version: i32) -> Job {
         cwd: PathBuf::from("/ws"),
         packages: Vec::new(),
         natives: Vec::new(),
+        declared: Vec::new(),
     }
 }
 

@@ -31,11 +31,21 @@ impl Session {
             .join("../fixtures/project")
             .canonicalize()
             .unwrap();
+        Self::start_at(root, "src/report.janet")
+    }
+
+    /// A server on `root` with one file of it open.
+    fn start_at(root: PathBuf, open: &str) -> Self {
+        Self::start_with(root, open, &Value::Null)
+    }
+
+    /// The same, with `settings` merged into the `initializationOptions`.
+    fn start_with(root: PathBuf, open: &str, settings: &Value) -> Self {
         let (server, connection) = Connection::memory();
         let server =
             thread::spawn(move || janet_zed_server::lsp::run_with(&server, false).unwrap());
-        let text = std::fs::read_to_string(root.join("src/report.janet")).unwrap();
-        let report = uri(&root.join("src/report.janet"));
+        let text = std::fs::read_to_string(root.join(open)).unwrap();
+        let report = uri(&root.join(open));
         let mut session = Self {
             connection,
             server,
@@ -53,7 +63,7 @@ impl Session {
                 json!({
                     "capabilities": {},
                     "workspaceFolders": [{"uri": root_uri, "name": "project"}],
-                    "initializationOptions": {"janetPath": "janet", "replPort": repl_port()},
+                    "initializationOptions": options(settings),
                 }),
             )
             .unwrap();
@@ -96,6 +106,15 @@ impl Session {
             &self.text[start..end],
             " ".repeat(offset - start)
         )
+    }
+
+    /// Opens another file of the project as it is on disk.
+    fn open_file(&mut self, relative: &str) -> (String, String) {
+        let path = self.root.join(relative);
+        let text = std::fs::read_to_string(&path).unwrap();
+        let uri = uri(&path);
+        self.open(&uri, &text);
+        (uri, text)
     }
 
     /// `path line:character-line:character`, with the path relative to the fixture project.
@@ -162,6 +181,15 @@ impl Session {
     }
 }
 
+/// `initializationOptions` with the keys of `settings` on top.
+fn options(settings: &Value) -> Value {
+    let mut options = json!({"janetPath": "janet", "replPort": repl_port()});
+    for (key, value) in settings.as_object().into_iter().flatten() {
+        options[key] = value.clone();
+    }
+    options
+}
+
 /// The LSP position `delta` bytes past the first `needle` in ASCII `text`.
 fn position(text: &str, needle: &str, delta: usize) -> Value {
     let offset = text.find(needle).unwrap() + delta;
@@ -204,6 +232,255 @@ fn hover_on_an_imported_definition() {
         hover["contents"]["value"].as_str().unwrap()
     ));
     session.finish();
+}
+
+/// An edit in another buffer is what hover on an imported name answers from, saved or not.
+#[test]
+fn an_unsaved_edit_retypes_what_imports_it() {
+    let mut session = Session::start();
+    let hover = |session: &mut Session| {
+        let hover = session
+            .request("textDocument/hover", session.at("shapes/area", 8))
+            .unwrap();
+        hover["contents"]["value"].as_str().unwrap().to_string()
+    };
+    let before = hover(&mut session);
+    let (shapes, text) = session.open_file("src/shapes.janet");
+    // Without its metadata, `area` is whatever its body says it is.
+    let annotation = "  {:params [Shape] :ret :number :throws [:string]}\n";
+    let rect = "(* (shape :w) (shape :h))";
+    assert!(text.contains(annotation) && text.contains(rect), "{text}");
+    let edited = text.replace(annotation, "").replace(rect, "\"flat\"");
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": shapes, "version": 2},
+            "contentChanges": [{"text": edited}],
+        }),
+    );
+    let after = hover(&mut session);
+    insta::assert_snapshot!(format!("----- BEFORE\n{before}\n\n----- AFTER\n{after}\n"));
+    session.finish();
+}
+
+#[test]
+fn hover_on_declared_types() {
+    let mut session = Session::start();
+    let path = session.root.join("src/shapes.janet");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let shapes = uri(&path);
+    session.open(&shapes, &text);
+    let mut hover = |needle: &str, delta: usize| {
+        let params = json!({
+            "textDocument": {"uri": shapes},
+            "position": position(&text, needle, delta),
+        });
+        let hover = session.request("textDocument/hover", params).unwrap();
+        hover["contents"]["value"].as_str().unwrap().to_string()
+    };
+    let shown = [("defn circle", 5), ("def Shape", 4), ("defmacro timed", 9)]
+        .map(|(needle, delta)| format!("-- {needle}\n{}", hover(needle, delta)));
+    insta::assert_snapshot!(format!("----- HOVER\n{}\n", shown.join("\n\n")));
+    session.finish();
+}
+
+#[test]
+fn signature_help_names_the_declared_parameter_type() {
+    let mut session = Session::start();
+    let help = session
+        .request(
+            "textDocument/signatureHelp",
+            session.at("(shapes/area s", 13),
+        )
+        .unwrap();
+    let signature = &help["signatures"][0];
+    let parameters = signature["parameters"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|parameter| {
+            let label = parameter["label"].as_array().unwrap();
+            let at = |index: usize| usize::try_from(label[index].as_u64().unwrap()).unwrap();
+            let text = signature["label"].as_str().unwrap();
+            text[at(0)..at(1)].to_string()
+        })
+        .collect::<Vec<_>>();
+    insta::assert_snapshot!(format!(
+        "----- CURSOR\n{}\n\n----- SIGNATURE\n{}\nparameters: {}\nactive parameter: {}\n",
+        session.cursor("(shapes/area s", 13),
+        signature["label"].as_str().unwrap(),
+        parameters.join(", "),
+        signature["activeParameter"]
+    ));
+    session.finish();
+}
+
+#[test]
+fn hover_and_definition_of_an_ambient_declaration() {
+    let mut session = Session::start();
+    let (people, text) = session.open_file("src/people.janet");
+    let at = |needle: &str, delta: usize| {
+        json!({
+            "textDocument": {"uri": people},
+            "position": position(&text, needle, delta),
+        })
+    };
+    let hover = session
+        .request("textDocument/hover", at("(db/pull", 1))
+        .unwrap();
+    let definition = session
+        .request("textDocument/definition", at("(db/pull", 1))
+        .unwrap();
+    insta::assert_snapshot!(format!(
+        "----- HOVER\n{}\n\n----- DEFINITION\n{}\n",
+        hover["contents"]["value"].as_str().unwrap(),
+        session.show_location(definition["uri"].as_str().unwrap(), &definition["range"])
+    ));
+    session.finish();
+}
+
+#[test]
+fn no_diagnostics_for_declared_host_names() {
+    let mut session = Session::start();
+    let (people, _) = session.open_file("src/people.janet");
+    assert_eq!(session.diagnostics(&people, 1), json!([]));
+    session.finish();
+}
+
+#[test]
+fn completion_offers_declared_names() {
+    let mut session = Session::start();
+    let (people, text) = session.open_file("src/people.janet");
+    let items = session
+        .request(
+            "textDocument/completion",
+            json!({
+                "textDocument": {"uri": people},
+                "position": position(&text, "(db/pull", 8),
+            }),
+        )
+        .unwrap();
+    let mut declared: Vec<_> = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|item| {
+            item["label"]
+                .as_str()
+                .unwrap_or_default()
+                .starts_with("db/")
+        })
+        .map(|item| {
+            format!(
+                "{} {}",
+                item["label"].as_str().unwrap(),
+                item["detail"].as_str().unwrap_or_default()
+            )
+        })
+        .collect();
+    declared.sort();
+    insta::assert_snapshot!(format!("----- COMPLETIONS\n{}\n", declared.join("\n")));
+    session.finish();
+}
+
+#[test]
+fn an_unsaved_declaration_changes_hover_elsewhere() {
+    let mut session = Session::start();
+    let (people, text) = session.open_file("src/people.janet");
+    let (host, declarations) = session.open_file("src/host.d.janet");
+    let edited = declarations.replace(":ret Entity? :throws", ":ret Eid :throws");
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": host, "version": 2},
+            "contentChanges": [{"text": edited}],
+        }),
+    );
+    let hover = session
+        .request(
+            "textDocument/hover",
+            json!({
+                "textDocument": {"uri": people},
+                "position": position(&text, "(db/pull", 1),
+            }),
+        )
+        .unwrap();
+    let hover = hover["contents"]["value"].as_str().unwrap();
+    assert!(hover.contains("-> Eid"), "{hover}");
+    session.finish();
+}
+
+#[test]
+fn hover_and_definition_of_an_inline_declaration() {
+    let mut session = Session::start();
+    let source = concat!(
+        "(comment :declare\n",
+        "  (defn host/now {:params [] :ret :number} \"Seconds since the epoch.\" []))\n",
+        "(host/now)\n",
+    );
+    let scratch = uri(&session.root.join("src/scratch.janet"));
+    session.open(&scratch, source);
+    let at = |needle: &str, delta: usize| {
+        json!({
+            "textDocument": {"uri": scratch},
+            "position": position(source, needle, delta),
+        })
+    };
+    let hover = session
+        .request("textDocument/hover", at("(host/now)", 1))
+        .unwrap();
+    let definition = session
+        .request("textDocument/definition", at("(host/now)", 1))
+        .unwrap();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{}\n\n----- DEFINITION\n{}\n",
+        hover["contents"]["value"].as_str().unwrap(),
+        session.show_location(definition["uri"].as_str().unwrap(), &definition["range"])
+    ));
+    session.finish();
+}
+
+#[test]
+fn deleting_the_declaration_file_brings_the_unknown_symbols_back() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/project");
+    let root = std::env::temp_dir().join(format!("janet-zed-declarations-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for name in ["src/people.janet", "src/host.d.janet"] {
+        std::fs::copy(fixtures.join(name), root.join(name)).unwrap();
+    }
+    let root = root.canonicalize().unwrap();
+    let mut session = Session::start_at(root.clone(), "src/people.janet");
+    let people = session.report.clone();
+    let text = session.text.clone();
+    assert_eq!(session.diagnostics(&people, 1), json!([]));
+
+    let host = root.join("src/host.d.janet");
+    std::fs::remove_file(&host).unwrap();
+    session.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": uri(&host), "type": 3}]}),
+    );
+    // The next edit is what checks the buffer again.
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": people, "version": 2},
+            "contentChanges": [{"text": text}],
+        }),
+    );
+    let mut unknown: Vec<String> = session
+        .diagnostics(&people, 2)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|problem| problem["message"].as_str().unwrap().to_string())
+        .collect();
+    unknown.sort();
+    unknown.dedup();
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(format!("----- PROBLEMS\n{}\n", unknown.join("\n")));
 }
 
 #[test]
@@ -631,4 +908,335 @@ fn hover_and_definition_from_a_running_repl() {
         session.show_location(location["uri"].as_str().unwrap(), &location["range"])
     ));
     session.finish();
+}
+
+#[test]
+fn hover_types_a_running_repl_declares() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let mut repl = runtime
+        .block_on(Netrepl::connect("janet", repl_port()))
+        .unwrap();
+    let mut session = Session::start();
+    // The REPL knows both names; only one of them is written down in the buffer.
+    let code = concat!(
+        "(defn typed-in-repl {:params [:number] :ret :string} \"Only the REPL knows.\"\n",
+        "  [id] (string id))\n",
+        "(defn typed-in-source {:params [:number] :ret :boolean} [x] x)",
+    );
+    let evaluated = runtime.block_on(repl.eval(code, None)).unwrap();
+    assert_eq!(evaluated.errors, "");
+
+    let source = concat!(
+        "(defn typed-in-source {:params [:string] :ret :nil} \"The source knows.\" [x] nil)\n",
+        "(typed-in-repl 1)\n",
+    );
+    let scratch = uri(&session.root.join("scratch.janet"));
+    session.open(&scratch, source);
+    let hover = |session: &mut Session, needle: &str, delta: usize| {
+        session
+            .request(
+                "textDocument/hover",
+                json!({
+                    "textDocument": {"uri": scratch},
+                    "position": position(source, needle, delta),
+                }),
+            )
+            .unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let only_in_repl = hover(&mut session, "(typed-in-repl 1)", 1);
+    let in_both = hover(&mut session, "(defn typed-in-source", 6);
+    insta::assert_snapshot!(format!(
+        "----- REPL\n{code}\n\n----- SOURCE CODE\n{source}\n----- HOVER ON `typed-in-repl`\n\
+         {only_in_repl}\n\n----- HOVER ON `typed-in-source`\n{in_both}\n"
+    ));
+    session.finish();
+}
+
+#[test]
+fn completion_offers_the_keys_of_the_form_under_the_cursor() {
+    let mut session = Session::start();
+    let (people, text) = session.open_file("src/people.janet");
+    let keys = |items: &Value| {
+        items
+            .as_array()
+            .unwrap()
+            .iter()
+            .take_while(|item| item["kind"] == 5)
+            .map(|item| {
+                format!(
+                    "{} {}",
+                    item["label"].as_str().unwrap(),
+                    item["detail"].as_str().unwrap_or_default()
+                )
+            })
+            .collect::<Vec<_>>()
+    };
+    let at = |needle: &str, delta: usize| {
+        json!({
+            "textDocument": {"uri": people},
+            "position": position(&text, needle, delta),
+        })
+    };
+    let read = session
+        .request("textDocument/completion", at("(request :body)", 9))
+        .unwrap();
+    let path = session
+        .request("textDocument/completion", at("[:params :id]", 9))
+        .unwrap();
+    let destructured = session
+        .request("textDocument/completion", at("{:tempids ids}", 1))
+        .unwrap();
+    insta::assert_snapshot!(format!(
+        "----- (request |:body)\n{}\n\n----- [:params |:id]\n{}\n\n----- (def {{|:tempids ids}}\n{}\n",
+        keys(&read).join("\n"),
+        keys(&path).join("\n"),
+        keys(&destructured).join("\n"),
+    ));
+    session.finish();
+}
+
+#[test]
+fn signature_help_instantiates_the_parameters_of_a_core_call() {
+    let mut session = Session::start();
+    let text = format!("{}\n(def mapped (map  [1 2 3]))\n", session.text);
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": session.report, "version": 2},
+            "contentChanges": [{"text": text}],
+        }),
+    );
+    let help = session
+        .request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": session.report},
+                "position": position(&text, "(map  [1 2 3])", 5),
+            }),
+        )
+        .unwrap();
+    insta::assert_snapshot!(format!(
+        "----- CALL\n(map | [1 2 3])\n\n----- SIGNATURE\n{}\n",
+        help["signatures"][0]["label"].as_str().unwrap()
+    ));
+    session.finish();
+}
+
+#[test]
+fn signature_help_inside_a_lambda_types_its_parameters() {
+    let mut session = Session::start();
+    let text = format!("{}\n(def mapped (map (fn [x] ) [1 2 3]))\n", session.text);
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": session.report, "version": 2},
+            "contentChanges": [{"text": text}],
+        }),
+    );
+    let help = session
+        .request(
+            "textDocument/signatureHelp",
+            json!({
+                "textDocument": {"uri": session.report},
+                "position": position(&text, "(fn [x] )", 8),
+            }),
+        )
+        .unwrap();
+    insta::assert_snapshot!(format!(
+        "----- CALL\n(map (fn [x] |) [1 2 3])\n\n----- SIGNATURE\n{}\n",
+        help["signatures"][0]["label"].as_str().unwrap()
+    ));
+    session.finish();
+}
+
+/// The type diagnostics fixture, with a call the checker itself objects to appended.
+fn with_a_broken_call(root: &Path) -> String {
+    let path = root.join("../diagnostics/types.janet");
+    let text = std::fs::read_to_string(&path).unwrap();
+    format!("{text}\n(defn broken []\n  (no-such-function 1))\n")
+}
+
+/// `source` published for `uri` at version 1, as `source severity line: message`.
+fn published(session: &mut Session, uri: &str) -> String {
+    session
+        .diagnostics(uri, 1)
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|problem| {
+            format!(
+                "{} {} {}: {}",
+                problem["source"].as_str().unwrap(),
+                problem["severity"],
+                problem["range"]["start"]["line"],
+                problem["message"].as_str().unwrap(),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+#[test]
+fn types_report_nothing_until_they_are_asked_to() {
+    let mut session = Session::start();
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    insta::assert_snapshot!(published(&mut session, &scratch));
+    session.finish();
+}
+
+#[test]
+fn types_report_as_hints_beside_what_the_checker_found() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/project")
+        .canonicalize()
+        .unwrap();
+    let settings = json!({"types": {"diagnostics": "hint"}});
+    let mut session = Session::start_with(root, "src/report.janet", &settings);
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    insta::assert_snapshot!(published(&mut session, &scratch));
+    session.finish();
+}
+
+#[test]
+fn changing_the_setting_turns_the_types_on() {
+    let mut session = Session::start();
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    let off = published(&mut session, &scratch);
+    session.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"types": {"diagnostics": "warning"}}}),
+    );
+    let on = published(&mut session, &scratch);
+    insta::assert_snapshot!(format!("----- OFF\n{off}\n\n----- WARNING\n{on}\n"));
+    session.finish();
+}
+
+#[test]
+fn go_to_definition_from_an_arity_diagnostic_reaches_the_declaration() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/project")
+        .canonicalize()
+        .unwrap();
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(root, "src/report.janet", &settings);
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    let published = session.diagnostics(&scratch, 1);
+    let arity = published
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|problem| {
+            problem["message"]
+                .as_str()
+                .unwrap()
+                .contains("arguments, given")
+        })
+        .expect("the arity diagnostic");
+    let found = session
+        .request(
+            "textDocument/definition",
+            json!({
+                "textDocument": {"uri": scratch},
+                "position": arity["range"]["start"],
+            }),
+        )
+        .unwrap();
+    let declaration = session.show_location(found["uri"].as_str().unwrap(), &found["range"]);
+    insta::assert_snapshot!(format!(
+        "----- DIAGNOSTIC\n{}\n\n----- DEFINITION\n{declaration}\n",
+        arity["message"].as_str().unwrap()
+    ));
+    session.finish();
+}
+
+/// A library macro's expansion: `:lint-as` gives the call the name it defines, and only the
+/// checker, which compiled what the macro expanded to, has the types it declared there.
+#[test]
+fn a_library_macro_types_the_names_it_binds() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/exports");
+    let root = std::env::temp_dir().join(format!("janet-zed-lint-as-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    // The library as `jpm -l` installs it: the module, and the config and declarations it exports.
+    let installed = root.join("jpm_tree/lib");
+    std::fs::create_dir_all(installed.join("janet-zed.exports/lib")).unwrap();
+    for name in [
+        "lib.janet",
+        "janet-zed.exports/lib/config.jdn",
+        "janet-zed.exports/lib/lib.d.janet",
+    ] {
+        std::fs::copy(fixtures.join(name), installed.join(name)).unwrap();
+    }
+    let source = concat!(
+        "(import lib)\n\n",
+        "(lib/defthing wheel \"Wheel\")\n\n",
+        "(lib/shared shout (string/ascii-upper text))\n",
+    );
+    std::fs::write(root.join("main.janet"), source).unwrap();
+    let root = root.canonicalize().unwrap();
+
+    let mut session = Session::start_at(root.clone(), "main.janet");
+    let main = session.report.clone();
+    // The check is what expands the macros; its diagnostics say it has run.
+    assert_eq!(session.diagnostics(&main, 1), json!([]));
+    let mut hover = |needle: &str| {
+        let at = json!({
+            "textDocument": {"uri": main},
+            "position": position(source, needle, 0),
+        });
+        session.request("textDocument/hover", at).unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let shown = format!("{}\n{}", hover("wheel \"Wheel\""), hover("shout ("));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
+}
+
+/// The declarations the server carries for spork: a file that imports one of its modules is typed
+/// by them, whatever the installed spork ships.
+#[test]
+fn spork_types_what_its_modules_answer() {
+    let root = std::env::temp_dir().join(format!("janet-zed-spork-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(&root).unwrap();
+    let source = "(import spork/json)\n\n(defn parse [text]\n  (json/decode text))\n";
+    std::fs::write(root.join("main.janet"), source).unwrap();
+    let root = root.canonicalize().unwrap();
+
+    let mut session = Session::start_at(root.clone(), "main.janet");
+    let main = session.report.clone();
+    let mut hover = |needle: &str| {
+        let at = json!({
+            "textDocument": {"uri": main},
+            "position": position(source, needle, 0),
+        });
+        session.request("textDocument/hover", at).unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let shown = format!("{}\n{}", hover("json/decode"), hover("parse [text]"));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
 }

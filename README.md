@@ -12,6 +12,9 @@ a REPL wired into the editor, and structural editing.
     (`boot.janet` and the C sources);
   - find references and scope-aware rename across the workspace;
   - document symbols and formatting (spork `fmt`).
+- **Types:** hover, signature help and key completion from the types of a program — written in
+  a definition's metadata, declared in a `*.d.janet` file, or read out of a body by inference —
+  with optional diagnostics for what they rule out.
 - **Code actions:** paredit (slurp, barf, raise, splice, wrap), threading (`->`, `->>`,
   unthread) and quick fixes for unknown symbols (create the function or `def`, ignore the
   line, or declare the name).
@@ -57,7 +60,9 @@ All settings are optional. Put them in `settings.json`:
     "janet-zed-server": {
       "settings": {
         // Use a local Janet checkout instead of downloading the sources.
-        "janet_source": "~/src/janet"
+        "janet_source": "~/src/janet",
+        // Report what the types rule out: "off" (default), "hint" or "warning".
+        "types": { "diagnostics": "hint" }
       },
       "binary": {
         // Server log verbosity: error, warn, info (default), debug or trace.
@@ -108,6 +113,10 @@ Names that no config covers are still found when diagnostics run: a check report
 macros it expanded bound, so a name a macro defines under a different name than the symbol in
 the call resolves once that file has been checked.
 
+The same check is where the types come from. `:lint-as` gives a call the name it defines and
+nothing more; a macro that annotates what it expands to — `~(def ,name {:type Thing} …)` — has
+those types shown on the name once the file has been checked.
+
 ### Comment directives
 
 A script its host concatenates with other files, or runs with names already defined, can say
@@ -133,6 +142,139 @@ every unknown symbol is ignored:
 # janet-zed: ignore-file unknown-symbol
 ```
 
+## Types
+
+The server reads the types of a Janet program and shows them: in hover, in signature help, and
+in the keys completion offers. They are hints and nothing more — nothing has to be annotated,
+and an unannotated file is typed all the same, from its own literals and calls.
+
+Types come from three places, the more local winning: an annotation written in the source, a
+declaration file, and, under both, what inference reads out of a body. Where nothing says, the
+type is `:any`, which says nothing and complains about nothing.
+
+### The type language
+
+A type is written as the value it stands for. The atoms are what `(type x)` answers, plus
+`:any` and `:never`:
+
+```janet
+:nil :boolean :number :string :buffer :keyword :symbol :function :fiber :any
+:string?                        # (or :string :nil) — the `?` suffix on any atom or name
+Person  Entity?                 # a named type, declared with :typedef
+a b r                           # a type variable: a lowercase symbol
+[:number]                       # a tuple of numbers (one element stands for every element)
+[:number :string :number]       # a tuple of a fixed shape
+@[:string]                      # an array of strings
+{:status :number :body :any}    # a struct with these keys and no others
+{:status :number & r}           # an open struct: these keys and some more
+{:keyword :any}                 # a dictionary: any key of one type, any value of another
+@{:tx :number :tempids @{}}     # a table
+(or :string :keyword)           # a union
+(enum :get :post :put)          # one of these values
+(fn [a] b)                      # a function; (fn [a & as] b) takes a rest argument
+```
+
+An absent key and a `nil` one read the same in Janet, so `{:age :number?}` covers both and
+there is no separate optional key.
+
+### Writing types down
+
+Types live in the metadata Janet already keeps for a definition, so they survive into the
+compiled environment and a running REPL reports them back:
+
+```janet
+(def Shape :typedef (or {:kind :circle :r :number} {:kind :rect :w :number :h :number}))
+
+(defn area
+  {:params [Shape] :ret :number :throws [:string]}
+  "Area of any shape."
+  [shape]
+  ...)
+```
+
+`:params` is one type per parameter, in order, the rest parameter's type standing for every
+argument from its position on; a vector of the wrong length is ignored rather than shown.
+`:ret` is what the call answers, `:throws` what its body raises, and `:type` is the form for a
+`def` or `var`. A predicate adds `:narrows`: what its argument is wherever it answers truly,
+or `:any` for one that tests a value rather than a type and so tells a branch nothing.
+
+`(def Name :typedef …)` names a shape. Named types are visible to their file and to the whole
+workspace through declaration files, they may refer to themselves, and hover expands them.
+
+### What inference reads
+
+Inference runs over the syntax tree and unifies gradually: `:any` fits anything, and a mismatch
+widens to a union instead of failing, so a file always comes out with types, however vague. The
+top level is walked twice, the second walk seeing what the first learned, which is what mutually
+recursive definitions need. Across files it reads the one it is typing and two more; what a
+module further away than that says is `:any` rather than another round of inference, which is
+also what ends a cycle of imports.
+
+- Literals and the calls around them: `(string/format …)` answers a string however deep the
+  call nests, and a struct literal is typed key by key.
+- A parameter from what the body does with it: `(request :body)` makes `request` at least
+  `{:body :any & r}`, and destructuring adds the keys it names.
+- Branches join: an `if` is the union of its arms, and an arm that only ever raises drops out
+  of the union and lands in `:throws` instead.
+- A test narrows what it guards: inside `(when (string? x) …)`, `x` is a string, and the
+  branch where it does not hold has that subtracted. Which test says what is written down as
+  `:narrows`, never built in.
+- Polymorphism is generalised per definition: `(defn ident [x] x)` is `(fn [a] a)`, and two
+  calls with a number and a string do not run into each other.
+- Threading, recursion and mutual recursion settle; a type that would grow forever stops at
+  `:any` rather than hang, as does a macro the analysis cannot see through.
+
+Signature help instantiates what the arguments already written pin down: at
+`(map (fn [x] |) [1 2 3])` the lambda's `x` is `:number`. Completion offers the keys of a form
+it knows the shape of — after `(request :`, inside `(get-in request [:params :`, and in a
+destructuring `{:` — and the values of an `(enum …)` argument.
+
+### Declaration files
+
+A `*.d.janet` file is Janet by syntax and never runs: it says what names the host, or a library,
+gives a file, and what types they take and answer.
+
+```janet
+# host.d.janet, anywhere under the workspace: every file sees these names.
+(def Entity :typedef {:db/id :number & r})
+
+(defn db/pull
+  {:params [[:keyword] :number] :ret Entity? :throws [:db/not-found]}
+  "Entity attributes selected by a pull pattern."
+  [pattern eid])
+```
+
+Such a file is no module: nothing imports it, it imports nothing, and its names never become
+`unknown symbol`. Where the same name is written down twice, the more local wins: a
+`(comment :declare …)` block in the file itself, then `*.d.janet` under the workspace, then what
+a library exports as `janet-zed.exports/<lib>/*.d.janet` beside its config.
+
+`shapes.d.janet` beside `shapes.janet` is read as the types of that module: a module whose own
+source carries no annotations is typed by the file next to it, in every file that imports it.
+
+The server carries types for spork's `json`, `http`, `path`, `sh` and `misc`, reachable through
+an import of the module — `(import spork/json)` types `(json/decode text)` as `{:string :any}`.
+
+### Type diagnostics
+
+Types mark nothing up by default. The `types.diagnostics` setting turns four of them into
+diagnostics, at the severity you name:
+
+| Reported | Example |
+|---|---|
+| A key a named type does not have | `(circle :radius)` where `Circle` is `{:kind :circle :r :number}` |
+| More arguments than a declaration takes | `(host/fetch "a" 1 2)` against `[path n]` |
+| A literal of the wrong kind | `(host/fetch "a" "1")` where the second parameter is `:number` |
+| A value called as a function | `(host/limits)` where `host/limits` is declared a struct |
+
+They speak only for types someone wrote down — a declaration's metadata, `*.d.janet`, or the
+core — never for what inference read out of a body: a type it guessed is no ground for a
+complaint. A union, an `:any` or a variable anywhere in the position ends the matter, and
+arity is left to Janet's own compiler for every name it binds. What the checker reports comes
+out alongside these, under the same buffer version.
+
+`fixtures/diagnostics/types.janet` has one case of each and the near misses that stay quiet.
+
 ## REPL
 
 1. Install spork: `jpm install spork`.
@@ -152,7 +294,8 @@ Things to know:
   and the kernel attaches to a server that is already running on that port.
 - Interrupting is not supported: to stop a runaway evaluation, restart the kernel.
 - A name the analysis cannot find is asked of the running REPL: hover shows what it is bound
-  to there, with its docstring, and go-to-definition jumps to the file the REPL recorded.
+  to there, with its docstring and the types its metadata declares, and go-to-definition jumps
+  to the file the REPL recorded. Types written in the source win over the REPL's.
   The server only attaches to a REPL that is already running, and never loads a module into
   it.
 
