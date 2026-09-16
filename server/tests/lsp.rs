@@ -27,11 +27,20 @@ struct Session {
 
 impl Session {
     fn start() -> Self {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        Self::start_at(Self::root(), "src/report.janet")
+    }
+
+    /// The fixture project a session opens by default.
+    fn root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../fixtures/project")
             .canonicalize()
-            .unwrap();
-        Self::start_at(root, "src/report.janet")
+            .unwrap()
+    }
+
+    /// A session that asks the REPL on `port`: the one this test started, never another test's.
+    fn start_with_repl(port: u16) -> Self {
+        Self::start_with(Self::root(), "src/report.janet", &json!({"replPort": port}))
     }
 
     /// A server on `root` with one file of it open.
@@ -183,7 +192,7 @@ impl Session {
 
 /// `initializationOptions` with the keys of `settings` on top.
 fn options(settings: &Value) -> Value {
-    let mut options = json!({"janetPath": "janet", "replPort": repl_port()});
+    let mut options = json!({"janetPath": "janet", "replPort": repl_port(0)});
     for (key, value) in settings.as_object().into_iter().flatten() {
         options[key] = value.clone();
     }
@@ -198,9 +207,11 @@ fn position(text: &str, needle: &str, delta: usize) -> Value {
 }
 
 /// The REPL port sessions ask: not the kernel's, which a REPL of the developer's may hold. Below
-/// the ephemeral range, apart from the other tests' ports.
-fn repl_port() -> u16 {
-    40_000 + u16::try_from(std::process::id() % 9_000).unwrap()
+/// the ephemeral range, apart from the other tests' ports. `slot` keeps the tests that start a
+/// Janet process off each other's port: they run in parallel, and the process dies with the
+/// `Netrepl` that spawned it, so a shared port lets the first to finish reset the other's REPL.
+fn repl_port(slot: u16) -> u16 {
+    40_000 + u16::try_from(std::process::id() % 8_000).unwrap() * 3 + slot
 }
 
 fn uri(path: &Path) -> String {
@@ -877,10 +888,9 @@ fn hover_and_definition_from_a_running_repl() {
         .enable_all()
         .build()
         .unwrap();
-    let mut repl = runtime
-        .block_on(Netrepl::connect("janet", repl_port()))
-        .unwrap();
-    let mut session = Session::start();
+    let port = repl_port(1);
+    let mut repl = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut session = Session::start_with_repl(port);
     // Sent as the REPL kernel sends code it finds in a file: from line 2 of `src/shapes.janet`.
     let found_at = Position {
         path: session.root.join("src/shapes.janet"),
@@ -916,10 +926,9 @@ fn hover_types_a_running_repl_declares() {
         .enable_all()
         .build()
         .unwrap();
-    let mut repl = runtime
-        .block_on(Netrepl::connect("janet", repl_port()))
-        .unwrap();
-    let mut session = Session::start();
+    let port = repl_port(2);
+    let mut repl = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut session = Session::start_with_repl(port);
     // The REPL knows both names; only one of them is written down in the buffer.
     let code = concat!(
         "(defn typed-in-repl {:params [:number] :ret :string} \"Only the REPL knows.\"\n",
