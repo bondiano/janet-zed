@@ -78,6 +78,36 @@ All settings are optional. Put them in `settings.json`:
 A `janet-zed-server` found on `PATH` takes precedence over the downloaded one (see
 [Development](#development)).
 
+### Library macros that define names
+
+A macro is opaque to a static analysis: `(db/defentity Delivery …)` defines `Delivery`, and
+nothing in the call says so. `:lint-as` in `.janet-zed/config.jdn` at the workspace root reads
+such a call as a core definer's, the way clj-kondo's option of that name does — hover,
+go-to-definition, references, rename and document symbols then treat the name as defined
+there:
+
+```janet
+{:lint-as {void/db/defentity def
+           void/admin/defresource-admin def}}
+```
+
+The key is the macro's full name, matched through the importing file's imports: `void/db/defentity`
+covers `db/defentity` under `(import void/db :as db)` and `defentity` under `(use void/db)`.
+The value is the core form to read the call as: `def`, `defn`, `defmacro`, …
+
+A library ships its own config instead of asking every application for one. Put it in
+`janet-zed.exports/<lib>/config.jdn` and install it with the sources:
+
+```janet
+(declare-source :source ["void" "janet-zed.exports"])
+```
+
+Exported configs merge; the workspace's own `.janet-zed/config.jdn` wins over all of them.
+
+Names that no config covers are still found when diagnostics run: a check reports what the
+macros it expanded bound, so a name a macro defines under a different name than the symbol in
+the call resolves once that file has been checked.
+
 ### Comment directives
 
 A script its host concatenates with other files, or runs with names already defined, can say
@@ -121,6 +151,10 @@ Things to know:
 - The netrepl server listens on `127.0.0.1:9365`. All Zed windows share one Janet process,
   and the kernel attaches to a server that is already running on that port.
 - Interrupting is not supported: to stop a runaway evaluation, restart the kernel.
+- A name the analysis cannot find is asked of the running REPL: hover shows what it is bound
+  to there, with its docstring, and go-to-definition jumps to the file the REPL recorded.
+  The server only attaches to a REPL that is already running, and never loads a module into
+  it.
 
 ## Debugger
 
@@ -254,8 +288,9 @@ Run them with `task: spawn`, or from the gutter icon next to `(defn main …)` a
 ## Limitations
 
 - No parinfer: Zed has no on-type editing hook for extensions.
-- Scope analysis knows the core binding forms. Binding macros from other libraries fall
-  back to matching names within the top-level form.
+- Scope analysis knows the core binding forms. A library macro that binds *locals* falls
+  back to matching names within the top-level form; one that defines a top-level name needs
+  [`:lint-as`](#library-macros-that-define-names), or a check of that file to have run.
 - Go-to-definition does not reach third-party native modules, and imports of the form
   `@x` (relative to a dynamic binding) are not resolved.
 
