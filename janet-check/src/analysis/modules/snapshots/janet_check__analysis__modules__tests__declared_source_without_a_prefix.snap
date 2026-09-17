@@ -1,0 +1,9 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "(declare-source :source \"tool.janet\")"
+---
+----- SOURCE CODE
+(declare-source :source "tool.janet")
+
+----- PACKAGES
+tool loads /ws/tool.janet

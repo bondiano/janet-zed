@@ -1,0 +1,8 @@
+---
+source: src/analysis/symbols/tests.rs
+expression: (map inc |(range 3) )
+---
+----- CALL
+(map inc (range 3) )
+ ▔▔▔     ↑
+argument 1

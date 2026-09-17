@@ -1,0 +1,30 @@
+[package]
+name = "janet-lsp-plus"
+description = "Language server, Jupyter kernel and debug adapter for Janet"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+publish = true
+
+[dependencies]
+anyhow = "1.0.104"
+crossbeam-channel = "0.5"
+janet-check = { version = "0.3.0", path = "../janet-check" }
+jupyter-protocol = "2.0.2"
+jupyter-zmq-client = { version = "1.0.1", default-features = false, features = ["ring", "tokio-runtime"] }
+lsp-server = "0.10.0"
+lsp-types = "0.97.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tokio = { version = "1.53.1", features = ["rt", "net", "process", "time", "io-util"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
+tree-sitter = "0.27.0"
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+insta = "1.48.0"
+url = "2.5.8"
+janet-check = { path = "../janet-check", features = ["test-support"] }

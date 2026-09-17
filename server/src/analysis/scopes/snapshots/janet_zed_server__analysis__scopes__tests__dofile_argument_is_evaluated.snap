@@ -1,8 +1,0 @@
----
-source: server/src/analysis/scopes/tests.rs
-assertion_line: 160
-expression: "(defn run [path] (dofile |path))"
----
------ BINDING
-(defn run [path] (dofile path))
-           ▔▔▔▔          ↑

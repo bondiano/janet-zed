@@ -1,0 +1,9 @@
+---
+source: src/analysis/symbols/tests.rs
+expression: "show_keys(&workspace, \"/ws/people.janet\", \":id]\")"
+---
+----- AT
+  (def eid (scan-number (get-in request [:params |
+
+----- KEYS
+:id :string

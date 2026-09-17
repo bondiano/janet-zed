@@ -1,0 +1,25 @@
+---
+source: src/analysis/references/tests.rs
+expression: "/ws/test/alias.janet: (area"
+---
+----- SYMBOL
+-- /ws/test/alias.janet
+(import /src/shapes :as s)
+(s/area {:r 1})
+(area 1)
+ ▔▔▔▔
+
+
+----- TARGET
+Form { file: "/ws/test/alias.janet", form: 43..51, name: "area" }
+
+----- REFERENCES
+-- /ws/test/alias.janet
+(import /src/shapes :as s)
+(s/area {:r 1})
+(area 1)
+ ▔▔▔▔
+
+
+----- DECLARATION
+none

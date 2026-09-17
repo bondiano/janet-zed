@@ -1,0 +1,10 @@
+---
+source: src/editing/paredit/tests.rs
+expression: "x @[|a]"
+---
+----- BEFORE ACTION
+x @[a]
+    ↑
+
+----- AFTER ACTION: Slurp backward
+@[x a]

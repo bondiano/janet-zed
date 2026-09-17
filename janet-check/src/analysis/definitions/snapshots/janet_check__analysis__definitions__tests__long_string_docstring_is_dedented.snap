@@ -1,0 +1,13 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(defmacro m\n  ``Line one\n  line two``\n  [x] x)"
+---
+----- SOURCE CODE
+(defmacro m
+  ``Line one
+  line two``
+  [x] x)
+
+----- DEFINITIONS
+defmacro m [x]
+  doc: "Line one\nline two"

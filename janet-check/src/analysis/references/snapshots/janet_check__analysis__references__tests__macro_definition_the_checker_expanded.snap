@@ -1,0 +1,64 @@
+---
+source: src/analysis/references/tests.rs
+expression: "format!(\"{checked}\\n===== AFTER AN EDIT\\n\\n{edited}\")"
+---
+----- SYMBOL
+-- /ws/admin.janet
+(import ./model)
+(defresource deliveries model/Delivery)
+                              ▔▔▔▔▔▔▔▔
+
+
+----- TARGET
+Module { file: "/ws/model.janet", name: "Delivery" }
+
+----- REFERENCES
+-- /ws/admin.janet
+(import ./model)
+(defresource deliveries model/Delivery)
+                              ▔▔▔▔▔▔▔▔
+
+-- /ws/model.janet
+(import void/db :as db)
+(db/defentity Delivery {:id :int})
+              ▔▔▔▔▔▔▔▔
+
+
+----- DECLARATION
+-- /ws/model.janet
+(import void/db :as db)
+(db/defentity Delivery {:id :int})
+              ▔▔▔▔▔▔▔▔
+
+
+===== AFTER AN EDIT
+
+----- SYMBOL
+-- /ws/admin.janet
+(import ./model)
+(defresource deliveries model/Delivery)
+                              ▔▔▔▔▔▔▔▔
+
+
+----- TARGET
+Module { file: "/ws/model.janet", name: "Delivery" }
+
+----- REFERENCES
+-- /ws/admin.janet
+(import ./model)
+(defresource deliveries model/Delivery)
+                              ▔▔▔▔▔▔▔▔
+
+-- /ws/model.janet
+# moved
+(import void/db :as db)
+(db/defentity Delivery {:id :int})
+              ▔▔▔▔▔▔▔▔
+
+
+----- DECLARATION
+-- /ws/model.janet
+# moved
+(import void/db :as db)
+(db/defentity Delivery {:id :int})
+              ▔▔▔▔▔▔▔▔

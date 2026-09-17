@@ -1,7 +1,0 @@
----
-source: server/src/analysis/scopes/tests.rs
-expression: "(defmacro m [x] ~(let [y ,|x] y))"
----
------ BINDING
-(defmacro m [x] ~(let [y ,x] y))
-             ▔            ↑

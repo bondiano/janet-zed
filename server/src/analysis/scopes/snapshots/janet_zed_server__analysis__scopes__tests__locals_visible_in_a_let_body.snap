@@ -1,9 +1,0 @@
----
-source: server/src/analysis/scopes/tests.rs
-expression: "(defn f [a b] (let [b 1] |))\n(print 1)"
----
------ VISIBLE LOCALS
-(defn f [a b] (let [b 1] ))
-         ▔          ▔    ↑
-(print 1)
-b, a

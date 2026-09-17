@@ -1,0 +1,10 @@
+---
+source: src/editing/threading/tests.rs
+expression: (reduce| + 0 (map inc (filter odd? xs)))
+---
+----- BEFORE ACTION
+(reduce + 0 (map inc (filter odd? xs)))
+       ↑
+
+----- AFTER ACTION: Thread last (->>)
+(->> xs (filter odd?) (map inc) (reduce + 0))

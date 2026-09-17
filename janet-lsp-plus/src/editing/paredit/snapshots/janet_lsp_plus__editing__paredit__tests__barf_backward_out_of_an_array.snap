@@ -1,0 +1,10 @@
+---
+source: src/editing/paredit/tests.rs
+expression: "(f @[x|])"
+---
+----- BEFORE ACTION
+(f @[x])
+      ↑
+
+----- AFTER ACTION: Barf backward
+(f x @[])

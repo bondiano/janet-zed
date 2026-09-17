@@ -1,0 +1,23 @@
+---
+source: src/editing/fixes/tests.rs
+expression: "(def x 1)\n\n# Entry point.\n# Greets.\n(defn main [name]\n  (gre|et name))\n"
+---
+----- BEFORE FIX
+(def x 1)
+
+# Entry point.
+# Greets.
+(defn main [name]
+  (greet name))
+      ↑
+
+
+----- AFTER FIX: Create function `greet`
+(def x 1)
+
+(defn greet [name])
+
+# Entry point.
+# Greets.
+(defn main [name]
+  (greet name))

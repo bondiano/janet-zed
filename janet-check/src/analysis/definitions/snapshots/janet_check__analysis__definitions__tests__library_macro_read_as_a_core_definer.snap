@@ -1,0 +1,13 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "show_definitions_as(\"(db/defentity User {:id :int})\\n(defthing make \\\"Makes.\\\" [x] (db/defentity Inner {}))\",\n&lint_as,)"
+---
+----- SOURCE CODE
+(db/defentity User {:id :int})
+(defthing make "Makes." [x] (db/defentity Inner {}))
+
+----- DEFINITIONS
+db/defentity User (private)
+defthing make [x]
+  doc: "Makes."
+  db/defentity Inner (private)

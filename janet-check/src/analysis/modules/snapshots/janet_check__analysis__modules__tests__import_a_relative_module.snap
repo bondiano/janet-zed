@@ -1,0 +1,9 @@
+---
+source: src/analysis/modules/tests.rs
+expression: (import ./a)
+---
+----- SOURCE CODE
+(import ./a)
+
+----- IMPORTS
+./a as "a/"

@@ -1,0 +1,11 @@
+---
+source: src/analysis/peg/tests.rs
+assertion_line: 46
+expression: "(peg/match ~(sequence ,(some odd? xs) (if :d 1)) s)"
+---
+----- SOURCE CODE
+(peg/match ~(sequence ,(some odd? xs) (if :d 1)) s)
+
+----- PEG SPECIALS
+(peg/match ~(sequence ,(some odd? xs) (if :d 1)) s)
+             ▔▔▔▔▔▔▔▔                  ▔▔

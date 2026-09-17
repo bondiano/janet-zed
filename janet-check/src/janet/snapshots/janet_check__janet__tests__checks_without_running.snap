@@ -1,0 +1,17 @@
+---
+source: src/janet/tests.rs
+expression: "redact(&format!(\"----- SOURCE CODE\\n-- b.janet\\n{IMPORTED}\\n-- a.janet\\n{text}\\n\\\n         ----- PROBLEMS\\n{}\\n\",\nshow_problems(&problems)))"
+---
+----- SOURCE CODE
+-- b.janet
+(defn g [] (nope))
+
+-- a.janet
+(import ./b)
+(defn f [x]
+  (undefined-thing x))
+(def y (spit "<dir>/ran" ""))
+
+----- PROBLEMS
+1:1 <dir>/b.janet:1:12: compile error: unknown symbol nope
+3:3 unknown symbol undefined-thing

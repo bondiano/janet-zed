@@ -1,0 +1,9 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(def x \"not a doc\")"
+---
+----- SOURCE CODE
+(def x "not a doc")
+
+----- DEFINITIONS
+def x

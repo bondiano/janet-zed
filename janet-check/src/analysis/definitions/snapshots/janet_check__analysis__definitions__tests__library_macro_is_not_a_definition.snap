@@ -1,0 +1,10 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(db/defentity User {:id :int})\n(defn f [x] (default x 1) x)"
+---
+----- SOURCE CODE
+(db/defentity User {:id :int})
+(defn f [x] (default x 1) x)
+
+----- DEFINITIONS
+defn f [x]

@@ -1,0 +1,7 @@
+---
+source: src/analysis/scopes/tests.rs
+expression: "(loop [i :range [0 10] :let [j i]] (print |j))"
+---
+----- BINDING
+(loop [i :range [0 10] :let [j i]] (print j))
+                             ▔            ↑

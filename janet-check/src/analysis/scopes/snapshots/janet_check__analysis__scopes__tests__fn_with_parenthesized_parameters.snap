@@ -1,0 +1,8 @@
+---
+source: src/analysis/scopes/tests.rs
+assertion_line: 240
+expression: (fn (x) |x)
+---
+----- BINDING
+(fn (x) x)
+     ▔  ↑

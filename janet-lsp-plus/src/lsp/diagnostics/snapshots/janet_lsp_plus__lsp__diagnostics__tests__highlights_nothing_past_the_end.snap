@@ -1,0 +1,11 @@
+---
+source: src/lsp/diagnostics/tests.rs
+expression: "(defn f [x]\n"
+---
+----- PROBLEM
+4:0 unexpected end
+
+----- HIGHLIGHT
+(defn f [x]
+
+↑

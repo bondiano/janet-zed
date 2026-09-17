@@ -1,0 +1,17 @@
+---
+source: src/analysis/symbols/tests.rs
+assertion_line: 238
+expression: "(import ./queries)\n(queries/defquery ask)\n"
+---
+----- SOURCE CODE
+(import ./queries)
+(queries/defquery ask)
+
+----- HOVER
+```janet
+(ask :number) -> :string
+throws :db/not-found
+```
+queries/defquery in `main.janet`
+
+Asked.

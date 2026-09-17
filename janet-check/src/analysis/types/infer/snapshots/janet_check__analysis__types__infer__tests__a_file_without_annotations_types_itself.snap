@@ -1,0 +1,32 @@
+---
+source: src/analysis/types/infer/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{BARE}\\n----- INFERRED\\n{}\\n\", shown(&facts))"
+---
+----- SOURCE CODE
+(def pi-ish 3.14159)
+
+(var created 0)
+
+(defn- bump [] (++ created))
+
+(defn circle [r]
+  (bump)
+  {:kind :circle :r r})
+
+(defn rect [w h]
+  (bump)
+  {:kind :rect :w w :h h})
+
+(defn area [shape]
+  (case (shape :kind)
+    :circle (* pi-ish (shape :r) (shape :r))
+    :rect (* (shape :w) (shape :h))
+    (errorf "unknown shape: %q" shape)))
+
+----- INFERRED
+area: (fn [{:kind :any :r :number :w :number :h :number & r}] :number)  throws :string
+bump: (fn [] :number)
+circle: (fn [a] {:kind :circle :r a})
+created: :number
+pi-ish: :number
+rect: (fn [a b] {:kind :rect :w a :h b})

@@ -1,0 +1,16 @@
+---
+source: src/analysis/symbols/tests.rs
+assertion_line: 102
+expression: "(f a &named b c) (f 1 :c 3 :b 2)"
+---
+----- PARAMETERS
+(f a &named b c)
+   ▔        ▔ ▔
+
+----- ACTIVE PARAMETER
+argument 0 (1): a
+argument 1 (:c): c
+argument 2 (3): c
+argument 3 (:b): b
+argument 4 (2): b
+argument 5: none

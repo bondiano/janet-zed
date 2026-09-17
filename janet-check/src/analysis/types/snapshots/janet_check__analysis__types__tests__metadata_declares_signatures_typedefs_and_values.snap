@@ -1,0 +1,29 @@
+---
+source: src/analysis/types/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{ANNOTATED}\\n----- DECLARED\\n{}\\n\",\nshown(ANNOTATED))"
+---
+----- SOURCE CODE
+(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+(defn circle {:params [:number] :ret Circle} "Make a circle." [r] nil)
+(defn area {:params [Shape] :ret :number :throws [:string]} [shape] nil)
+(defn map-vals {:params [(fn [a] b) {:keyword a}] :ret {:keyword b}} [f dict] nil)
+(def schema {:type Schema} {})
+(defn plain [x] x)
+(defn documented "Only a docstring." [x] x)
+(defn short {:params [:number] :ret :nil} [x y] nil)
+(defn long {:params [:number :number] :ret :nil} [x] nil)
+
+----- DECLARED
+Circle: :typedef {:kind :circle :r :number}
+Rect: :typedef {:kind :rect :w :number :h :number}
+Shape: :typedef (or Circle Rect)
+circle: (circle r: :number) -> Circle
+area: (area shape: Shape) -> :number throws :string
+map-vals: (map-vals f: (fn [a] b) dict: {:keyword a}) -> {:keyword b}
+schema: schema: Schema
+plain: -
+documented: -
+short: -
+long: -

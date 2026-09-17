@@ -1,0 +1,9 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "../lib/b"
+---
+----- IMPORT
+../lib/b from /ws/src/main.janet
+
+----- LOADS
+/ws/lib/b.janet

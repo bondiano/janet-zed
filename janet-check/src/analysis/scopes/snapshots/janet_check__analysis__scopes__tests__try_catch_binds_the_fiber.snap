@@ -1,0 +1,8 @@
+---
+source: src/analysis/scopes/tests.rs
+assertion_line: 210
+expression: "(try (g) ([err fib] (|fib)))"
+---
+----- BINDING
+(try (g) ([err fib] (fib)))
+               ▔▔▔   ↑

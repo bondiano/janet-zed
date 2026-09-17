@@ -1,0 +1,5 @@
+---
+source: src/analysis/types/tests.rs
+expression: "shape.expanded(&named, EXPANSION).to_string()"
+---
+(or {:kind :circle :r :number} {:kind :rect :w :number :h :number})

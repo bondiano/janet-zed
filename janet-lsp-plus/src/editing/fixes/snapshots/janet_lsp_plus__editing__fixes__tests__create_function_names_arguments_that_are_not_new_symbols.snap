@@ -1,0 +1,12 @@
+---
+source: src/editing/fixes/tests.rs
+expression: "(comb|ine a 1 a \"s\" (f b) b)"
+---
+----- BEFORE FIX
+(combine a 1 a "s" (f b) b)
+     ↑
+
+----- AFTER FIX: Create function `combine`
+(defn combine [a arg2 arg3 arg4 arg5 b])
+
+(combine a 1 a "s" (f b) b)

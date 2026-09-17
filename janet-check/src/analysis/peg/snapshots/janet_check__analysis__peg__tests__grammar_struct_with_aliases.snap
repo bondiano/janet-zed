@@ -1,0 +1,11 @@
+---
+source: src/analysis/peg/tests.rs
+assertion_line: 36
+expression: "(peg/find ~{:main (* (<- :d) (? \"-\") (quote :w))} s)"
+---
+----- SOURCE CODE
+(peg/find ~{:main (* (<- :d) (? "-") (quote :w))} s)
+
+----- PEG SPECIALS
+(peg/find ~{:main (* (<- :d) (? "-") (quote :w))} s)
+                   ▔  ▔▔      ▔       ▔▔▔▔▔

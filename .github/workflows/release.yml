@@ -1,6 +1,6 @@
 name: Release
 
-# Pushing a `v*` tag publishes janet-zed-server binaries; the extension downloads the one for
+# Pushing a `v*` tag publishes janet-lsp-plus binaries; the extension downloads the one for
 # the user's platform (see server_asset in src/lib.rs for the asset names).
 on:
   push:
@@ -31,18 +31,18 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: rustup target add ${{ matrix.target }}
-      - run: cargo build -p janet-zed-server --release --locked --target ${{ matrix.target }}
+      - run: cargo build -p janet-lsp-plus --release --locked --target ${{ matrix.target }}
       - name: Package
         if: runner.os != 'Windows'
-        run: tar -czf janet-zed-server-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release janet-zed-server
+        run: tar -czf janet-lsp-plus-${{ matrix.target }}.tar.gz -C target/${{ matrix.target }}/release janet-lsp-plus
       - name: Package
         if: runner.os == 'Windows'
         shell: pwsh
-        run: Compress-Archive -Path target/${{ matrix.target }}/release/janet-zed-server.exe -DestinationPath janet-zed-server-${{ matrix.target }}.zip
+        run: Compress-Archive -Path target/${{ matrix.target }}/release/janet-lsp-plus.exe -DestinationPath janet-lsp-plus-${{ matrix.target }}.zip
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.target }}
-          path: janet-zed-server-${{ matrix.target }}.*
+          path: janet-lsp-plus-${{ matrix.target }}.*
 
   release:
     needs: build
@@ -53,4 +53,4 @@ jobs:
           merge-multiple: true
       - uses: softprops/action-gh-release@v2
         with:
-          files: janet-zed-server-*
+          files: janet-lsp-plus-*

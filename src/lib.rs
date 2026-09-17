@@ -2,16 +2,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use zed_extension_api::{self as zed, LanguageServerId, Result, serde_json, settings::LspSettings};
 
-const SERVER_ID: &str = "janet-zed-server";
+const SERVER_ID: &str = "janet-lsp-plus";
 const SERVER_REPO: &str = "bondiano/janet-zed";
-const SERVER_DIR_PREFIX: &str = "janet-zed-server-";
+const SERVER_DIR_PREFIX: &str = "janet-lsp-plus-";
 /// Left behind by versions that ran janet-lsp.
 const JANET_LSP_DIR_PREFIX: &str = "janet-lsp-";
 
 const JANET_SRC_DIR_PREFIX: &str = "janet-src-";
 const BOOT_JANET: &str = "src/boot/boot.janet";
 
-/// The debug adapter, `janet-zed-server dap`.
+/// The debug adapter, `janet-lsp-plus dap`.
 const ADAPTER: &str = "Janet";
 
 struct JanetExtension {
@@ -55,13 +55,13 @@ fn server_asset() -> Result<(String, zed::DownloadedFileType, &'static str)> {
         zed::Os::Windows => (
             format!("{SERVER_ID}-{arch}-pc-windows-msvc.zip"),
             zed::DownloadedFileType::Zip,
-            "janet-zed-server.exe",
+            "janet-lsp-plus.exe",
         ),
     })
 }
 
 impl JanetExtension {
-    /// `janet-zed-server` from PATH (development), else the latest release for this platform,
+    /// `janet-lsp-plus` from PATH (development), else the latest release for this platform,
     /// downloaded into the extension work dir, else (offline) the one downloaded before.
     fn server_path(
         &mut self,
@@ -210,7 +210,7 @@ fn downloaded_janet_source(id: &LanguageServerId, janet: &str) -> Result<PathBuf
     Ok(work_dir()?.join(root))
 }
 
-/// `lsp.janet-zed-server.settings.<key>` in Zed settings.
+/// `lsp.janet-lsp-plus.settings.<key>` in Zed settings.
 fn configured(worktree: &zed::Worktree, key: &str) -> Option<serde_json::Value> {
     LspSettings::for_worktree(SERVER_ID, worktree)
         .ok()?
@@ -231,7 +231,7 @@ impl zed::Extension for JanetExtension {
         language_server_id: &LanguageServerId,
         worktree: &zed::Worktree,
     ) -> Result<zed::Command> {
-        // `lsp.janet-zed-server.binary.env` goes on top, e.g. `JANET_ZED_LOG=debug`.
+        // `lsp.janet-lsp-plus.binary.env` goes on top, e.g. `JANET_LSP_LOG=debug`.
         let settings_env = LspSettings::for_worktree(SERVER_ID, worktree)
             .ok()
             .and_then(|settings| settings.binary)

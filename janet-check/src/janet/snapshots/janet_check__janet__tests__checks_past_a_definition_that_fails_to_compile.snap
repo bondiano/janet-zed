@@ -1,0 +1,11 @@
+---
+source: src/janet/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- PROBLEMS\\n{}\\n\",\nshow_problems(&problems))"
+---
+----- SOURCE CODE
+(defn- broken [x] (nope x))
+(defn user [] (broken 1))
+(broken 2)
+
+----- PROBLEMS
+1:19 unknown symbol nope

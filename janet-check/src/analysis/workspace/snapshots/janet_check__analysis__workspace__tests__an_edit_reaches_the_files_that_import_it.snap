@@ -1,0 +1,17 @@
+---
+source: src/analysis/workspace/tests.rs
+expression: "format!(\"----- BEFORE\\n{before}\\n\\n----- AFTER\\n{}\\n\",\nhover(&workspace, \"/ws/report.janet\", \"shapes/area\"))"
+---
+----- BEFORE
+```janet
+(area shape: {:kind :any :r :number :w :number :h :number & r}) -> :number
+throws :string
+```
+defn in `shapes.janet`
+
+----- AFTER
+```janet
+(area shape: {:kind :any :r :number & r}) -> (or :number :string)
+throws :string
+```
+defn in `shapes.janet`

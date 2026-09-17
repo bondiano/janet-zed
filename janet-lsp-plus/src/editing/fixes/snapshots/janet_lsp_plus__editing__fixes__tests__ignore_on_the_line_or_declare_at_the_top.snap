@@ -1,0 +1,19 @@
+---
+source: src/editing/fixes/tests.rs
+expression: "(defn f [x]\n  (+ x |y))\n"
+---
+----- BEFORE FIX
+(defn f [x]
+  (+ x y))
+       ↑
+
+
+----- AFTER FIX: Ignore `y` on this line
+(defn f [x]
+  # janet-zed: ignore unknown-symbol y
+  (+ x y))
+
+----- AFTER FIX: Declare `y` in this file
+# janet-zed: declare y
+(defn f [x]
+  (+ x y))

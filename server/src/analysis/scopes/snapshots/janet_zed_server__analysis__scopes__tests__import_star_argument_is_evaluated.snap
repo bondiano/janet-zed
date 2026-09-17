@@ -1,8 +1,0 @@
----
-source: server/src/analysis/scopes/tests.rs
-assertion_line: 170
-expression: "(defn run [module] (import* |module))"
----
------ BINDING
-(defn run [module] (import* module))
-           ▔▔▔▔▔▔           ↑

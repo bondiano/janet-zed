@@ -1,0 +1,10 @@
+---
+source: src/analysis/workspace/tests.rs
+expression: show_graph(&workspace)
+---
+----- SOURCE CODE
+-- /ws/a.janet
+(import ./b :as bee)
+(bee/f)
+
+----- MODULE GRAPH

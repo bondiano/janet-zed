@@ -1,0 +1,11 @@
+---
+source: src/analysis/symbols/tests.rs
+expression: "(defn route {:params [(enum :get :post) :any]} [method handler] handler)\n(route |)"
+---
+----- SOURCE CODE
+(defn route {:params [(enum :get :post) :any]} [method handler] handler)
+(route |)
+
+----- VALUES
+:get (enum :get :post)
+:post (enum :get :post)

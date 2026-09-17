@@ -1,0 +1,10 @@
+---
+source: src/editing/threading/tests.rs
+expression: "|(f (g (h x) a) b)"
+---
+----- BEFORE ACTION
+(f (g (h x) a) b)
+↑
+
+----- AFTER ACTION: Thread first (->)
+(-> x h (g a) (f b))

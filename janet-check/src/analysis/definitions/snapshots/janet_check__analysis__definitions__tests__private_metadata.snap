@@ -1,0 +1,10 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(def pi :private \"Pi-ish.\" 3)"
+---
+----- SOURCE CODE
+(def pi :private "Pi-ish." 3)
+
+----- DEFINITIONS
+def pi (private)
+  doc: "Pi-ish."

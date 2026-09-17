@@ -1,0 +1,8 @@
+---
+source: src/analysis/scopes/tests.rs
+assertion_line: 175
+expression: "(match p [x |x] x)"
+---
+----- BINDING
+(match p [x x] x)
+          ▔ ↑

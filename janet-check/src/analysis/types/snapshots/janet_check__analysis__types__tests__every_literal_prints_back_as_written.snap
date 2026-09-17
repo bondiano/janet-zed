@@ -1,0 +1,48 @@
+---
+source: src/analysis/types/tests.rs
+expression: "parsed.join(\"\\n\")"
+---
+:nil
+  Keyword("nil")
+:boolean
+  Keyword("boolean")
+:number
+  Keyword("number")
+:any
+  Keyword("any")
+:string?
+  Nullable(Keyword("string"))
+:db/not-found
+  Keyword("db/not-found")
+Person
+  Named("Person")
+Entity?
+  Nullable(Named("Entity"))
+a
+  Var("a")
+[:number]
+  Tuple([Keyword("number")])
+[:number :string :number]
+  Tuple([Keyword("number"), Keyword("string"), Keyword("number")])
+@[:string]
+  Array([Keyword("string")])
+@[]
+  Array([])
+{:status :number :body :any}
+  Struct(Fields { fields: [(":status", Keyword("number")), (":body", Keyword("any"))], rest: None })
+{:status :number & r}
+  Struct(Fields { fields: [(":status", Keyword("number"))], rest: Some("r") })
+{:keyword :any}
+  Dict { key: Keyword("keyword"), value: Keyword("any") }
+@{:tx :number :tempids @{}}
+  Table(Fields { fields: [(":tx", Keyword("number")), (":tempids", Table(Fields { fields: [], rest: None }))], rest: None })
+{:string Eid}
+  Dict { key: Keyword("string"), value: Named("Eid") }
+(or :string :keyword)
+  Or([Keyword("string"), Keyword("keyword")])
+(enum :get :post :put)
+  Enum(["get", "post", "put"])
+(fn [a] b)
+  Fn(Signature { params: [Var("a")], rest: None, ret: Var("b"), throws: [], narrows: None })
+(fn [a & as] b)
+  Fn(Signature { params: [Var("a")], rest: Some(Var("as")), ret: Var("b"), throws: [], narrows: None })

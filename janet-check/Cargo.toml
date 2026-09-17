@@ -1,0 +1,32 @@
+[package]
+name = "janet-check"
+description = "Type inference and analysis for Janet: parsing, scopes, modules and the core environment"
+version = "0.3.0"
+edition.workspace = true
+license.workspace = true
+publish = true
+
+[features]
+# Snapshot rendering, for the tests of crates built on this one.
+test-support = []
+
+[dependencies]
+anyhow = "1.0.104"
+crossbeam-channel = "0.5"
+dunce = "1.0.5"
+ignore = "0.4.33"
+lsp-types = "0.97.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+tree-sitter = "0.27.0"
+tree-sitter-language = "0.1.8"
+url = "2.5.8"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+cc = "1.4.6"
+
+[dev-dependencies]
+insta = "1.48.0"

@@ -1,9 +1,0 @@
----
-source: server/src/analysis/symbols/tests.rs
-expression: "show_keys(&workspace, \"/ws/people.janet\", \":body)\")"
----
------ AT
-  (def {:email email :name name :age age} (request |
-
------ KEYS
-:body {:email :any :name :any :age :any & r}

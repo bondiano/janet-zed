@@ -1,9 +1,0 @@
----
-source: server/src/analysis/types/tests.rs
-assertion_line: 482
-expression: "marked.join(\"\\n\")"
----
-spork/path/abspath?: :any
-spork/path/posix/abspath?: :any
-spork/path/win32/abspath?: :any
-spork/sh/exists?: :any

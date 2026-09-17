@@ -1,7 +1,0 @@
----
-source: server/src/analysis/scopes/tests.rs
-expression: "(seq [x :in xs :when (odd? |x)] x)"
----
------ BINDING
-(seq [x :in xs :when (odd? x)] x)
-      ▔                    ↑

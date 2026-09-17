@@ -1,0 +1,8 @@
+---
+source: src/analysis/scopes/tests.rs
+assertion_line: 225
+expression: "(if-with [f (open)] |f f)"
+---
+----- BINDING
+(if-with [f (open)] f f)
+          ▔         ↑

@@ -5,7 +5,7 @@ a REPL wired into the editor, and structural editing.
 
 - **Syntax:** highlighting, indentation, outline, bracket matching, text objects, and
   injections, all built on [tree-sitter-janet-simple](https://github.com/sogaiu/tree-sitter-janet-simple).
-- **Language server** (`janet-zed-server`):
+- **Language server** (`janet-lsp-plus`):
   - diagnostics from the Janet compiler as you type;
   - completion with docs, hover, and signature help;
   - go-to-definition for locals, imported modules, and the standard library
@@ -43,7 +43,7 @@ and navigation within the project, rename, symbols, and code actions.
 ## Installation
 
 Open **Extensions** (`zed: extensions`), search for **Janet+** and install it. On first
-start the extension downloads the `janet-zed-server` build for your platform from
+start the extension downloads the `janet-lsp-plus` build for your platform from
 [GitHub Releases](https://github.com/bondiano/janet-zed/releases).
 
 It also downloads the Janet sources that match `janet/version` (for go-to-definition
@@ -57,7 +57,7 @@ All settings are optional. Put them in `settings.json`:
 ```jsonc
 {
   "lsp": {
-    "janet-zed-server": {
+    "janet-lsp-plus": {
       "settings": {
         // Use a local Janet checkout instead of downloading the sources.
         "janet_source": "~/src/janet",
@@ -67,7 +67,7 @@ All settings are optional. Put them in `settings.json`:
       "binary": {
         // Server log verbosity: error, warn, info (default), debug or trace.
         // `debug` logs every request with its timing, buffer sync and flycheck.
-        "env": { "JANET_ZED_LOG": "debug" }
+        "env": { "JANET_LSP_LOG": "debug" }
       }
     }
   },
@@ -80,7 +80,7 @@ All settings are optional. Put them in `settings.json`:
 }
 ```
 
-A `janet-zed-server` found on `PATH` takes precedence over the downloaded one (see
+A `janet-lsp-plus` found on `PATH` takes precedence over the downloaded one (see
 [Development](#development)).
 
 ### Library macros that define names
@@ -275,6 +275,20 @@ out alongside these, under the same buffer version.
 
 `fixtures/diagnostics/types.janet` has one case of each and the near misses that stay quiet.
 
+### Checking outside the editor
+
+`janet-check` reports the same findings from a terminal, for a pre-commit hook or CI. It
+takes files or directories, defaults to the working directory, and exits non-zero when it
+finds something:
+
+```sh
+cargo install janet-check
+janet-check src/
+# src/report.janet:12:4: host/fetch takes :number here, given :string
+```
+
+It needs no `janet` on `PATH`: the core types are built in, and nothing is run.
+
 ## REPL
 
 1. Install spork: `jpm install spork`.
@@ -443,8 +457,8 @@ Development needs Rust (the toolchain is pinned in `rust-toolchain.toml`),
 [just](https://github.com/casey/just) and `janet`.
 
 ```sh
-just install   # build janet-zed-server into ~/.cargo/bin, where the extension finds it
-just check     # fmt, clippy (server and wasm extension), tests
+just install   # build both binaries into ~/.cargo/bin, where the extension finds the server
+just check     # fmt, clippy (native crates and wasm extension), tests
 ```
 
 Then run `zed: install dev extension` and pick this directory. After rebuilding the
@@ -453,8 +467,11 @@ server, restart it with `editor: restart language server`.
 Layout:
 
 - `src/lib.rs`: the extension (wasm). It locates or downloads the server.
-- `server/`: `janet-zed-server`: the language server, the Jupyter kernel
-  (`janet-zed-server kernel`) and the debug adapter (`janet-zed-server dap`).
+- `janet-check/`: analysis and type inference, editor-independent: parsing, scopes,
+  modules, the core environment and the types. Publishable on its own, with
+  `janet-check` as a CLI over it.
+- `janet-lsp-plus/`: the language server, the Jupyter kernel (`janet-lsp-plus kernel`)
+  and the debug adapter (`janet-lsp-plus dap`), over `janet-check`.
 - `debug_adapter_schemas/Janet.json`: the launch and attach configuration.
 - `languages/janet/`: tree-sitter queries, tasks, and language config.
 - `snippets/janet.json`: snippets.

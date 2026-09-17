@@ -1,0 +1,9 @@
+---
+source: src/analysis/modules/tests.rs
+expression: fixture/shapes
+---
+----- IMPORT
+fixture/shapes from /ws/src/main.janet
+
+----- LOADS
+/ws/src/shapes.janet

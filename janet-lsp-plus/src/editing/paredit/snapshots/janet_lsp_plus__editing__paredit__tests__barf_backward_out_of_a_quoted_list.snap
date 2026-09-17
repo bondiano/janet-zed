@@ -1,0 +1,10 @@
+---
+source: src/editing/paredit/tests.rs
+expression: "(x '(a| b))"
+---
+----- BEFORE ACTION
+(x '(a b))
+      ↑
+
+----- AFTER ACTION: Barf backward
+(x a '(b))
