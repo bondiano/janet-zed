@@ -23,7 +23,7 @@ module_name_repetitions = "allow"
 
 [package]
 name = "janet-zed"
-version = "0.1.0"
+version = "0.2.0"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
