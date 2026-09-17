@@ -1,0 +1,13 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- SIGNATURE\\n{label}\\n\")"
+---
+----- SOURCE CODE
+(import ./shapes)
+
+(defn plot []
+  (let [make shapes/circle]
+    (make 1)))
+
+----- SIGNATURE
+(make :number) -> Circle

@@ -25,10 +25,13 @@ fn show_visible(source: &str) -> String {
     let (offset, text) = cursor(source);
     let scopes = Scopes::new(&Document::new(text.clone()));
     let visible = scopes.visible_at(offset);
-    let names: Vec<_> = visible.iter().map(|local| local.name.as_str()).collect();
+    let names: Vec<_> = visible
+        .iter()
+        .map(|(_, local)| local.name.as_str())
+        .collect();
     let ranges: Vec<_> = visible
         .iter()
-        .map(|local| local.range.clone())
+        .map(|(_, local)| local.range.clone())
         .chain(std::iter::once(offset..offset))
         .collect();
     format!(

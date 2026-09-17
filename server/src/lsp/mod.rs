@@ -45,9 +45,10 @@ struct Options {
     janet_source: Option<PathBuf>,
     /// The netrepl port hover and go-to-definition ask, the REPL kernel's by default.
     repl_port: Option<u16>,
-    /// What the client can change later with `didChangeConfiguration`.
+    /// What the client can change later with `didChangeConfiguration`. Null where the client
+    /// sends the key with nothing configured under it, as the Zed extension does.
     #[serde(default)]
-    types: Types,
+    types: Option<Types>,
 }
 
 /// The `types` block of the settings, in `initializationOptions` and in `didChangeConfiguration`.
@@ -62,7 +63,7 @@ struct Types {
 #[derive(Debug, Default, Deserialize)]
 struct Settings {
     #[serde(default)]
-    types: Types,
+    types: Option<Types>,
 }
 
 /// Serves LSP over stdio.
@@ -131,7 +132,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let (checker, results) = Checker::spawn(janet.to_string());
     let started = Instant::now();
     let repl_port = options.repl_port.unwrap_or(kernel::netrepl::PORT);
-    let reporting = options.types.diagnostics;
+    let reporting = options.types.unwrap_or_default().diagnostics;
     let state = State::new(workspace, stdlib, janet.to_string(), repl_port, reporting);
     tracing::info!(
         files = state.workspace.paths().count(),
@@ -372,6 +373,7 @@ fn sync(
             let reporting = serde_json::from_value::<Settings>(settings)
                 .unwrap_or_default()
                 .types
+                .unwrap_or_default()
                 .diagnostics;
             tracing::debug!(?reporting, "configured");
             if state.reporting != reporting {

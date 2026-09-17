@@ -1,0 +1,17 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(import spork/json)
+
+(defn parse [text]
+  (json/decode text))
+
+----- HOVER
+```janet
+(decode json-source: (or :string :buffer) &opt keywords: :boolean? nils: :boolean?) -> {:string :any}
+```
+defn in `json.janet`
+
+Parse JSON.

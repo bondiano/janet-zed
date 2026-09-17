@@ -11,7 +11,7 @@ expression: "(import ./shapes)\n(defn f [alpha] (let [beta 1] |))"
 (defn f [alpha] (let [beta 1] |))
 
 ----- COMPLETIONS
-beta (Variable) local
+beta (Variable) local: :number
 alpha (Variable) local
 f (Function) (f alpha)
 shapes/area (Function) (shapes/area shape)

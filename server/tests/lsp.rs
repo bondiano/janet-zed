@@ -326,6 +326,29 @@ fn signature_help_names_the_declared_parameter_type() {
     session.finish();
 }
 
+/// A local holding a function: nobody wrote its parameters down, so the help is the types it
+/// takes, read off the imported definition it was bound to.
+#[test]
+fn signature_help_for_a_local_holding_a_function() {
+    let mut session = Session::start();
+    let source =
+        "(import ./shapes)\n\n(defn plot []\n  (let [make shapes/circle]\n    (make 1)))\n";
+    let scratch = uri(&session.root.join("src/scratch.janet"));
+    session.open(&scratch, source);
+    let params = json!({
+        "textDocument": {"uri": scratch},
+        "position": position(source, "(make 1)", 6),
+    });
+    let help = session
+        .request("textDocument/signatureHelp", params)
+        .unwrap();
+    let label = help["signatures"][0]["label"].as_str().unwrap().to_string();
+    session.finish();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- SIGNATURE\n{label}\n"
+    ));
+}
+
 #[test]
 fn hover_and_definition_of_an_ambient_declaration() {
     let mut session = Session::start();
@@ -492,6 +515,69 @@ fn deleting_the_declaration_file_brings_the_unknown_symbols_back() {
     session.finish();
     std::fs::remove_dir_all(&root).ok();
     insta::assert_snapshot!(format!("----- PROBLEMS\n{}\n", unknown.join("\n")));
+}
+
+/// A core binding's hover reads its declared types, not only the call its docstring opens with.
+#[test]
+fn hover_on_a_core_binding() {
+    let mut session = Session::start();
+    let source = "(function? print)\n";
+    let scratch = uri(&session.root.join("scratch.janet"));
+    session.open(&scratch, source);
+    let params = json!({
+        "textDocument": {"uri": scratch},
+        "position": position(source, "function?", 0),
+    });
+    let hover = session.request("textDocument/hover", params).unwrap();
+    let shown = hover["contents"]["value"].as_str().unwrap().to_string();
+    session.finish();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
+}
+
+/// A parameter is typed by the signature written for the function, and a binding by the value it
+/// holds: a hover on either says so.
+#[test]
+fn hover_on_a_local_names_its_type() {
+    let mut session = Session::start();
+    let path = session.root.join("src/shapes.janet");
+    let text = std::fs::read_to_string(&path).unwrap();
+    let shapes = uri(&path);
+    session.open(&shapes, &text);
+    let mut hover = |needle: &str, delta: usize| {
+        let params = json!({
+            "textDocument": {"uri": shapes},
+            "position": position(&text, needle, delta),
+        });
+        let hover = session.request("textDocument/hover", params).unwrap();
+        hover["contents"]["value"].as_str().unwrap().to_string()
+    };
+    let shown = [("(shape :kind)", 1), (":r r}", 3), (":w w :h h}", 3)]
+        .map(|(needle, delta)| format!("-- {needle}\n{}", hover(needle, delta)));
+    insta::assert_snapshot!(format!("----- HOVER\n{}\n", shown.join("\n\n")));
+    session.finish();
+}
+
+/// The type a local takes from an imported module's signature: `circle` is declared to answer a
+/// `Circle`, so the name bound to the call is one.
+#[test]
+fn hover_on_a_local_typed_by_an_imported_signature() {
+    let mut session = Session::start();
+    let source =
+        "(import ./shapes)\n\n(defn draw []\n  (let [c (shapes/circle 1)]\n    (shapes/area c)))\n";
+    let scratch = uri(&session.root.join("src/scratch.janet"));
+    session.open(&scratch, source);
+    let params = json!({
+        "textDocument": {"uri": scratch},
+        "position": position(source, "area c", 5),
+    });
+    let hover = session.request("textDocument/hover", params).unwrap();
+    let shown = hover["contents"]["value"].as_str().unwrap().to_string();
+    session.finish();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
 }
 
 #[test]
@@ -1101,6 +1187,27 @@ fn types_report_nothing_until_they_are_asked_to() {
     session.finish();
 }
 
+/// The Zed extension sends `"types": null` whenever nothing is configured under it; the server
+/// serves the defaults rather than failing to start.
+#[test]
+fn a_null_types_block_leaves_the_defaults_standing() {
+    let mut session = Session::start_with(
+        Session::root(),
+        "src/report.janet",
+        &json!({"types": Value::Null}),
+    );
+    let hover = session
+        .request("textDocument/hover", session.at("(shapes/area s", 9))
+        .unwrap();
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("area")
+    );
+    session.finish();
+}
+
 #[test]
 fn types_report_as_hints_beside_what_the_checker_found() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1212,6 +1319,39 @@ fn a_library_macro_types_the_names_it_binds() {
             .to_string()
     };
     let shown = format!("{}\n{}", hover("wheel \"Wheel\""), hover("shout ("));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
+}
+
+/// An installed spork the import resolves to: its own source declares no types, so the
+/// declarations the server carries are still what type the names it exports.
+#[test]
+fn installed_spork_is_typed_by_the_declarations() {
+    let root =
+        std::env::temp_dir().join(format!("janet-zed-spork-installed-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    let installed = root.join("jpm_tree/lib/spork");
+    std::fs::create_dir_all(&installed).unwrap();
+    std::fs::write(
+        installed.join("json.janet"),
+        "(defn decode\n  \"Parse JSON.\"\n  [json-source &opt keywords nils]\n  @{})\n",
+    )
+    .unwrap();
+    let source = "(import spork/json)\n\n(defn parse [text]\n  (json/decode text))\n";
+    std::fs::write(root.join("main.janet"), source).unwrap();
+    let root = root.canonicalize().unwrap();
+
+    let mut session = Session::start_at(root.clone(), "main.janet");
+    let main = session.report.clone();
+    let params = json!({
+        "textDocument": {"uri": main},
+        "position": position(source, "json/decode", 5),
+    });
+    let hover = session.request("textDocument/hover", params).unwrap();
+    let shown = hover["contents"]["value"].as_str().unwrap().to_string();
     session.finish();
     std::fs::remove_dir_all(&root).ok();
     insta::assert_snapshot!(format!(

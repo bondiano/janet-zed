@@ -181,6 +181,24 @@ impl Workspace {
             .collect()
     }
 
+    /// What a `*.d.janet` declares for `name` of the module at `path`, written as the files that
+    /// import it name the module: `spork/json/encode` under `(import spork/json)`. The module's
+    /// own source carries no types, so the declaration is what types it.
+    fn declared_for(&self, path: &Path, name: &str) -> Option<&Annotation> {
+        let importers = self.importers_of(path);
+        if importers.is_empty() {
+            return None;
+        }
+        let written: Vec<String> = importers
+            .iter()
+            .map(|edge| format!("{}/{name}", edge.spec))
+            .collect();
+        self.declaration_files()
+            .find_map(|file| written.iter().find_map(|full| file.definitions.get(full)))?
+            .annotation
+            .as_deref()
+    }
+
     /// The declaration a file with `imports` writes as `name`.
     pub fn declared(&self, name: &str, imports: &[ImportSpec]) -> Option<Declared<'_>> {
         self.declarations(imports)
@@ -213,15 +231,13 @@ impl Workspace {
         let file = self.file(path)?;
         let bound = || self.expanded.get(path)?.iter().find(|b| b.name == name);
         if let Some(definition) = file.definitions.get(name) {
+            if definition.annotation.is_some() {
+                return Some(Cow::Borrowed(definition));
+            }
             // A `:lint-as` call is read for the name it defines, never for types: the macro
             // declares those in what it expands to, which only the checker compiled.
-            let Some(annotation) = definition
-                .annotation
-                .is_none()
-                .then(bound)
-                .flatten()
-                .and_then(|binding| types::declared(binding.annotation.as_deref()?))
-            else {
+            let expanded = || types::declared(bound()?.annotation.as_deref()?);
+            let Some(annotation) = self.declared_for(path, name).cloned().or_else(expanded) else {
                 return Some(Cow::Borrowed(definition));
             };
             return Some(Cow::Owned(DefInfo {

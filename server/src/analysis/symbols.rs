@@ -22,6 +22,9 @@ pub enum Info<'a> {
     Local {
         file: &'a SourceFile,
         local: &'a Local,
+        /// What inference made of it, `None` where it made nothing: a parameter is typed by the
+        /// signature written for the function, a binding by the value it was bound to.
+        ty: Option<Type>,
     },
     Module {
         file: &'a SourceFile,
@@ -33,6 +36,8 @@ pub enum Info<'a> {
     Core {
         name: &'a str,
         binding: &'a CoreBinding,
+        /// A PEG special, which shares its name with a core binding of another type.
+        peg: bool,
     },
     /// What jpm or janet-pm give `project.janet`.
     Project {
@@ -48,9 +53,15 @@ pub fn info<'a>(
 ) -> Option<Info<'a>> {
     match target {
         Target::Local { file, binding, .. } => {
+            let ty = workspace
+                .facts(file)
+                .locals
+                .get(*binding)
+                .filter(|ty| !ty.is_any())
+                .cloned();
             let file = workspace.file(file)?;
             let local = file.scopes.locals.get(*binding)?;
-            Some(Info::Local { file, local })
+            Some(Info::Local { file, local, ty })
         }
         Target::Module { file, name } => {
             let definition = workspace.definition(file, name)?;
@@ -73,10 +84,12 @@ pub fn info<'a>(
         Target::Core { name } => Some(Info::Core {
             name,
             binding: stdlib.get(name)?,
+            peg: false,
         }),
         Target::Peg { name } => Some(Info::Core {
             name,
             binding: stdlib.peg(name)?,
+            peg: true,
         }),
         Target::Project { name } => Some(Info::Project {
             name,
@@ -90,7 +103,12 @@ impl Info<'_> {
     /// `(area shape)`, for functions and macros.
     pub fn signature(&self) -> Option<String> {
         match self {
-            Info::Local { .. } => None,
+            // A local holding a function: the types are all it has, its parameters were named
+            // wherever the function was written.
+            Info::Local { local, ty, .. } => match ty {
+                Some(Type::Fn(signature)) => Some(signature.render_types(&local.name)),
+                _ => None,
+            },
             Info::Module {
                 name,
                 definition,
@@ -100,6 +118,19 @@ impl Info<'_> {
             Info::Core { binding, .. } | Info::Project { binding, .. } => {
                 binding.signature().map(str::to_string)
             }
+        }
+    }
+
+    /// The types `core.d.janet` declares for a core binding, `None` for anything else.
+    fn core_annotation(&self) -> Option<&'static Annotation> {
+        match self {
+            Info::Core {
+                name, peg: true, ..
+            } => types::core().peg(name),
+            Info::Core {
+                name, peg: false, ..
+            } => types::core().binding(name),
+            Info::Local { .. } | Info::Module { .. } | Info::Project { .. } => None,
         }
     }
 
@@ -119,7 +150,7 @@ impl Info<'_> {
                 }
                 Annotation::Value(_) | Annotation::Typedef(_) => None,
             },
-            Info::Core { name, binding } => match types::core().binding(name)? {
+            Info::Core { name, binding, .. } => match self.core_annotation()? {
                 Annotation::Function(signature) => {
                     Some((*name, parameter_vector(binding.signature()?)?, signature))
                 }
@@ -130,10 +161,14 @@ impl Info<'_> {
 
     pub fn markdown(&self) -> String {
         let (heading, kind, doc) = match self {
-            Info::Local { file, local } => {
+            Info::Local { file, local, ty } => {
                 let line = file.document.position(local.range.start).line + 1;
                 let kind = format!("local, bound on line {line}");
-                (local.name.clone(), kind, None)
+                let heading = match ty {
+                    Some(ty) => format!("{}: {ty}", local.name),
+                    None => local.name.clone(),
+                };
+                (heading, kind, None)
             }
             Info::Module {
                 file,
@@ -155,7 +190,7 @@ impl Info<'_> {
                     definition.doc.clone(),
                 )
             }
-            Info::Core { name, binding } | Info::Project { name, binding } => {
+            Info::Core { name, binding, .. } | Info::Project { name, binding } => {
                 let signature = binding.signature();
                 // Core docstrings open with the signature, which is the heading already.
                 let doc = binding
@@ -166,7 +201,14 @@ impl Info<'_> {
                         lines.collect::<Vec<_>>().join("\n").trim().to_string()
                     })
                     .filter(|doc| !doc.is_empty());
-                let heading = signature.map_or_else(|| (*name).to_string(), str::to_string);
+                // What `core.d.janet` declares, over the bare call the docstring opens with.
+                let declared = self.core_annotation().and_then(|annotation| {
+                    let params = signature.and_then(parameter_vector);
+                    declared_heading(name, params.as_deref(), annotation)
+                });
+                let heading = declared
+                    .or_else(|| signature.map(str::to_string))
+                    .unwrap_or_else(|| (*name).to_string());
                 let kind = core_kind(binding.kind);
                 let kind = match (self, &binding.location) {
                     (Info::Project { .. }, Some(at)) => {
@@ -230,14 +272,19 @@ pub fn completions(
     file: &SourceFile,
     offset: usize,
 ) -> Vec<Candidate> {
+    let typed = workspace.facts(&file.path);
     let locals = file
         .scopes
         .visible_at(offset)
         .into_iter()
-        .map(|local| Candidate {
+        .map(|(binding, local)| Candidate {
             label: local.name.clone(),
             kind: CandidateKind::Variable,
-            detail: Some("local".to_string()),
+            // `:any` is what a local is when inference read nothing: writing it says nothing.
+            detail: Some(match typed.locals.get(binding).filter(|ty| !ty.is_any()) {
+                Some(ty) => format!("local: {ty}"),
+                None => "local".to_string(),
+            }),
             origin: None,
         });
     let own = workspace

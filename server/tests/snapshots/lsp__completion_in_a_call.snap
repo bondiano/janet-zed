@@ -13,8 +13,8 @@ TxReport def
 db/pull (db/pull pattern: [:keyword] eid: Eid) -> Entity?
 db/q (db/q query: :tuple & inputs) -> [[:any]]
 db/transact (db/transact tx-data: [:any]) -> TxReport
-items local
-lines local
+items local: [(or {:kind :any & r} Shape)]
+lines local: @[]
 render (render items)
 shapes/Circle def
 shapes/Rect def

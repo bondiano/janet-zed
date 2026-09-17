@@ -1,0 +1,14 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(function? print)
+
+----- HOVER
+```janet
+(function? x) -> :boolean
+```
+function
+
+Check if x is a function (not a cfunction).

@@ -1,6 +1,5 @@
 ---
 source: server/tests/lsp.rs
-assertion_line: 223
 expression: "format!(\"----- SOURCE CODE\\n{source}\\n{}\\n\", hovers.join(\"\\n\\n\"))"
 ---
 ----- SOURCE CODE
@@ -8,7 +7,7 @@ expression: "format!(\"----- SOURCE CODE\\n{source}\\n{}\\n\", hovers.join(\"\\n
 
 ----- HOVER some
 ```janet
-(some patt)
+(some patt: Pattern) -> Pattern
 ```
 PEG special
 
@@ -16,7 +15,7 @@ Matches `patt` one or more times.
 
 ----- HOVER constant
 ```janet
-(constant value ?tag)
+(constant value ?tag: :keyword?) -> Pattern
 ```
 PEG special
 

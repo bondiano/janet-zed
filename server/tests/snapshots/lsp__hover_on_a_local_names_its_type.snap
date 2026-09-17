@@ -1,0 +1,22 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- HOVER\\n{}\\n\", shown.join(\"\\n\\n\"))"
+---
+----- HOVER
+-- (shape :kind)
+```janet
+shape: Shape
+```
+local, bound on line 33
+
+-- :r r}
+```janet
+r: :number
+```
+local, bound on line 19
+
+-- :w w :h h}
+```janet
+w: :number
+```
+local, bound on line 26

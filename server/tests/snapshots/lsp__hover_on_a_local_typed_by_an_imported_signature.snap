@@ -1,0 +1,16 @@
+---
+source: server/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(import ./shapes)
+
+(defn draw []
+  (let [c (shapes/circle 1)]
+    (shapes/area c)))
+
+----- HOVER
+```janet
+c: Circle
+```
+local, bound on line 4

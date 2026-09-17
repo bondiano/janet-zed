@@ -42,18 +42,20 @@ impl Scopes {
         binder.scopes
     }
 
-    /// Locals visible at `offset`, innermost first, one per name.
-    pub fn visible_at(&self, offset: usize) -> Vec<&Local> {
-        let mut visible: Vec<&Local> = self
+    /// Locals visible at `offset`, innermost first, one per name, each with its index in
+    /// `locals`, which is what inference typed them by.
+    pub fn visible_at(&self, offset: usize) -> Vec<(usize, &Local)> {
+        let mut visible: Vec<(usize, &Local)> = self
             .locals
             .iter()
-            .filter(|local| local.visible.start <= offset && offset <= local.visible.end)
+            .enumerate()
+            .filter(|(_, local)| local.visible.start <= offset && offset <= local.visible.end)
             .collect();
-        visible.sort_by_key(|local| std::cmp::Reverse(local.range.start));
+        visible.sort_by_key(|(_, local)| std::cmp::Reverse(local.range.start));
         let mut seen = HashSet::new();
         visible
             .into_iter()
-            .filter(|local| seen.insert(local.name.as_str()))
+            .filter(|(_, local)| seen.insert(local.name.as_str()))
             .collect()
     }
 }
