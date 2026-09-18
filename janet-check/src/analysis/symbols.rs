@@ -100,6 +100,11 @@ pub fn info<'a>(
             binding: stdlib.peg(name)?,
             peg: true,
         }),
+        Target::Type { name } => Some(Info::Core {
+            name,
+            binding: types::form(name)?,
+            peg: false,
+        }),
         Target::Project { name } => Some(Info::Project {
             name,
             binding: stdlib.project(name)?,
@@ -613,7 +618,9 @@ fn core_candidate(name: &str, binding: &CoreBinding, origin: Origin) -> Candidat
     Candidate {
         label: name.to_string(),
         kind: match binding.kind {
-            CoreKind::Macro | CoreKind::Special | CoreKind::Peg => CandidateKind::Macro,
+            CoreKind::Macro | CoreKind::Special | CoreKind::Peg | CoreKind::Type => {
+                CandidateKind::Macro
+            }
             CoreKind::Function | CoreKind::Cfunction => CandidateKind::Function,
             CoreKind::Var => CandidateKind::Variable,
             CoreKind::Value => CandidateKind::Value,
@@ -722,6 +729,7 @@ fn core_kind(kind: CoreKind) -> &'static str {
         CoreKind::Value => "value",
         CoreKind::Special => "special form",
         CoreKind::Peg => "PEG special",
+        CoreKind::Type => "type form",
     }
 }
 

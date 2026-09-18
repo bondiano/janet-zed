@@ -304,6 +304,40 @@ fn hover_on_declared_types() {
     session.finish();
 }
 
+/// `enum` where types are written is the type language's, not a name the file left unbound; in
+/// a body it is left alone.
+#[test]
+fn hover_on_an_enum_where_types_are_written() {
+    let mut session = Session::start();
+    let path = session.root.join("src/methods.janet");
+    let text = "(def Method :typedef (or (enum :get :post) :nil))\n\
+                (defn send {:params [(enum :get :post)] :ret (enum :ok)} [m] :ok)\n\
+                (def verb {:type (enum :get)} :get)\n\
+                (defn body [] {:x (enum :get)})\n";
+    let methods = uri(&path);
+    session.open(&methods, text);
+    let mut hover = |needle: &str| {
+        let params = json!({
+            "textDocument": {"uri": methods},
+            "position": position(text, needle, 1),
+        });
+        let hover = session.request("textDocument/hover", params).unwrap();
+        hover["contents"]["value"]
+            .as_str()
+            .map(|value| value.lines().nth(1).unwrap().to_string())
+    };
+    let shown = [
+        "enum :get :post) :nil",
+        "enum :get :post)]",
+        "enum :ok",
+        "enum :get)} :get",
+        "enum :get)})",
+    ]
+    .map(|needle| format!("{needle:24} {:?}", hover(needle)));
+    insta::assert_snapshot!(shown.join("\n"));
+    session.finish();
+}
+
 /// A name a `match` pattern takes out of a tagged union is what the member it matched holds.
 #[test]
 fn hover_on_a_name_a_match_pattern_binds() {

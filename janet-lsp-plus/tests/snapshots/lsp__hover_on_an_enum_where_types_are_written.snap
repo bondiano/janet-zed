@@ -1,0 +1,9 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "shown.join(\"\\n\")"
+---
+enum :get :post) :nil    Some("(enum & values)")
+enum :get :post)]        Some("(enum & values)")
+enum :ok                 Some("(enum & values)")
+enum :get)} :get         Some("(enum & values)")
+enum :get)})             None

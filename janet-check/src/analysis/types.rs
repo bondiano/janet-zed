@@ -15,6 +15,7 @@ use smol_str::SmolStr;
 use tree_sitter::Node;
 
 use super::definitions::{self, Definition};
+use super::stdlib::{CoreBinding, CoreKind};
 use crate::syntax::{self, Document};
 use narrow::Expand;
 
@@ -730,6 +731,51 @@ impl Core {
 }
 
 /// [`CORE`], read once.
+/// `enum` in `(def Method :typedef (enum :get :post))`, explained on hover.
+pub fn form(name: &str) -> Option<&'static CoreBinding> {
+    static ENUM: OnceLock<CoreBinding> = OnceLock::new();
+    (name == "enum").then(|| {
+        ENUM.get_or_init(|| CoreBinding {
+            kind: CoreKind::Type,
+            doc: Some(
+                "(enum & values)\n\nOne of these keywords, written with their colons: \
+                 `(enum :get :post)`. A literal outside them is a finding."
+                    .to_string(),
+            ),
+            location: None,
+        })
+    })
+}
+
+/// Whether the symbol ending `path` (from [`syntax::path_at`]) heads a [`form`] where types are
+/// written: the value of a `:typedef`, or a definition's metadata struct.
+pub fn is_form(doc: &Document, path: &[Node]) -> bool {
+    let [.., list, symbol] = path else {
+        return false;
+    };
+    let is_head = list.kind() == syntax::LIST && syntax::forms(*list).first() == Some(symbol);
+    is_head && form(doc.text_of(*symbol)).is_some() && in_type(doc, path)
+}
+
+fn in_type(doc: &Document, path: &[Node]) -> bool {
+    path.windows(2).any(|pair| {
+        let forms = syntax::forms(pair[0]);
+        let [head, _, rest @ .., value] = forms.as_slice() else {
+            return false;
+        };
+        let typedef = *value == pair[1] && rest.iter().any(|node| doc.text_of(*node) == ":typedef");
+        // Metadata sits before the parameter vector, and is never the value itself.
+        let metadata = pair[1].kind() == STRUCT
+            && rest
+                .iter()
+                .take_while(|node| node.kind() != TUPLE)
+                .any(|node| *node == pair[1]);
+        pair[0].kind() == syntax::LIST
+            && definitions::core(doc.text_of(*head)).is_some()
+            && (typedef || metadata)
+    })
+}
+
 pub fn core() -> &'static Core {
     static CORE_TYPES: OnceLock<Core> = OnceLock::new();
     CORE_TYPES.get_or_init(|| read(CORE))

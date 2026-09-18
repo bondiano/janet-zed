@@ -66,6 +66,7 @@ pub fn definition(
             .project(name)
             .and_then(|binding| binding.location.as_ref())
             .and_then(janet_location),
+        Target::Type { .. } => None,
         Target::Form { .. } => repl_location(state, file, offset),
     };
     Ok(location.map(GotoDefinitionResponse::Scalar))
@@ -532,6 +533,7 @@ fn renamable<'s>(
         ),
         Some((_, Target::Core { name })) => bail!("`{name}` is a core binding"),
         Some((_, Target::Peg { name })) => bail!("`{name}` is a PEG special"),
+        Some((_, Target::Type { name })) => bail!("`{name}` is a type form"),
         Some((_, Target::Project { name })) => bail!("`{name}` comes from jpm or janet-pm"),
         _ => {}
     }

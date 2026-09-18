@@ -5,7 +5,7 @@ use std::ops::Range;
 use std::path::{Path, PathBuf};
 
 use super::workspace::{self, Workspace};
-use super::{SourceFile, peg};
+use super::{SourceFile, peg, types};
 use crate::syntax;
 
 #[derive(Debug, PartialEq, Eq)]
@@ -22,6 +22,8 @@ pub enum Target {
     Core { name: String },
     /// A special heading a form in a PEG pattern.
     Peg { name: String },
+    /// A form of the type language in a `:typedef`: `enum`.
+    Type { name: String },
     /// A binding jpm or janet-pm give `project.janet`.
     Project { name: String },
     /// Unknown to scopes and modules (bound by a library macro, `$` in `|…`): matched by name
@@ -67,6 +69,12 @@ pub fn resolve<'w>(
     // Quoted data, whatever the same name means as code.
     if peg::is_special(doc, &path) {
         let target = Target::Peg {
+            name: text.to_string(),
+        };
+        return Some((at(text), target));
+    }
+    if types::is_form(doc, &path) {
+        let target = Target::Type {
             name: text.to_string(),
         };
         return Some((at(text), target));
@@ -174,7 +182,9 @@ pub fn occurrences<'w>(workspace: &'w Workspace, target: &Target) -> Vec<Occurre
                     .collect()
             })
             .unwrap_or_default(),
-        Target::Core { .. } | Target::Peg { .. } | Target::Project { .. } => Vec::new(),
+        Target::Core { .. } | Target::Peg { .. } | Target::Type { .. } | Target::Project { .. } => {
+            Vec::new()
+        }
         Target::Form { file, form, name } => workspace
             .file(file)
             .map(|source| named(source, name, name.len(), form))
@@ -199,9 +209,11 @@ pub fn declaration<'w>(workspace: &'w Workspace, target: &Target) -> Option<Occu
                 range: workspace.definition(file, name)?.name.clone(),
             })
         }
-        Target::Core { .. } | Target::Peg { .. } | Target::Project { .. } | Target::Form { .. } => {
-            None
-        }
+        Target::Core { .. }
+        | Target::Peg { .. }
+        | Target::Type { .. }
+        | Target::Project { .. }
+        | Target::Form { .. } => None,
     }
 }
 

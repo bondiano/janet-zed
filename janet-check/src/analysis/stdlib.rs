@@ -40,6 +40,8 @@ pub enum CoreKind {
     Special,
     /// Of the PEG compiler: `some` in `(peg/match ~(some "a") s)`.
     Peg,
+    /// Of the type language: `enum` in `(def Method :typedef (enum :get :post))`.
+    Type,
 }
 
 #[derive(Debug, PartialEq, Eq)]
