@@ -276,7 +276,7 @@ above the call — is read as a call to that, as Janet compiles it. The compiler
 Parameters: each is a fresh variable, unified with the declared type when the declaration has as
 many entries as the vector has names, and with `:any` for each when it writes no `:params`. `&`
 and `&keys` make the rest parameter, whose pattern is bound to `[element]`; `&named` makes a rest of
-`:any` after the parameters before it, whatever names follow it; a parameter after `&opt` is `T?`,
+`:any` after the parameters before it, whatever names follow it, and binds each name to one value; a parameter after `&opt` is `T?`,
 since a call may leave it out.
 
 A macro's body answers the code of its expansion, so its `:ret` is held only at the call. Its

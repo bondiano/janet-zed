@@ -980,10 +980,13 @@ impl<'d> Infer<'d> {
         declared: Option<&Signature>,
     ) -> (Vec<Type>, Option<Type>) {
         let forms = self.forms(vector);
-        let written = forms
+        // What follows `&named` is one tail to a caller, as `split_rest` reads it.
+        let named_at = forms.iter().position(|form| self.text(*form) == "&named");
+        let written = forms[..named_at.unwrap_or(forms.len())]
             .iter()
             .filter(|form| !MARKERS.contains(&self.text(**form)))
-            .count();
+            .count()
+            + usize::from(named_at.is_some());
         // A declaration of the wrong length says nothing about any parameter.
         let declared = declared.filter(|signature| {
             signature.params.len() + usize::from(signature.rest.is_some()) == written
@@ -992,9 +995,20 @@ impl<'d> Infer<'d> {
         let mut rest = None;
         let mut variadic = false;
         let mut optional = false;
-        for form in forms.iter().copied() {
+        if let Some(at) = named_at {
+            rest = Some(
+                declared
+                    .and_then(|signature| signature.rest.clone())
+                    .unwrap_or_else(any),
+            );
+            // Each name is one option's value, there or not.
+            for form in forms[at + 1..].iter().copied() {
+                self.pattern(form, dynamic(any()));
+            }
+        }
+        for form in forms[..named_at.unwrap_or(forms.len())].iter().copied() {
             match self.text(form) {
-                "&" | "&keys" | "&named" => {
+                "&" | "&keys" => {
                     variadic = true;
                     continue;
                 }

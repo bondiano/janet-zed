@@ -1271,3 +1271,22 @@ fn a_definition_shadows_the_core_form_of_its_name() {
         .collect();
     assert_eq!(messages, ["match takes :string here, given :number"]);
 }
+
+/// Inside the body each `&named` name is one option's value, and a declaration that writes one
+/// type per name still types the parameters before them.
+#[test]
+fn a_named_parameter_is_one_value_in_the_body() {
+    assert!(
+        messages(
+            "(defn f {:params [:keyword :string? :keyword?] :ret :string} [k &named of from] (or of \"x\"))\n"
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        messages(
+            "(defn n {:params [:number] :ret :number} [x] x)\n\
+             (defn g {:params [:keyword :string? :keyword?] :ret :number} [k &named of from] (n k))\n"
+        ),
+        ["n takes :number here, given :keyword"]
+    );
+}
