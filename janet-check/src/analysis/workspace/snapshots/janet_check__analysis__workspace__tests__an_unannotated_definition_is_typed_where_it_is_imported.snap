@@ -1,5 +1,6 @@
 ---
-source: src/analysis/workspace/tests.rs
+source: janet-check/src/analysis/workspace/tests.rs
+assertion_line: 274
 expression: "format!(\"----- SOURCE CODE\\n{BARE_SHAPES}\\n{REPORT}\\n----- HOVER\\n{}\\n\",\nhover(&workspace, \"/ws/report.janet\", \"shapes/area\"))"
 ---
 ----- SOURCE CODE
@@ -26,4 +27,4 @@ expression: "format!(\"----- SOURCE CODE\\n{BARE_SHAPES}\\n{REPORT}\\n----- HOVE
 (area shape: {:kind :any :r :number :w :number :h :number & r}) -> :number
 throws :string
 ```
-defn in `shapes.janet`
+defn in `shapes.janet`, type inferred

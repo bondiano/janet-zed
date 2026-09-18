@@ -1,0 +1,67 @@
+---
+source: janet-check/src/analysis/types/infer/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{TAGGED}\\n----- LOCALS\\n{}\\n\\n----- FINDINGS\\n{}\\n\",\nlocals.join(\"\\n\"), findings.join(\"\\n\"))"
+---
+----- SOURCE CODE
+(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+(def Event :typedef (or {:kind :click :x :number} {:kind :key :code :string} &))
+(def Method :typedef (enum :get :post :put))
+
+(defn closed {:params [Shape Method]} [shape method]
+  (match shape
+    {:kind :circle :r r} r)
+  (case method
+    :get 1
+    :post 2)
+  (case method
+    :get 1
+    :post 2
+    :put 3))
+
+(defn open {:params [Event]} [event]
+  (def read (event :x))
+  (case (event :kind)
+    :click 1)
+  (match event
+    {:kind :click :x x} x
+    {:kind :scroll :dy dy} (def scrolled event))
+  (if (= (event :kind) :key)
+    (def key event)
+    (def not-key event))
+  (when (= (event :kind) :drag)
+    (def dragged event)))
+
+(defn unwritten [shape]
+  (case (shape :kind)
+    :circle 1))
+
+(defn nested {:params [{:shape Shape :at :number}]} [box]
+  (if (= ((box :shape) :kind) :circle)
+    (def deep-circle box)
+    (def deep-rect box))
+  (case ((box :shape) :kind)
+    :circle 1))
+
+----- LOCALS
+shape: Shape
+method: Method
+r: :number
+event: Event
+read: :number?
+x: :number
+dy: :any
+scrolled: {:kind :scroll & r}
+key: {:kind :key :code :string}
+not-key: (or {:kind :click :x :number} &)
+dragged: {:kind :drag & r}
+shape: {:kind :any & r}
+box: {:shape Shape :at :number}
+deep-circle: {:shape Circle :at :number}
+deep-rect: {:shape Rect :at :number}
+
+----- FINDINGS
+8: match over Shape misses :rect
+10: case over Method misses :put
+39: case over Shape misses :rect

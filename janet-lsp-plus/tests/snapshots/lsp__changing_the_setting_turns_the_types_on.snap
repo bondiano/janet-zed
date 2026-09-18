@@ -1,14 +1,19 @@
 ---
-source: server/tests/lsp.rs
-assertion_line: 1122
+source: janet-lsp-plus/tests/lsp.rs
 expression: "format!(\"----- OFF\\n{off}\\n\\n----- WARNING\\n{on}\\n\")"
 ---
 ----- OFF
-janet 1 78: unknown symbol no-such-function
+janet 1 191: unknown symbol no-such-function
 
 ----- WARNING
-janet 1 78: unknown symbol no-such-function
-janet-zed 2 36: :radius is not a key: this form has :kind :r
-janet-zed 2 41: host/fetch takes 2 arguments, given 3
-janet-zed 2 46: host/fetch takes :number here, given :string
-janet-zed 2 51: host/limits is :struct, not a function
+janet 1 191: unknown symbol no-such-function
+janet-zed 2 47: :radius is not a key: this form has :kind :r
+janet-zed 2 52: host/fetch takes 2 arguments, given 3
+janet-zed 2 57: host/fetch takes :number here, given :string
+janet-zed 2 62: host/limits is :struct, not a function
+janet-zed 2 67: host/tag takes :keyword here, given :string
+janet-zed 2 73: host/fetch takes :number here, given :string
+janet-zed 2 78: host/fetch takes :number here, given :string
+janet-zed 2 84: label returns :number, declared :string
+janet-zed 2 105: case over Shape misses :rect
+janet-zed 2 111: host/draw takes Shape here, given {:kind :square :side :number}

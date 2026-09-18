@@ -4,7 +4,13 @@ description = "Type inference and analysis for Janet: parsing, scopes, modules a
 version = "0.3.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
 publish = true
+readme = "README.md"
+keywords = ["janet", "lint", "types", "static-analysis", "lsp"]
+categories = ["development-tools", "command-line-utilities"]
+# The CLI tests run against ../fixtures, which is outside the package.
+exclude = ["tests"]
 
 [features]
 default = ["cli"]
@@ -26,6 +32,7 @@ ignore = "0.4.33"
 lsp-types = "0.97.0"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+smol_str = "0.3.6"
 tree-sitter = "0.27.0"
 tree-sitter-language = "0.1.8"
 url = "2.5.8"

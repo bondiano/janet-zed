@@ -57,6 +57,9 @@ pub struct State {
     /// What `types.diagnostics` is set to, from `initializationOptions` and every
     /// `didChangeConfiguration` after it.
     pub reporting: Reporting,
+    /// Workspace files nobody has open that last had type diagnostics published, so the marks
+    /// come off again when a finding goes away.
+    pub published: HashSet<Uri>,
 }
 
 impl State {
@@ -76,6 +79,7 @@ impl State {
             repl_port,
             repl: RefCell::new(None),
             reporting,
+            published: HashSet::new(),
         };
         state.rescan();
         state
@@ -119,6 +123,10 @@ impl State {
                 .and_then(|connection| repl.insert(connection).lookup(candidates)),
         };
         found.inspect_err(|_| *repl = None).ok().flatten()
+    }
+
+    pub fn is_open(&self, uri: &Uri) -> bool {
+        self.open.contains_key(uri)
     }
 
     /// Every open buffer, to check them all again when the settings change.
@@ -225,16 +233,16 @@ impl State {
         let gone: Vec<PathBuf> = self
             .workspace
             .paths()
-            .filter(|path| !found.contains_key(*path) && !open.contains(path))
+            .filter(|path| !found.contains(*path) && !open.contains(path))
             .cloned()
             .collect();
         for path in gone {
             self.workspace.remove(&path);
         }
-        for (path, found_at) in found {
+        for path in found {
             if !self.workspace.contains(&path)
-                && let Some(file) = uri_of(&found_at)
-                    .and_then(|uri| SourceFile::read(path, uri, self.workspace.config()))
+                && let Some(file) = uri_of(&path)
+                    .and_then(|uri| SourceFile::read(path.clone(), uri, self.workspace.config()))
             {
                 self.workspace.insert(file);
             }

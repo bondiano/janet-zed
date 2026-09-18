@@ -26,6 +26,7 @@ use lsp_types::{
     TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 use serde::Deserialize;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::time::Instant;
 
@@ -56,6 +57,9 @@ struct Options {
 struct Types {
     #[serde(default)]
     diagnostics: Reporting,
+    /// Holds unions and inferred types to written signatures too.
+    #[serde(default)]
+    strict: bool,
 }
 
 /// What `didChangeConfiguration` carries. Everything is optional: a client that sends settings
@@ -128,12 +132,19 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         core_bindings = stdlib.iter().count(),
         "workspace"
     );
-    let workspace = Workspace::new(roots, syspath);
+    let types = options.types.unwrap_or_default();
+    let mut workspace = Workspace::new(roots, syspath);
+    workspace.set_strict(types.strict);
     let (checker, results) = Checker::spawn(janet.to_string());
     let started = Instant::now();
     let repl_port = options.repl_port.unwrap_or(kernel::netrepl::PORT);
-    let reporting = options.types.unwrap_or_default().diagnostics;
-    let state = State::new(workspace, stdlib, janet.to_string(), repl_port, reporting);
+    let state = State::new(
+        workspace,
+        stdlib,
+        janet.to_string(),
+        repl_port,
+        types.diagnostics,
+    );
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),
@@ -226,6 +237,7 @@ fn serve(
     checker: &Checker,
     results: &Receiver<Checked>,
 ) -> Result<()> {
+    publish_project(connection, &mut state)?;
     loop {
         select! {
             recv(connection.receiver) -> message => {
@@ -362,26 +374,33 @@ fn sync(
             tracing::debug!(uri = uri.as_str(), "closed");
             state.close(&uri);
             send_diagnostics(connection, uri, Vec::new(), None)?;
+            // Back to what the file says on disk, as any other project file.
+            publish_project(connection, state)?;
         }
         DidChangeWatchedFiles::METHOD => {
             let changes = extract::<DidChangeWatchedFiles>(notification)?.changes;
             tracing::debug!(files = changes.len(), "changed on disk");
             state.changed(changes);
+            publish_project(connection, state)?;
         }
         DidChangeConfiguration::METHOD => {
             let settings = extract::<DidChangeConfiguration>(notification)?.settings;
-            let reporting = serde_json::from_value::<Settings>(settings)
+            let Types {
+                diagnostics: reporting,
+                strict,
+            } = serde_json::from_value::<Settings>(settings)
                 .unwrap_or_default()
                 .types
-                .unwrap_or_default()
-                .diagnostics;
-            tracing::debug!(?reporting, "configured");
-            if state.reporting != reporting {
+                .unwrap_or_default();
+            tracing::debug!(?reporting, strict, "configured");
+            if state.reporting != reporting || state.workspace.strict() != strict {
                 state.reporting = reporting;
+                state.workspace.set_strict(strict);
                 // The buffers are marked up again, or their marks taken off.
                 for uri in state.open_buffers() {
                     check(state, checker, &uri);
                 }
+                publish_project(connection, state)?;
             }
         }
         method => tracing::trace!(method, "ignored notification"),
@@ -434,7 +453,54 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
     state
         .diagnostics
         .insert(checked.uri.clone(), diagnostics.clone());
-    send_diagnostics(connection, checked.uri, diagnostics, Some(checked.version))
+    send_diagnostics(connection, checked.uri, diagnostics, Some(checked.version))?;
+    // An edit here can contradict a signature over there: the rest of the project is read again
+    // once typing pauses, which is when a check comes back.
+    publish_project(connection, state)
+}
+
+/// Type findings for every workspace file nobody has open. The checker only ever sees open
+/// buffers, so without this a type error stays invisible until someone opens the file it is in.
+// ponytail: every file is walked on each pass; inference itself is cached, so only the files the
+// edit invalidated are read again. Worth narrowing to those if a large workspace feels it.
+fn publish_project(connection: &Connection, state: &mut State) -> Result<()> {
+    let mut found: Vec<(Uri, Vec<Diagnostic>)> = Vec::new();
+    if state.reporting != Reporting::Off {
+        let paths: Vec<PathBuf> = state.workspace.paths().cloned().collect();
+        state.workspace.infer(paths.iter().map(PathBuf::as_path));
+        for path in paths {
+            let Some(file) = state.workspace.file(&path) else {
+                continue;
+            };
+            // A file that does not parse is typed from whatever tree-sitter salvaged, so its
+            // findings are guesses; an open one is published with its check instead.
+            if state.is_open(&file.uri) || file.document.root().has_error() {
+                continue;
+            }
+            let facts = state.workspace.facts(&path);
+            let diagnostics =
+                diagnostics::inferred(&file.document, &facts.findings, state.reporting);
+            if !diagnostics.is_empty() {
+                found.push((file.uri.clone(), diagnostics));
+            }
+        }
+    }
+    let fresh: HashSet<Uri> = found.iter().map(|(uri, _)| uri.clone()).collect();
+    // Files that had findings and no longer do; an opened one is the buffer's business now.
+    let gone: Vec<Uri> = state
+        .published
+        .iter()
+        .filter(|uri| !fresh.contains(*uri) && !state.is_open(uri))
+        .cloned()
+        .collect();
+    for uri in gone {
+        send_diagnostics(connection, uri, Vec::new(), None)?;
+    }
+    for (uri, diagnostics) in found {
+        send_diagnostics(connection, uri, diagnostics, None)?;
+    }
+    state.published = fresh;
+    Ok(())
 }
 
 fn send_diagnostics(

@@ -1,0 +1,8 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "hover[\"contents\"][\"value\"].as_str().unwrap()"
+---
+```janet
+r: :number
+```
+local, bound on line 5

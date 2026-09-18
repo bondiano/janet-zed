@@ -161,12 +161,22 @@ impl Session {
 
     /// The diagnostics published for `uri` at `version`.
     fn diagnostics(&mut self, uri: &str, version: i64) -> Value {
+        self.published_at(uri, &json!(version))
+    }
+
+    /// The diagnostics published for `uri` under no version: the project-wide pass, which reports
+    /// files nobody has open.
+    fn project_diagnostics(&mut self, uri: &str) -> Value {
+        self.published_at(uri, &Value::Null)
+    }
+
+    fn published_at(&mut self, uri: &str, version: &Value) -> Value {
         let deadline = Instant::now() + Duration::from_secs(10);
         loop {
             let published = self.notifications.iter().position(|notification| {
                 notification.method == "textDocument/publishDiagnostics"
                     && notification.params["uri"] == uri
-                    && notification.params["version"] == version
+                    && &notification.params["version"] == version
             });
             if let Some(index) = published {
                 return self.notifications.remove(index).params["diagnostics"].clone();
@@ -291,6 +301,27 @@ fn hover_on_declared_types() {
     let shown = [("defn circle", 5), ("def Shape", 4), ("defmacro timed", 9)]
         .map(|(needle, delta)| format!("-- {needle}\n{}", hover(needle, delta)));
     insta::assert_snapshot!(format!("----- HOVER\n{}\n", shown.join("\n\n")));
+    session.finish();
+}
+
+/// A name a `match` pattern takes out of a tagged union is what the member it matched holds.
+#[test]
+fn hover_on_a_name_a_match_pattern_binds() {
+    let mut session = Session::start();
+    let path = session.root.join("src/matched.janet");
+    let text = "(def Circle :typedef {:kind :circle :r :number})\n\
+                (def Rect :typedef {:kind :rect :w :number :h :number})\n\
+                (def Shape :typedef (or Circle Rect))\n\
+                (defn radius {:params [Shape]} [shape]\n  \
+                (match shape {:kind :circle :r r} r))\n";
+    let matched = uri(&path);
+    session.open(&matched, text);
+    let params = json!({
+        "textDocument": {"uri": matched},
+        "position": position(text, ":r r}", 3),
+    });
+    let hover = session.request("textDocument/hover", params).unwrap();
+    insta::assert_snapshot!(hover["contents"]["value"].as_str().unwrap());
     session.finish();
 }
 
@@ -1239,6 +1270,25 @@ fn changing_the_setting_turns_the_types_on() {
 }
 
 #[test]
+fn changing_the_setting_turns_strict_mode_on() {
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(Session::root(), "src/report.janet", &settings);
+    let source = std::fs::read_to_string(session.root.join("../diagnostics/strict.janet")).unwrap();
+    let scratch = uri(&session.root.join("src/strict.janet"));
+    session.open(&scratch, &source);
+    let lenient = published(&mut session, &scratch);
+    session.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"types": {"diagnostics": "warning", "strict": true}}}),
+    );
+    let strict = published(&mut session, &scratch);
+    insta::assert_snapshot!(format!(
+        "----- DEFAULT\n{lenient}\n\n----- STRICT\n{strict}\n"
+    ));
+    session.finish();
+}
+
+#[test]
 fn go_to_definition_from_an_arity_diagnostic_reaches_the_declaration() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../fixtures/project")
@@ -1387,4 +1437,47 @@ fn spork_types_what_its_modules_answer() {
     insta::assert_snapshot!(format!(
         "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
     ));
+}
+
+/// A type error in a file nobody has open is reported all the same: the project is checked, not
+/// just the buffer in front of someone.
+#[test]
+fn type_errors_are_reported_for_files_that_are_not_open() {
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+    let root = std::env::temp_dir().join(format!("janet-zed-project-types-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::copy(
+        fixtures.join("project/src/people.janet"),
+        root.join("src/people.janet"),
+    )
+    .unwrap();
+    std::fs::copy(
+        fixtures.join("project/src/host.d.janet"),
+        root.join("src/host.d.janet"),
+    )
+    .unwrap();
+    let mistakes = root.join("src/mistakes.janet");
+    std::fs::copy(fixtures.join("diagnostics/types.janet"), &mistakes).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mistakes = mistakes.canonicalize().unwrap();
+
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(root.clone(), "src/people.janet", &settings);
+    let reported: Vec<String> = session
+        .project_diagnostics(&uri(&mistakes))
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|problem| {
+            format!(
+                "{}: {}",
+                problem["range"]["start"]["line"],
+                problem["message"].as_str().unwrap()
+            )
+        })
+        .collect();
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(reported.join("\n"));
 }

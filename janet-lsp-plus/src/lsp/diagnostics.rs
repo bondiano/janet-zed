@@ -12,6 +12,7 @@ use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
 use super::state::Reporting;
+use janet_check::analysis::ignores::{self, Ignore, ignores};
 use janet_check::analysis::modules::Package;
 use janet_check::analysis::types::infer::Finding;
 use janet_check::janet::{self, Check, Problem, Report};
@@ -107,12 +108,20 @@ fn coalesce(first: Job, queue: &Receiver<Job>) -> HashMap<Uri, Job> {
 }
 
 pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
-    let ignores = ignores(&doc.text);
+    let directives = ignores(&doc.text);
     problems
         .iter()
         .map(|problem| (problem, problem_range(doc, problem)))
         .filter(|(problem, range)| {
-            !is_ignored(&ignores, problem, doc.position(range.start).line as usize)
+            let name = problem.message.strip_prefix("unknown symbol ");
+            name.is_none_or(|name| {
+                !Ignore::silences(
+                    &directives,
+                    ignores::UNKNOWN_SYMBOL,
+                    Some(name),
+                    doc.position(range.start).line as usize,
+                )
+            })
         })
         .map(|(problem, range)| Diagnostic {
             range: doc.range(range),
@@ -144,57 +153,6 @@ pub fn inferred(doc: &Document, findings: &[Finding], reporting: Reporting) -> V
             ..Diagnostic::default()
         })
         .collect()
-}
-
-/// `# janet-zed: ignore unknown-symbol [names…]` at the end of a line silences that line; on a
-/// line of its own, the next line that is not a comment. `ignore-file` silences the whole file.
-/// Without names, every unknown symbol.
-struct Ignore<'t> {
-    /// 0-based; `None` for the whole file.
-    line: Option<usize>,
-    names: Vec<&'t str>,
-}
-
-fn ignores(text: &str) -> Vec<Ignore<'_>> {
-    let lines: Vec<&str> = text.split('\n').collect();
-    lines
-        .iter()
-        .enumerate()
-        .filter_map(|(row, line)| {
-            let (code, directive) = line.split_once("# janet-zed: ")?;
-            let mut words = directive.split_whitespace();
-            let line = match words.next()? {
-                "ignore" if code.trim().is_empty() => Some(next_code_line(&lines, row)),
-                "ignore" => Some(row),
-                "ignore-file" => None,
-                _ => return None,
-            };
-            (words.next() == Some("unknown-symbol")).then(|| Ignore {
-                line,
-                names: words.collect(),
-            })
-        })
-        .collect()
-}
-
-/// The first line after `row` that is not a comment, so `ignore` comments can stack.
-fn next_code_line(lines: &[&str], row: usize) -> usize {
-    lines[row + 1..]
-        .iter()
-        .position(|line| !line.trim_start().starts_with('#'))
-        .map_or(row, |index| row + 1 + index)
-}
-
-fn is_ignored(ignores: &[Ignore], problem: &Problem, line: usize) -> bool {
-    problem
-        .message
-        .strip_prefix("unknown symbol ")
-        .is_some_and(|name| {
-            ignores.iter().any(|ignore| {
-                ignore.line.is_none_or(|ignored| ignored == line)
-                    && (ignore.names.is_empty() || ignore.names.contains(&name))
-            })
-        })
 }
 
 /// Janet points at a form by 1-based line and byte column. Highlight the unknown symbol the

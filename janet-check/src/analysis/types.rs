@@ -3,13 +3,15 @@
 //! Read from the metadata of a definition (`{:params [...] :ret ... :throws [...]}`, `:type`,
 //! `:typedef`) and printed back as the literal they came from, for hover and signature help.
 
+pub mod fit;
 pub mod infer;
 pub mod narrow;
 
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock, RwLock};
 
+use smol_str::SmolStr;
 use tree_sitter::Node;
 
 use super::definitions::{self, Definition};
@@ -17,26 +19,29 @@ use crate::syntax::{self, Document};
 
 /// Keywords that name a type: what `(type x)` returns, plus `:any` and `:never`. Any other
 /// keyword is the value itself, as `:circle` in `{:kind :circle}`.
-const ATOMS: [&str; 18] = [
-    "nil",
-    "boolean",
-    "number",
-    "string",
-    "buffer",
-    "keyword",
-    "symbol",
-    "function",
-    "cfunction",
-    "fiber",
-    "array",
-    "table",
-    "tuple",
-    "struct",
-    "abstract",
-    "pointer",
-    "any",
-    "never",
-];
+pub(super) fn is_atom(name: &str) -> bool {
+    matches!(
+        name,
+        "nil"
+            | "boolean"
+            | "number"
+            | "string"
+            | "buffer"
+            | "keyword"
+            | "symbol"
+            | "function"
+            | "cfunction"
+            | "fiber"
+            | "array"
+            | "table"
+            | "tuple"
+            | "struct"
+            | "abstract"
+            | "pointer"
+            | "any"
+            | "never"
+    )
+}
 
 /// Parameter vector markers, which take no type of their own.
 const MARKERS: [&str; 4] = ["&", "&opt", "&keys", "&named"];
@@ -57,41 +62,121 @@ const TUPLE: &str = "sqr_tup_lit";
 const ARRAY: &str = "sqr_arr_lit";
 const STRUCT: &str = "struct_lit";
 const TABLE: &str = "tbl_lit";
+const QUOTE: [&str; 2] = ["quote_lit", "qq_lit"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Type {
     /// `:number`, `:any`, and literal keyword values like `:circle`.
-    Keyword(String),
+    Keyword(SmolStr),
     /// A named type, declared with `:typedef`.
-    Named(String),
+    Named(SmolStr),
     /// A type variable: `a`, `r`.
-    Var(String),
+    Var(Var),
     /// `:string?`, `Entity?`: the type or `nil`.
-    Nullable(Box<Type>),
+    Nullable(Arc<Type>),
     /// `[:number :string]` of a fixed shape; one element means every element.
-    Tuple(Vec<Type>),
+    Tuple(Arc<[Type]>),
     /// `@[:string]`.
-    Array(Vec<Type>),
+    Array(Arc<[Type]>),
     Struct(Fields),
     Table(Fields),
-    /// `{:keyword :any}`: any key of one type, any value of another.
+    /// `{:keyword :any}`: any key of one type, any value of another. `mutable` for the `@{…}`
+    /// spelling, which is the same dictionary in a table.
     Dict {
-        key: Box<Type>,
-        value: Box<Type>,
+        key: Arc<Type>,
+        value: Arc<Type>,
+        mutable: bool,
     },
-    Or(Vec<Type>),
+    Or(Arc<[Type]>),
+    /// `(or A B &)`: one of these, or something nobody listed. A test can pick a member out of
+    /// it, but no `case` is held to cover it.
+    Open(Arc<[Type]>),
     /// `(enum :get :post)`: one of these values. Kept without the colons.
-    Enum(Vec<String>),
-    Fn(Box<Signature>),
+    Enum(Arc<[SmolStr]>),
+    Fn(Arc<Signature>),
+    /// What inference reads a value as when nobody wrote it down: the parameters and the result
+    /// of a function without a signature, a `var`. Never parsed, and printed as the type inside;
+    /// only [`fit::fit`] tells it apart, by never complaining about it.
+    Dynamic(Arc<Type>),
 }
 
 /// The keys of a struct or table type.
+///
+/// What a type holds is shared rather than owned, here and in [`Type`]: a copy of a type is a
+/// count going up, where it used to be a walk that allocated every node again.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Fields {
     /// Keyword keys as written, with the colon.
-    pub fields: Vec<(String, Type)>,
+    pub fields: Arc<[(SmolStr, Type)]>,
     /// `& r`: the form is open, the other keys unknown.
-    pub rest: Option<String>,
+    pub rest: Option<Var>,
+}
+
+/// A type variable: one someone wrote, `a` or the `r` of `& r`, or one inference made up, printed
+/// `#12`. A number, so that copying one, comparing two or finding what one stands for never
+/// touches its name; the names written ones have are kept once for the whole process.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Var(u32);
+
+/// The bit that tells a variable inference made up from one someone wrote.
+const FRESH: u32 = 1 << 31;
+
+/// The single letters come first, in order, so that naming the variables of a finished type
+/// looks nothing up.
+fn names() -> &'static RwLock<Vec<SmolStr>> {
+    static NAMES: OnceLock<RwLock<Vec<SmolStr>>> = OnceLock::new();
+    NAMES.get_or_init(|| {
+        RwLock::new(
+            ('a'..='z')
+                .map(|letter| SmolStr::from(letter.encode_utf8(&mut [0; 4])))
+                .collect(),
+        )
+    })
+}
+
+impl Var {
+    /// The variable written `name`: the same one wherever and in whichever file it is written.
+    pub fn named(name: &str) -> Self {
+        if let [letter @ b'a'..=b'z'] = name.as_bytes() {
+            return Self::letter(*letter);
+        }
+        let position = |names: &[SmolStr]| names.iter().position(|known| known == name);
+        let read = names()
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if let Some(at) = position(&read) {
+            return Self(u32::try_from(at).unwrap_or(FRESH - 1));
+        }
+        drop(read);
+        let mut write = names()
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let at = position(&write).unwrap_or_else(|| {
+            write.push(name.into());
+            write.len() - 1
+        });
+        Self(u32::try_from(at).unwrap_or(FRESH - 1))
+    }
+
+    /// `a` for `b'a'`, without a lookup.
+    pub(crate) fn letter(letter: u8) -> Self {
+        Self(u32::from(letter - b'a'))
+    }
+
+    /// The `count`th variable inference made up in a file.
+    pub(crate) fn fresh(count: u32) -> Self {
+        Self(count | FRESH)
+    }
+
+    /// Where the variable sits among the made-up ones, or among the written ones.
+    pub(crate) fn slot(self) -> Result<usize, usize> {
+        let index = (self.0 & !FRESH) as usize;
+        if self.0 & FRESH == 0 {
+            Err(index)
+        } else {
+            Ok(index)
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,7 +197,7 @@ pub struct Signature {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Annotation {
     /// `{:params [...] :ret ... :throws [...]}` on a function or macro.
-    Function(Signature),
+    Function(Arc<Signature>),
     /// `{:type ...}` on a `def` or `var`.
     Value(Type),
     /// `(def Shape :typedef ...)`.
@@ -129,16 +214,20 @@ impl Type {
                 if text.starts_with(char::is_uppercase) {
                     atom(text, Self::Named)
                 } else if text.starts_with(char::is_lowercase) {
-                    atom(text, Self::Var)
+                    atom(text, |name| Self::Var(Var::named(&name)))
                 } else {
                     None
                 }
             }
-            TUPLE => elements(doc, node).map(Self::Tuple),
-            ARRAY => elements(doc, node).map(Self::Array),
-            STRUCT => fields(doc, node).map(dictionary),
-            TABLE => fields(doc, node).map(Self::Table),
+            TUPLE => elements(doc, node).map(|items| Self::Tuple(items.into())),
+            ARRAY => elements(doc, node).map(|items| Self::Array(items.into())),
+            STRUCT => fields(doc, node).map(|shape| dictionary(shape, false)),
+            TABLE => fields(doc, node).map(|shape| dictionary(shape, true)),
             syntax::LIST => call(doc, node),
+            // `'{:a :number & r}` or `~{…}`: the same type, written so that Janet reads the form
+            // as data rather than compiling `&` as a symbol nobody defined. An unquote inside
+            // names no type and so parses as none.
+            kind if QUOTE.contains(&kind) => Self::parse(doc, *syntax::forms(node).first()?),
             _ => None,
         }
     }
@@ -164,16 +253,23 @@ impl Type {
                 Some(ty) if depth > 0 => ty.expanded(named, depth - 1),
                 _ => self.clone(),
             },
-            Self::Nullable(inner) => Self::Nullable(Box::new(expand(inner))),
+            Self::Nullable(inner) => Self::Nullable(Arc::new(expand(inner))),
             Self::Tuple(items) => Self::Tuple(all(items)),
             Self::Array(items) => Self::Array(all(items)),
             Self::Struct(shape) => Self::Struct(shape.expanded(named, depth)),
             Self::Table(shape) => Self::Table(shape.expanded(named, depth)),
-            Self::Dict { key, value } => Self::Dict {
-                key: Box::new(expand(key)),
-                value: Box::new(expand(value)),
+            Self::Dict {
+                key,
+                value,
+                mutable,
+            } => Self::Dict {
+                key: Arc::new(expand(key)),
+                value: Arc::new(expand(value)),
+                mutable: *mutable,
             },
             Self::Or(types) => Self::Or(all(types)),
+            Self::Open(types) => Self::Open(all(types)),
+            Self::Dynamic(inner) => Self::Dynamic(Arc::new(expand(inner))),
             Self::Keyword(_) | Self::Var(_) | Self::Enum(_) | Self::Fn(_) => self.clone(),
         }
     }
@@ -181,8 +277,8 @@ impl Type {
     /// What the variables of this type stand for, when a value of type `actual` is written for
     /// it. Only what lines up structurally binds; the rest is left open, since a signature is a
     /// hint here rather than a check.
-    fn bind(&self, actual: &Type, bound: &mut HashMap<String, Type>) {
-        let all = |left: &[Type], right: &[Type], bound: &mut HashMap<String, Type>| {
+    fn bind(&self, actual: &Type, bound: &mut HashMap<Var, Type>) {
+        let all = |left: &[Type], right: &[Type], bound: &mut HashMap<Var, Type>| {
             // One element stands for every element: `[a]` against `[:number :number]`.
             match left {
                 [only] if right.len() != 1 => only.bind(&infer::unions(right.to_vec()), bound),
@@ -193,27 +289,33 @@ impl Type {
             return;
         }
         match (self, actual) {
+            (_, Self::Dynamic(inner)) => self.bind(inner, bound),
             (Self::Var(name), _) => {
-                bound.entry(name.clone()).or_insert_with(|| actual.clone());
+                bound.entry(*name).or_insert_with(|| actual.clone());
             }
-            (Self::Or(options), _) => options.iter().for_each(|option| option.bind(actual, bound)),
+            (Self::Or(options) | Self::Open(options), _) => {
+                for option in options.iter() {
+                    option.bind(actual, bound);
+                }
+            }
             (Self::Nullable(inner), Self::Nullable(other)) => inner.bind(other, bound),
-            (Self::Nullable(inner), _) => inner.bind(actual, bound),
+            (Self::Nullable(inner) | Self::Dynamic(inner), _) => inner.bind(actual, bound),
             (Self::Tuple(left), Self::Tuple(right) | Self::Array(right))
             | (Self::Array(left), Self::Array(right)) => all(left, right, bound),
             (Self::Struct(left), Self::Struct(right) | Self::Table(right))
             | (Self::Table(left), Self::Table(right)) => {
-                for (key, ty) in &left.fields {
+                for (key, ty) in left.fields.iter() {
                     if let Some((_, other)) = right.fields.iter().find(|(name, _)| name == key) {
                         ty.bind(other, bound);
                     }
                 }
             }
             (
-                Self::Dict { key, value },
+                Self::Dict { key, value, .. },
                 Self::Dict {
                     key: other,
                     value: inside,
+                    ..
                 },
             ) => {
                 key.bind(other, bound);
@@ -229,30 +331,37 @@ impl Type {
 
     /// The same type with the variables of `bound` replaced; the others stay as they are.
     #[must_use]
-    pub fn substituted(&self, bound: &HashMap<String, Type>) -> Self {
+    pub fn substituted(&self, bound: &HashMap<Var, Type>) -> Self {
         let one = |ty: &Self| ty.substituted(bound);
-        let all = |types: &[Self]| types.iter().map(one).collect();
+        let all = |types: &[Self]| types.iter().map(one).collect::<Vec<_>>();
         let fields = |shape: &Fields| Fields {
             fields: shape
                 .fields
                 .iter()
                 .map(|(key, ty)| (key.clone(), one(ty)))
                 .collect(),
-            rest: shape.rest.clone(),
+            rest: shape.rest,
         };
         match self {
             Self::Var(name) => bound.get(name).cloned().unwrap_or_else(|| self.clone()),
-            Self::Nullable(inner) => Self::Nullable(Box::new(one(inner))),
-            Self::Tuple(items) => Self::Tuple(all(items)),
-            Self::Array(items) => Self::Array(all(items)),
-            Self::Or(items) => Self::Or(all(items)),
+            Self::Nullable(inner) => Self::Nullable(Arc::new(one(inner))),
+            Self::Tuple(items) => Self::Tuple(all(items).into()),
+            Self::Array(items) => Self::Array(all(items).into()),
+            Self::Or(items) => Self::Or(all(items).into()),
+            Self::Open(items) => Self::Open(all(items).into()),
+            Self::Dynamic(inner) => Self::Dynamic(Arc::new(one(inner))),
             Self::Struct(shape) => Self::Struct(fields(shape)),
             Self::Table(shape) => Self::Table(fields(shape)),
-            Self::Dict { key, value } => Self::Dict {
-                key: Box::new(one(key)),
-                value: Box::new(one(value)),
+            Self::Dict {
+                key,
+                value,
+                mutable,
+            } => Self::Dict {
+                key: Arc::new(one(key)),
+                value: Arc::new(one(value)),
+                mutable: *mutable,
             },
-            Self::Fn(signature) => Self::Fn(Box::new(Signature {
+            Self::Fn(signature) => Self::Fn(Arc::new(Signature {
                 params: all(&signature.params),
                 rest: signature.rest.as_ref().map(one),
                 ret: one(&signature.ret),
@@ -272,7 +381,7 @@ impl Fields {
                 .iter()
                 .map(|(key, ty)| (key.clone(), ty.expanded(named, depth)))
                 .collect(),
-            rest: self.rest.clone(),
+            rest: self.rest,
         }
     }
 }
@@ -395,18 +504,32 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
     }
     let table = *metadata.iter().find(|node| node.kind() == STRUCT)?;
     let entries = entries(doc, table);
-    if let Some(node) = entries.get(":type") {
+    if let Some(node) = entries.get(":as-type").or_else(|| entries.get(":type")) {
         return Type::parse(doc, *node).map(Annotation::Value);
     }
     let declared = |key| match entries.get(key) {
         Some(node) => types_of(doc, *node),
         None => Some(Vec::new()),
     };
-    let (params, variadic) = split_rest(doc, definition.params, declared(":params")?);
+    let written = declared(":params")?;
+    // A `:params` of another length than the parameter vector says nothing anyone can hold a call
+    // to, and a signature built around it would.
+    if entries.contains_key(":params")
+        && let Some(vector) = definition.params
+    {
+        let taken = syntax::forms(vector)
+            .iter()
+            .filter(|form| !MARKERS.contains(&doc.text_of(**form)))
+            .count();
+        if taken != written.len() {
+            return None;
+        }
+    }
+    let (params, variadic) = split_rest(doc, definition.params, written);
     let throws = declared(":throws")?;
     let ret = match entries.get(":ret") {
         Some(node) => Type::parse(doc, *node)?,
-        None => Type::Keyword("any".to_string()),
+        None => Type::Keyword("any".into()),
     };
     let narrows = match entries.get(":narrows") {
         Some(node) => Some(Type::parse(doc, *node)?),
@@ -417,13 +540,15 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
     let signed = [":params", ":ret", ":throws", ":narrows"]
         .iter()
         .any(|key| entries.contains_key(key));
-    signed.then_some(Annotation::Function(Signature {
-        params,
-        rest: variadic,
-        ret,
-        throws,
-        narrows,
-    }))
+    signed.then(|| {
+        Annotation::Function(Arc::new(Signature {
+            params,
+            rest: variadic,
+            ret,
+            throws,
+            narrows,
+        }))
+    })
 }
 
 /// What a metadata struct written as Janet source declares: what the checker and a running REPL
@@ -522,20 +647,21 @@ fn read(source: &str) -> Core {
 }
 
 /// A name with an optional `?` suffix: `:string?`, `Entity?`.
-fn atom(text: &str, make: impl Fn(String) -> Type) -> Option<Type> {
+fn atom(text: &str, make: impl Fn(SmolStr) -> Type) -> Option<Type> {
     match text.strip_suffix('?') {
         Some("") => None,
-        Some(name) => Some(Type::Nullable(Box::new(make(name.to_string())))),
+        Some(name) => Some(Type::Nullable(Arc::new(make(name.into())))),
         None if text.is_empty() => None,
-        None => Some(make(text.to_string())),
+        None => Some(make(text.into())),
     }
 }
 
 fn elements(doc: &Document, node: Node) -> Option<Vec<Type>> {
-    syntax::forms(node)
-        .iter()
-        .map(|form| Type::parse(doc, *form))
-        .collect()
+    types(doc, &syntax::forms(node))
+}
+
+fn types(doc: &Document, nodes: &[Node]) -> Option<Vec<Type>> {
+    nodes.iter().map(|node| Type::parse(doc, *node)).collect()
 }
 
 fn fields(doc: &Document, node: Node) -> Option<Fields> {
@@ -544,7 +670,7 @@ fn fields(doc: &Document, node: Node) -> Option<Fields> {
     let (entries, rest) = match open {
         Some(at) if forms.len() == at + 2 => {
             let row = doc.text_of(forms[at + 1]);
-            (&forms[..at], Some(row.to_string()))
+            (&forms[..at], Some(Var::named(row)))
         }
         Some(_) => return None,
         None => (&forms[..], None),
@@ -553,51 +679,60 @@ fn fields(doc: &Document, node: Node) -> Option<Fields> {
         .chunks(2)
         .map(|pair| match pair {
             [key, value] if doc.text_of(*key).starts_with(':') => {
-                Some((doc.text_of(*key).to_string(), Type::parse(doc, *value)?))
+                Some((doc.text_of(*key).into(), Type::parse(doc, *value)?))
             }
             _ => None,
         })
         .collect::<Option<Vec<_>>>()?;
-    Some(Fields { fields, rest })
+    Some(Fields {
+        fields: fields.into(),
+        rest,
+    })
 }
 
-/// A struct literal of one atom-keyed entry is a dictionary of that key type, not a struct with
-/// that key: `{:keyword :any}` against `{:kind :circle}`.
-fn dictionary(shape: Fields) -> Type {
-    match shape.fields.as_slice() {
-        [(key, value)] if shape.rest.is_none() && is_atom(key) => Type::Dict {
-            key: Box::new(Type::Keyword(key.trim_start_matches(':').to_string())),
-            value: Box::new(value.clone()),
-        },
+/// A struct or table literal of one atom-keyed entry is a dictionary of that key type, not a
+/// shape with that key: `{:keyword :any}` against `{:kind :circle}`. `@{:keyword :any}` is the
+/// same dictionary, in a table — the spelling every `(get reg :some/key)` over a name-keyed
+/// registry is written with.
+fn dictionary(shape: Fields, mutable: bool) -> Type {
+    match &*shape.fields {
+        [(key, value)] if shape.rest.is_none() && is_atom(key.trim_start_matches(':')) => {
+            Type::Dict {
+                key: Arc::new(Type::Keyword(key.trim_start_matches(':').into())),
+                value: Arc::new(value.clone()),
+                mutable,
+            }
+        }
+        _ if mutable => Type::Table(shape),
         _ => Type::Struct(shape),
     }
-}
-
-fn is_atom(keyword: &str) -> bool {
-    ATOMS.contains(&keyword.trim_start_matches(':'))
 }
 
 fn call(doc: &Document, node: Node) -> Option<Type> {
     let forms = syntax::forms(node);
     let (head, args) = forms.split_first()?;
     match doc.text_of(*head) {
-        "or" if args.len() >= 2 => args
-            .iter()
-            .map(|arg| Type::parse(doc, *arg))
-            .collect::<Option<Vec<_>>>()
-            .map(Type::Or),
+        "or" => match args.split_last() {
+            // In the normal form inference keeps its own unions in: `(or @[:string] :nil)` is
+            // `@[:string]?`, which is what reading an element out of it takes apart.
+            Some((last, members)) if doc.text_of(*last) == "&" && !members.is_empty() => {
+                types(doc, members).map(|items| infer::unions(vec![Type::Open(items.into())]))
+            }
+            _ if args.len() >= 2 => types(doc, args).map(infer::unions),
+            _ => None,
+        },
         "enum" if !args.is_empty() => args
             .iter()
             .map(|arg| match arg.kind() {
-                KEYWORD => Some(doc.text_of(*arg).strip_prefix(':')?.to_string()),
+                KEYWORD => Some(doc.text_of(*arg).strip_prefix(':')?.into()),
                 _ => None,
             })
             .collect::<Option<Vec<_>>>()
-            .map(Type::Enum),
+            .map(|values| Type::Enum(values.into())),
         "fn" => match args {
             [vector, result] if vector.kind() == TUPLE => {
                 let (params, rest) = parameters(doc, *vector)?;
-                Some(Type::Fn(Box::new(Signature {
+                Some(Type::Fn(Arc::new(Signature {
                     params,
                     rest,
                     ret: Type::parse(doc, *result)?,
@@ -629,6 +764,26 @@ fn parameters(doc: &Document, vector: Node) -> Option<(Vec<Type>, Option<Type>)>
         None => None,
     };
     Some((params, rest))
+}
+
+/// A type a definition's metadata writes over what its value infers to.
+pub(super) enum Written {
+    /// `(def x {:type T} value)`: the value is held to `T`.
+    Checked(Type),
+    /// `(def x {:as-type T} value)`: `T`, whatever the value is, wider or narrower. The escape
+    /// hatch for a value whose type its expression cannot carry: what a rebuilt dictionary
+    /// holds, what a call into untyped code hands back.
+    Cast(Type),
+}
+
+pub(super) fn written_type(doc: &Document, metadata: &[Node]) -> Option<Written> {
+    let table = *metadata.iter().find(|node| node.kind() == STRUCT)?;
+    let entries = entries(doc, table);
+    match (entries.get(":as-type"), entries.get(":type")) {
+        (Some(node), _) => Type::parse(doc, *node).map(Written::Cast),
+        (None, Some(node)) => Type::parse(doc, *node).map(Written::Checked),
+        (None, None) => None,
+    }
 }
 
 /// The key/value nodes of a metadata struct, by key as written.
@@ -664,20 +819,51 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Keyword(name) => write!(f, ":{name}"),
-            Self::Named(name) | Self::Var(name) => write!(f, "{name}"),
+            Self::Named(name) => write!(f, "{name}"),
+            Self::Var(var) => write!(f, "{var}"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
+            Self::Dynamic(inner) => write!(f, "{inner}"),
             Self::Tuple(items) => write!(f, "[{}]", join(items)),
             Self::Array(items) => write!(f, "@[{}]", join(items)),
             Self::Struct(shape) => write!(f, "{{{shape}}}"),
             Self::Table(shape) => write!(f, "@{{{shape}}}"),
-            Self::Dict { key, value } => write!(f, "{{{key} {value}}}"),
+            Self::Dict {
+                key,
+                value,
+                mutable,
+            } => {
+                let at = if *mutable { "@" } else { "" };
+                write!(f, "{at}{{{key} {value}}}")
+            }
             Self::Or(types) => write!(f, "(or {})", join(types)),
+            Self::Open(types) => write!(f, "(or {} &)", join(types)),
             Self::Enum(values) => {
                 let values: Vec<String> = values.iter().map(|value| format!(":{value}")).collect();
                 write!(f, "(enum {})", values.join(" "))
             }
             Self::Fn(signature) => write!(f, "{signature}"),
         }
+    }
+}
+
+impl fmt::Display for Var {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.slot() {
+            Ok(count) => write!(f, "#{count}"),
+            Err(at) => {
+                let names = names()
+                    .read()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                write!(f, "{}", names.get(at).map_or("?", SmolStr::as_str))
+            }
+        }
+    }
+}
+
+/// Debugged as the name it prints, the way it was written.
+impl fmt::Debug for Var {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{:?}", self.to_string())
     }
 }
 

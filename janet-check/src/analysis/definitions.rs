@@ -46,9 +46,21 @@ pub type LintAs<'a> = &'a dyn Fn(&str) -> Option<&'static str>;
 /// Definitions under `node`. Ones in other forms (`comment`, `when`) surface at this level;
 /// ones in a definition's body become its children.
 pub fn definitions<'d>(doc: &'d Document, node: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
-    syntax::forms(node)
-        .into_iter()
-        .flat_map(|form| collect(doc, form, lint_as))
+    within(doc, node, lint_as, &syntax::forms)
+}
+
+/// [`definitions`], with the forms of a node read through `forms`: a [`syntax::Forms`] memo, for
+/// a caller that walks the same tree again after.
+pub fn within<'d, R: AsRef<[Node<'d>]>>(
+    doc: &'d Document,
+    node: Node<'d>,
+    lint_as: LintAs,
+    forms: &impl Fn(Node<'d>) -> R,
+) -> Vec<Definition<'d>> {
+    forms(node)
+        .as_ref()
+        .iter()
+        .flat_map(|form| collect(doc, *form, lint_as, forms))
         .collect()
 }
 
@@ -61,22 +73,37 @@ pub fn is_function(definer: &str) -> bool {
     FUNCTION_DEFINERS.contains(&definer)
 }
 
-fn collect<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
-    let found = definition(doc, form, lint_as);
+fn collect<'d, R: AsRef<[Node<'d>]>>(
+    doc: &'d Document,
+    form: Node<'d>,
+    lint_as: LintAs,
+    forms: &impl Fn(Node<'d>) -> R,
+) -> Vec<Definition<'d>> {
+    let inside = forms(form);
+    let found = definition(doc, form, inside.as_ref(), lint_as, forms);
     if found.is_empty() {
-        definitions(doc, form, lint_as)
+        inside
+            .as_ref()
+            .iter()
+            .flat_map(|form| collect(doc, *form, lint_as, forms))
+            .collect()
     } else {
         found
     }
 }
 
 /// The names `form` defines: one, or every symbol of a destructuring pattern.
-fn definition<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
+fn definition<'d, R: AsRef<[Node<'d>]>>(
+    doc: &'d Document,
+    form: Node<'d>,
+    inside: &[Node<'d>],
+    lint_as: LintAs,
+    forms: &impl Fn(Node<'d>) -> R,
+) -> Vec<Definition<'d>> {
     if form.kind() != syntax::LIST {
         return Vec::new();
     }
-    let forms = syntax::forms(form);
-    let [head, target, body @ ..] = forms.as_slice() else {
+    let [head, target, body @ ..] = inside else {
         return Vec::new();
     };
     if head.kind() != syntax::SYMBOL {
@@ -116,7 +143,7 @@ fn definition<'d>(doc: &'d Document, form: Node<'d>, lint_as: LintAs) -> Vec<Def
             private,
             children: body
                 .iter()
-                .flat_map(|node| collect(doc, *node, lint_as))
+                .flat_map(|node| collect(doc, *node, lint_as, forms))
                 .collect(),
         }];
     }

@@ -5,7 +5,7 @@ use crate::analysis::symbols::Parameters;
 use crate::analysis::{definitions, peg, stdlib};
 
 /// Every construct of the type language, each of which prints back as written.
-const LITERALS: [&str; 22] = [
+const LITERALS: [&str; 25] = [
     ":nil",
     ":boolean",
     ":number",
@@ -22,9 +22,12 @@ const LITERALS: [&str; 22] = [
     "{:status :number :body :any}",
     "{:status :number & r}",
     "{:keyword :any}",
+    "@{:keyword :any}",
     "@{:tx :number :tempids @{}}",
     "{:string Eid}",
     "(or :string :keyword)",
+    "(or Circle Rect &)",
+    "(or :string &)",
     "(enum :get :post :put)",
     "(fn [a] b)",
     "(fn [a & as] b)",
@@ -102,6 +105,8 @@ fn literals_that_are_not_types() {
         "{a :number}",
         "(or)",
         "(or :string)",
+        "(or &)",
+        "(or & :string)",
         "(enum)",
         "(enum :get x)",
         "(fn [a])",
@@ -132,8 +137,14 @@ fn params_of_the_wrong_length_are_ignored() {
         Some((_, Some(Annotation::Function(signature)))) => signature.clone(),
         other => panic!("no signature for {name}: {other:?}"),
     };
-    assert_eq!(signature("short").render("short", "[x y]"), None);
-    assert_eq!(signature("long").render("long", "[x]"), None);
+    let annotation = |name: &str| declared.iter().find(|(found, _)| found == name).cloned();
+    assert_eq!(annotation("short"), Some(("short".to_string(), None)));
+    assert_eq!(annotation("long"), Some(("long".to_string(), None)));
+    assert_eq!(
+        signature("circle").render("circle", "[r extra]"),
+        None,
+        "a signature shown against another vector"
+    );
     assert_eq!(
         signature("circle").render("circle", "[r]").as_deref(),
         Some("(circle r: :number) -> Circle")
@@ -184,6 +195,26 @@ fn a_recursive_type_stops_expanding() {
         tree.expanded(&named, 2).to_string(),
         "{:children [{:children [{:children [Tree]}]}]}"
     );
+}
+
+#[test]
+fn a_quoted_typedef_is_the_type_it_quotes() {
+    // An open form has to be quoted in a file that runs: Janet compiles `{… & r}` and finds no
+    // `&`. The quote is the spelling, not part of the type.
+    let plain = annotations("(def Adapter :typedef {:find :function & r})");
+    for source in [
+        "(def Adapter :typedef '{:find :function & r})",
+        "(def Adapter :typedef ~{:find :function & r})",
+    ] {
+        let quoted = annotations(source);
+        assert_eq!(quoted, plain, "`{source}` read as another type");
+        let [(_, Some(Annotation::Typedef(ty)))] = quoted.as_slice() else {
+            panic!("Adapter is a typedef")
+        };
+        assert_eq!(ty.to_string(), "{:find :function & r}");
+    }
+    // An unquote is a value from elsewhere, which no type is read out of.
+    assert_eq!(Type::read("~{:find ,found}"), None);
 }
 
 /// One declaration of `core.d.janet`.
@@ -241,14 +272,16 @@ fn any_positions(declared: &Annotation) -> usize {
         match ty {
             Type::Keyword(name) => usize::from(name == "any"),
             Type::Named(_) | Type::Var(_) | Type::Enum(_) => 0,
-            Type::Nullable(inner) => types(inner),
-            Type::Tuple(items) | Type::Array(items) | Type::Or(items) => {
+            Type::Nullable(inner) | Type::Dynamic(inner) => types(inner),
+            Type::Tuple(items) | Type::Array(items) | Type::Or(items) | Type::Open(items) => {
                 items.iter().map(types).sum()
             }
             Type::Struct(shape) | Type::Table(shape) => {
                 shape.fields.iter().map(|(_, ty)| types(ty)).sum()
             }
-            Type::Dict { key, value } => types(key) + types(value),
+            // A dictionary's key type being `:any` says the keys are unconstrained, which is what
+            // a dictionary is. It is the values that are a position anyone could have typed.
+            Type::Dict { value, .. } => types(value),
             Type::Fn(signature) => signature_positions(signature),
         }
     }
@@ -474,6 +507,7 @@ fn every_spork_predicate_declares_what_it_narrows() {
             };
             let narrows = signature
                 .narrows
+                .clone()
                 .unwrap_or_else(|| panic!("{name} declares no :narrows"));
             format!("{name}: {narrows}")
         })
@@ -520,5 +554,127 @@ fn spork_declares_every_binding_of_the_five_modules() {
             "spork.d.janet is out of date with this spork: {module} missing {missing:?}, \
              declared but gone {gone:?}"
         );
+    }
+}
+
+/// Only what is static and disjoint is `No`: atoms by kind, forms by a key both have, keywords
+/// by value. A union given, a `Dynamic` and a variable could be anything.
+#[test]
+fn only_static_disjoint_types_do_not_fit() {
+    use fit::{Fit, fit};
+    let read = |source: &str| Type::read(source).unwrap_or_else(|| panic!("{source} is a type"));
+    let named = |name: &str| match name {
+        "Circle" => Some(read("{:kind :circle :r :number}")),
+        "Rect" => Some(read("{:kind :rect :w :number}")),
+        _ => None,
+    };
+    let answer = |actual: Type, expected: &str| {
+        fit(
+            &actual,
+            &read(expected),
+            &infer::Subst::default(),
+            &named,
+            false,
+        )
+    };
+    let cases = [
+        (":string", ":number", Fit::No),
+        (":string", ":string?", Fit::Yes),
+        (":nil", ":string?", Fit::Yes),
+        (":get", "(enum :get :post)", Fit::Yes),
+        (":put", "(enum :get :post)", Fit::No),
+        (":circle", ":rect", Fit::No),
+        (":circle", ":keyword", Fit::Yes),
+        ("{:kind :rect}", "Circle", Fit::No),
+        ("{:kind :circle :r :string}", "Circle", Fit::No),
+        ("@{:kind :circle}", "Circle", Fit::Maybe),
+        ("{:kind :square :side :number}", "(or Circle Rect)", Fit::No),
+        ("{:kind :rect :w :number}", "(or Circle Rect)", Fit::Maybe),
+        (
+            "{:kind :square :side :number}",
+            "(or Circle Rect &)",
+            Fit::Maybe,
+        ),
+        ("(or Circle Rect &)", "(or Circle Rect)", Fit::Maybe),
+        ("[:string]", "@[:number]", Fit::No),
+        (":number", "(fn [a] b)", Fit::Maybe),
+        (":nil", "(fn [a] b)", Fit::No),
+        ("(or :string :number)", ":number", Fit::Maybe),
+        (
+            "(or :string :number)",
+            "(or :number :string :nil)",
+            Fit::Yes,
+        ),
+        ("a", ":number", Fit::Maybe),
+        (":any", ":number", Fit::Maybe),
+    ];
+    for (actual, expected, want) in cases {
+        assert_eq!(
+            answer(read(actual), expected),
+            want,
+            "{actual} against {expected}"
+        );
+    }
+    let unwritten = Type::Dynamic(Arc::new(read(":string")));
+    assert_eq!(
+        answer(unwritten, ":number"),
+        Fit::Maybe,
+        "a Dynamic type is never wrong"
+    );
+}
+
+/// Strict mode holds a static union to every member and a `Dynamic` type to some part of what it
+/// guesses; what could be anything still is.
+#[test]
+fn strict_types_are_a_subset_and_guesses_meet() {
+    use fit::{Fit, fit};
+    let read = |source: &str| Type::read(source).unwrap_or_else(|| panic!("{source} is a type"));
+    let named = |name: &str| match name {
+        "Circle" => Some(read("{:kind :circle :r :number}")),
+        "Rect" => Some(read("{:kind :rect :w :number}")),
+        _ => None,
+    };
+    let answer = |actual: Type, expected: &str| {
+        fit(
+            &actual,
+            &read(expected),
+            &infer::Subst::default(),
+            &named,
+            true,
+        )
+    };
+    let guess = |source: &str| Type::Dynamic(Arc::new(read(source)));
+    let cases = [
+        (read(":string"), ":number", Fit::No),
+        (read("(or :string :number)"), ":number", Fit::No),
+        (
+            read("(or :string :number)"),
+            "(or :number :string)",
+            Fit::Yes,
+        ),
+        (read(":string?"), ":string", Fit::No),
+        (read(":string?"), ":string?", Fit::Yes),
+        (read("(or Circle :string &)"), "Circle", Fit::No),
+        (read("(or Circle Rect &)"), "(or Circle Rect)", Fit::Maybe),
+        (guess(":string"), ":number", Fit::No),
+        (guess(":number"), ":number", Fit::Maybe),
+        (guess("(or :string :number)"), ":number", Fit::Maybe),
+        (guess("(or :string :keyword)"), ":number", Fit::No),
+        (
+            guess("{:kind :circle :r (or :string :number)}"),
+            "Circle",
+            Fit::Maybe,
+        ),
+        (
+            Type::Or([guess(":string"), read(":number")].into()),
+            ":number",
+            Fit::Maybe,
+        ),
+        (read("a"), ":number", Fit::Maybe),
+        (read(":any"), ":number", Fit::Maybe),
+    ];
+    for (actual, expected, want) in cases {
+        let shown = format!("{actual:?} against {expected}");
+        assert_eq!(answer(actual, expected), want, "{shown}");
     }
 }

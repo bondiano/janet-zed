@@ -1,5 +1,5 @@
 ---
-source: src/analysis/types/tests.rs
+source: janet-check/src/analysis/types/tests.rs
 expression: "parsed.join(\"\\n\")"
 ---
 :nil
@@ -33,13 +33,19 @@ a
 {:status :number & r}
   Struct(Fields { fields: [(":status", Keyword("number"))], rest: Some("r") })
 {:keyword :any}
-  Dict { key: Keyword("keyword"), value: Keyword("any") }
+  Dict { key: Keyword("keyword"), value: Keyword("any"), mutable: false }
+@{:keyword :any}
+  Dict { key: Keyword("keyword"), value: Keyword("any"), mutable: true }
 @{:tx :number :tempids @{}}
   Table(Fields { fields: [(":tx", Keyword("number")), (":tempids", Table(Fields { fields: [], rest: None }))], rest: None })
 {:string Eid}
-  Dict { key: Keyword("string"), value: Named("Eid") }
+  Dict { key: Keyword("string"), value: Named("Eid"), mutable: false }
 (or :string :keyword)
   Or([Keyword("string"), Keyword("keyword")])
+(or Circle Rect &)
+  Open([Named("Circle"), Named("Rect")])
+(or :string &)
+  Open([Keyword("string")])
 (enum :get :post :put)
   Enum(["get", "post", "put"])
 (fn [a] b)

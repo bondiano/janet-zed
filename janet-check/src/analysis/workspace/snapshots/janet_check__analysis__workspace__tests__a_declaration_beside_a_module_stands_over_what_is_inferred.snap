@@ -1,6 +1,6 @@
 ---
-source: src/analysis/workspace/tests.rs
-assertion_line: 444
+source: janet-check/src/analysis/workspace/tests.rs
+assertion_line: 487
 expression: "format!(\"----- INFERRED\\n{before}\\n{by_importer}\\n\\n----- DECLARED BESIDE\\n{}\\n{}\\n\",\nhover(&workspace, \"/ws/report.janet\", \"shapes/area\"),\ninferred(&workspace, \"/ws/report.janet\"),)"
 ---
 ----- INFERRED
@@ -8,7 +8,7 @@ expression: "format!(\"----- INFERRED\\n{before}\\n{by_importer}\\n\\n----- DECL
 (area shape: {:kind :any :r :number :w :number :h :number & r}) -> :number
 throws :string
 ```
-defn in `shapes.janet`
+defn in `shapes.janet`, type inferred
 total-area: (fn [(or [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :number)
 
 ----- DECLARED BESIDE

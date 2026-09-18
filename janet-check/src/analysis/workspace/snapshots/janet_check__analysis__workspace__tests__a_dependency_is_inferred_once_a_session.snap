@@ -1,8 +1,9 @@
 ---
-source: src/analysis/workspace/tests.rs
+source: janet-check/src/analysis/workspace/tests.rs
+assertion_line: 473
 expression: shown
 ---
 ```janet
 (encode x) -> :string
 ```
-defn in `json.janet`
+defn in `json.janet`, type inferred

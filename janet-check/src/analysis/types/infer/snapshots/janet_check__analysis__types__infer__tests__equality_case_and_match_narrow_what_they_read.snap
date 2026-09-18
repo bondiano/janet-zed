@@ -1,0 +1,78 @@
+---
+source: janet-check/src/analysis/types/infer/tests.rs
+expression: "format!(\"----- SOURCE CODE\\n{MATCHED}\\n----- LOCALS\\n{}\\n\", locals.join(\"\\n\"))"
+---
+----- SOURCE CODE
+(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+
+(defn equal {:params [Shape (enum :get :post) :boolean]} [shape method flag]
+  (if (= (shape :kind) :circle) (def eq-circle shape) (def eq-rect shape))
+  (when (= :get method) (def eq-get method))
+  (def maybe (if flag "s" nil))
+  (if (= maybe nil) (def eq-nil maybe) (def eq-there maybe)))
+
+(defn cased {:params [Shape]} [shape]
+  (case (shape :kind)
+    :circle (def case-circle shape)
+    (def case-rect shape)))
+
+(defn matched {:params [Shape [:number :string] :any]} [shape pair value]
+  (match shape
+    {:kind :circle :r r} (def match-circle shape)
+    {:kind :rect :w w} (def match-rect shape))
+  (match pair [n s] (def both [n s]))
+  (match value
+    :ok (def match-ok value)
+    (x (number? x)) (def guarded x)
+    [head & tail] (def rest tail)
+    other (def match-other other)))
+
+(defn read {:params [Shape]} [shape]
+  (def radius (shape :r)))
+
+(defn optional {:params [:number :string]} [a &opt b]
+  (def opt-b b))
+
+(defn unwritten [a &opt b]
+  (+ a b))
+
+----- LOCALS
+shape: Shape
+method: (enum :get :post)
+flag: :boolean
+eq-circle: Circle
+eq-rect: Rect
+eq-get: :get
+maybe: :string?
+eq-nil: :nil
+eq-there: :string
+shape: Shape
+case-circle: Circle
+case-rect: Rect
+shape: Shape
+pair: [:number :string]
+value: :any
+r: :number
+match-circle: Circle
+w: :number
+match-rect: Rect
+n: :number
+s: :string
+both: [:number :string]
+match-ok: :ok
+x: :any
+guarded: :any
+head: :any
+tail: [:any]
+rest: [:any]
+other: :any
+match-other: :any
+shape: Shape
+radius: :number?
+a: :number
+b: :string?
+opt-b: :string?
+a: :number
+b: :number?

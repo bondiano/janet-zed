@@ -3,11 +3,11 @@
 //! file's imports, a `project.janet` or the set of files change.
 
 use std::borrow::Cow;
-use std::cell::{Cell, RefCell};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::num::NonZeroUsize;
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 
 use super::config::Config;
 use super::modules::{ImportSpec, Package, Search, native_modules, packages};
@@ -20,10 +20,11 @@ use tree_sitter::Node;
 
 use crate::syntax::{self, Document};
 
-/// How many files inference reads to type one: the file itself and two more. What a module four
-/// imports away says is `:any` rather than another round of inference, which is also what ends a
-/// cycle of imports.
-const MODULES: usize = 3;
+/// Types a file reads from another one's body, by its path and the name it defines.
+type Inferred<'a> = &'a dyn Fn(&Path, &str) -> Option<Annotation>;
+
+/// What the ambient declarations say, by the label a file writes each one as.
+type Labels = HashMap<String, Option<Annotation>>;
 
 /// A name a `*.d.janet` file declares, as the file that sees it writes it.
 #[derive(Debug)]
@@ -82,12 +83,17 @@ pub struct Workspace {
     // ponytail: replaced by the next reply for a file, never dropped; a deleted file's names stay
     // unreachable in memory.
     expanded: HashMap<PathBuf, Vec<Binding>>,
-    /// What inference read out of a file, by how many files it was allowed to read: filled on
-    /// demand, dropped when the file or anything it imports changes.
-    types: RefCell<HashMap<(PathBuf, usize), Rc<Facts>>>,
+    /// What inference read out of a file: filled on demand, dropped when the file or anything it
+    /// imports changes.
+    types: Mutex<HashMap<PathBuf, Arc<Facts>>>,
+    /// Ambient declarations by the label a file with these imports writes them as, the highest
+    /// priority one for each: built once per import set, dropped with the declarations.
+    ambient: Mutex<HashMap<Vec<ImportSpec>, Arc<Labels>>>,
     /// How often inference actually ran, to tell a cache hit from a miss in tests.
-    inferences: Cell<usize>,
+    inferences: AtomicUsize,
     stale: bool,
+    /// Strict mode: unions and inferred types are held to written signatures too.
+    strict: bool,
 }
 
 impl Workspace {
@@ -108,6 +114,18 @@ impl Workspace {
 
     pub fn config(&self) -> &Config {
         &self.config
+    }
+
+    pub fn strict(&self) -> bool {
+        self.strict
+    }
+
+    /// Findings of every file are read again in the other mode; the types themselves are the same.
+    pub fn set_strict(&mut self, strict: bool) {
+        if strict != self.strict {
+            self.strict = strict;
+            lock(&self.types).clear();
+        }
     }
 
     /// Reads the configs again: those libraries export from `jpm_tree/lib`, the syspath and the
@@ -140,7 +158,8 @@ impl Workspace {
             return;
         }
         self.config = config;
-        self.types.get_mut().clear();
+        lock(&self.types).clear();
+        lock(&self.ambient).clear();
         for file in self.files.values_mut().chain(self.external.values_mut()) {
             file.reconfigure(&self.config);
         }
@@ -160,8 +179,6 @@ impl Workspace {
 
     /// Ambient declarations a file with `imports` sees, highest priority first: `*.d.janet` under
     /// the roots, then the ones libraries export.
-    // ponytail: every name is rewritten on every lookup; a declaration file of hundreds of names
-    // wants a map built once per config instead.
     pub fn declarations(&self, imports: &[ImportSpec]) -> Vec<Declared<'_>> {
         self.declaration_files()
             .flat_map(|file| {
@@ -206,6 +223,22 @@ impl Workspace {
             .find(|declared| declared.label == name)
     }
 
+    /// What the declaration a file with `imports` writes as each label says: [`Self::declared`]
+    /// for every name at once, which is what inference asks for on every free name.
+    fn ambient(&self, imports: &[ImportSpec]) -> Arc<Labels> {
+        let mut ambient = lock(&self.ambient);
+        let labels = ambient.entry(imports.to_vec()).or_insert_with(|| {
+            // Reversed, so that the highest priority declaration of a label is the one kept.
+            let labels = self
+                .declarations(imports)
+                .into_iter()
+                .rev()
+                .map(|declared| (declared.label, declared.info.annotation.as_deref().cloned()));
+            Arc::new(labels.collect())
+        });
+        Arc::clone(labels)
+    }
+
     fn declaration_files(&self) -> impl Iterator<Item = &SourceFile> {
         let mut roots: Vec<&SourceFile> = self
             .files
@@ -218,11 +251,15 @@ impl Workspace {
 
     /// Takes the names a check saw macros bind.
     pub fn expand(&mut self, bindings: HashMap<PathBuf, Vec<Binding>>) {
-        self.expanded.extend(
-            bindings
-                .into_iter()
-                .map(|(path, bindings)| (canonical(&path), bindings)),
-        );
+        for (path, bindings) in bindings {
+            let path = canonical(&path);
+            // A name a macro binds is a definition: what was inferred without it is stale, in the
+            // file and in everything that imports it.
+            if self.expanded.get(&path) != Some(&bindings) {
+                self.invalidate(&path);
+                self.expanded.insert(path, bindings);
+            }
+        }
     }
 
     /// The definition of `name` in `path`: read from the source, else bound by a macro call the
@@ -270,9 +307,34 @@ impl Workspace {
             .collect()
     }
 
-    /// The types inference reads out of `path`, with what it imports typed in turn.
-    pub fn facts(&self, path: &Path) -> Rc<Facts> {
-        self.facts_within(path, MODULES)
+    /// The types inference reads out of `path`, with every module it reaches typed first.
+    pub fn facts(&self, path: &Path) -> Arc<Facts> {
+        if let Some(facts) = self.cached(path) {
+            return facts;
+        }
+        for component in self.components([path]) {
+            self.infer_component(&component);
+        }
+        self.cached(path).unwrap_or_default()
+    }
+
+    /// Infers every file `paths` reach, a layer of the import graph at a time: the components of
+    /// one layer import nothing of each other, so they are inferred side by side.
+    pub fn infer<'p>(&self, paths: impl IntoIterator<Item = &'p Path>) {
+        let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
+        for layer in self.layers(self.components(paths)) {
+            let next = AtomicUsize::new(0);
+            std::thread::scope(|scope| {
+                for _ in 0..threads.min(layer.len()) {
+                    scope.spawn(|| {
+                        while let Some(component) = layer.get(next.fetch_add(1, Ordering::Relaxed))
+                        {
+                            self.infer_component(component);
+                        }
+                    });
+                }
+            });
+        }
     }
 
     /// What a named type stands for where `file` reads it: a `:typedef` of the file itself, else
@@ -282,7 +344,9 @@ impl Workspace {
             .definitions
             .get(name)
             .and_then(|definition| definition.annotation.as_deref().cloned());
-        match own.or_else(|| self.foreign(file, name, MODULES))? {
+        let inferred =
+            |module: &Path, name: &str| self.facts(module).definitions.get(name).cloned();
+        match own.or_else(|| self.foreign(file, name, Some(&inferred)))? {
             Annotation::Typedef(ty) => Some(ty),
             Annotation::Function(_) | Annotation::Value(_) => None,
         }
@@ -290,35 +354,120 @@ impl Workspace {
 
     /// How often inference ran since the last thing that dropped its results.
     pub fn inferences(&self) -> usize {
-        self.inferences.get()
+        self.inferences.load(Ordering::Relaxed)
     }
 
-    /// `path` typed while `depth` files may still be read, the file itself counted.
-    fn facts_within(&self, path: &Path, depth: usize) -> Rc<Facts> {
-        let key = (path.to_path_buf(), depth);
-        if let Some(facts) = self.types.borrow().get(&key).cloned() {
-            return facts;
-        }
-        let facts = Rc::new(match self.file(path) {
-            Some(file) => {
-                self.inferences.set(self.inferences.get() + 1);
-                let all = |name: &str| self.foreign(file, name, depth);
-                // Depth one reads no other file, so it answers with what is written down and
-                // never with what inference made of a module's body.
-                let written = |name: &str| self.foreign(file, name, 1);
-                let known = infer::Known {
-                    all: &all,
-                    written: &written,
-                };
-                let mut facts = infer::facts(&file.document, &file.scopes, known);
-                // A `x.d.janet` beside `x.janet` is written down, so it stands over whatever
-                // inference reads out of the body, here and in every file that imports it.
-                facts.definitions.extend(self.declared_beside(path));
-                facts
+    fn cached(&self, path: &Path) -> Option<Arc<Facts>> {
+        lock(&self.types).get(path).cloned()
+    }
+
+    /// The import graph reachable from `starts`, cut into strongly connected components, each one
+    /// after every component it imports.
+    fn components<'p>(&self, starts: impl IntoIterator<Item = &'p Path>) -> Vec<Vec<PathBuf>> {
+        let mut tarjan = Tarjan {
+            workspace: self,
+            indices: HashMap::new(),
+            stack: Vec::new(),
+            components: Vec::new(),
+        };
+        for start in starts {
+            if !tarjan.indices.contains_key(start) {
+                tarjan.connect(start);
             }
-            None => Facts::default(),
+        }
+        tarjan.components
+    }
+
+    /// `components`, in the order they come, grouped so that each group imports only from the
+    /// groups before it.
+    fn layers(&self, components: Vec<Vec<PathBuf>>) -> Vec<Vec<Vec<PathBuf>>> {
+        let mut depths: HashMap<PathBuf, usize> = HashMap::new();
+        let mut layers: Vec<Vec<Vec<PathBuf>>> = Vec::new();
+        for component in components {
+            let depth = component
+                .iter()
+                .flat_map(|path| self.imports_of(path))
+                .filter_map(|edge| depths.get(&edge.path).map(|depth| depth + 1))
+                .max()
+                .unwrap_or(0);
+            depths.extend(component.iter().map(|path| (path.clone(), depth)));
+            if layers.len() <= depth {
+                layers.resize_with(depth + 1, Vec::new);
+            }
+            layers[depth].push(component);
+        }
+        layers
+    }
+
+    /// Infers the files of one component of the import graph, whose imports outside it are
+    /// inferred already. A cycle is walked twice, every file seeing what the others last made of
+    /// themselves; what the second walk reads differently from the first is `Dynamic`.
+    fn infer_component(&self, members: &[PathBuf]) {
+        if members.iter().all(|path| self.cached(path).is_some()) {
+            return;
+        }
+        let cyclic = match members {
+            [path] => self.imports_of(path).iter().any(|edge| &edge.path == path),
+            _ => true,
+        };
+        let mut drafts: HashMap<PathBuf, Facts> = HashMap::new();
+        let mut first: HashMap<PathBuf, HashMap<String, Annotation>> = HashMap::new();
+        for pass in 0..if cyclic { 2 } else { 1 } {
+            for path in members {
+                let facts = self.infer_file(path, members, &drafts);
+                if let Some(draft) = drafts.insert(path.clone(), facts)
+                    && pass == 1
+                {
+                    first.insert(path.clone(), draft.definitions);
+                }
+            }
+        }
+        let settled = drafts.into_iter().map(|(path, mut facts)| {
+            if let Some(first) = first.get(&path) {
+                for (name, annotation) in &mut facts.definitions {
+                    if first.get(name) != Some(annotation) {
+                        *annotation = infer::unsettled(annotation);
+                    }
+                }
+            }
+            (path, Arc::new(facts))
         });
-        self.types.borrow_mut().insert(key, Rc::clone(&facts));
+        lock(&self.types).extend(settled);
+    }
+
+    /// One file of `members`, reading the others as `drafts` last left them.
+    fn infer_file(
+        &self,
+        path: &Path,
+        members: &[PathBuf],
+        drafts: &HashMap<PathBuf, Facts>,
+    ) -> Facts {
+        let Some(file) = self.file(path) else {
+            return Facts::default();
+        };
+        self.inferences.fetch_add(1, Ordering::Relaxed);
+        let inferred = |module: &Path, name: &str| match drafts.get(module) {
+            Some(draft) => draft.definitions.get(name).cloned(),
+            // Not walked yet on the first pass of a cycle: nothing is known of it so far.
+            None if members.iter().any(|member| member == module) => None,
+            None => self.facts(module).definitions.get(name).cloned(),
+        };
+        let all = |name: &str| self.foreign(file, name, Some(&inferred));
+        // What inference made of a module's body is never what a finding speaks for.
+        let written = |name: &str| self.foreign(file, name, None);
+        let known = infer::Known {
+            all: &all,
+            written: &written,
+        };
+        let mut facts = infer::facts(&file.document, &file.scopes, known, self.strict);
+        // A declaration file declares and never runs: the `nil` of `(def x {:type T} nil)` there
+        // stands in for a value the host has, so nothing in it is held to its type.
+        if is_declaration(path) {
+            facts.findings.clear();
+        }
+        // A `x.d.janet` beside `x.janet` is written down, so it stands over whatever inference
+        // reads out of the body, here and in every file that imports it.
+        facts.definitions.extend(self.declared_beside(path));
         facts
     }
 
@@ -332,9 +481,14 @@ impl Workspace {
     }
 
     /// The type of a name `file` does not define itself: from a module it imports, an ambient
-    /// declaration, or the core.
-    fn foreign(&self, file: &SourceFile, name: &str, depth: usize) -> Option<Annotation> {
-        let imported = self.imports_of(&file.path).iter().find_map(|edge| {
+    /// declaration, or the core. Without `inferred`, only what is written down.
+    fn foreign(
+        &self,
+        file: &SourceFile,
+        name: &str,
+        inferred: Option<Inferred>,
+    ) -> Option<Annotation> {
+        let provided = self.imports_of(&file.path).iter().find_map(|edge| {
             let short = name.strip_prefix(edge.prefix.as_str())?;
             let passed = edge
                 .names
@@ -347,22 +501,17 @@ impl Workspace {
             if definition.private && !edge.included {
                 return None;
             }
-            if let Some(annotation) = definition.annotation.as_deref() {
-                return Some(annotation.clone());
-            }
-            // One file further in, while there is room for one.
-            let deeper = self.facts_within(&module, (depth > 1).then(|| depth - 1)?);
-            deeper.definitions.get(short).cloned()
+            Some((module, short, definition.annotation.as_deref().cloned()))
         });
-        imported
-            .or_else(|| {
-                self.declared(name, &file.imports)?
-                    .info
-                    .annotation
-                    .as_deref()
-                    .cloned()
-            })
-            .or_else(|| types::core().binding(name).cloned())
+        let declared = || self.ambient(&file.imports).get(name).cloned().flatten();
+        // A name an import provides is that module's, typed or not: the core's binding of the
+        // same name is another function altogether.
+        let Some((module, short, annotation)) = provided else {
+            return declared().or_else(|| types::core().binding(name).cloned());
+        };
+        annotation
+            .or_else(|| inferred?(&module, short))
+            .or_else(declared)
     }
 
     /// Modules the workspace projects declare with `declare-source`.
@@ -408,7 +557,8 @@ impl Workspace {
     /// away. An ambient declaration is visible everywhere, so it drops everything.
     fn invalidate(&mut self, path: &Path) {
         if is_declaration(path) {
-            self.types.get_mut().clear();
+            lock(&self.types).clear();
+            lock(&self.ambient).clear();
             return;
         }
         let mut dropped = BTreeSet::from([path.to_path_buf()]);
@@ -425,9 +575,7 @@ impl Workspace {
                     .filter(|path| dropped.insert(path.clone())),
             );
         }
-        self.types
-            .get_mut()
-            .retain(|(path, _), _| !dropped.contains(path));
+        lock(&self.types).retain(|path, _| !dropped.contains(path));
     }
 
     /// Adds or replaces a file; [`Self::refresh`] applies what that means for the graph.
@@ -453,9 +601,7 @@ impl Workspace {
         }
         // The graph moved under every workspace file; dependencies are read once and never change.
         let external = &self.external;
-        self.types
-            .borrow_mut()
-            .retain(|(path, _), _| external.contains_key(path));
+        lock(&self.types).retain(|path, _| external.contains_key(path));
         let files = &self.files;
         let projects = || {
             files
@@ -542,6 +688,51 @@ impl Workspace {
     }
 }
 
+/// Tarjan's walk over the imports: a component is complete, and pushed, once every file it
+/// imports outside itself is in an earlier one.
+struct Tarjan<'w> {
+    workspace: &'w Workspace,
+    /// When each file was reached; `usize::MAX` once its component is out.
+    indices: HashMap<PathBuf, usize>,
+    stack: Vec<PathBuf>,
+    components: Vec<Vec<PathBuf>>,
+}
+
+impl Tarjan<'_> {
+    /// Walks what `path` imports; the earliest file still on the stack it reaches.
+    fn connect(&mut self, path: &Path) -> usize {
+        let index = self.indices.len();
+        self.indices.insert(path.to_path_buf(), index);
+        self.stack.push(path.to_path_buf());
+        let workspace = self.workspace;
+        let low = workspace.imports_of(path).iter().fold(index, |low, edge| {
+            match self.indices.get(&edge.path) {
+                Some(&reached) => low.min(reached),
+                None => low.min(self.connect(&edge.path)),
+            }
+        });
+        if low == index {
+            let at = self
+                .stack
+                .iter()
+                .rposition(|member| member == path)
+                .unwrap_or(0);
+            let mut component = self.stack.split_off(at);
+            // The walk starts wherever it was asked to; the files of a cycle are read in one order.
+            component.sort();
+            for member in &component {
+                self.indices.insert(member.clone(), usize::MAX);
+            }
+            self.components.push(component);
+        }
+        low
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 /// `binding` in the current text of `file`: the name among the arguments of the call at its line
 /// and column, or, when edits since the check moved it, of the first top-level form that has it.
 fn expanded_definition(file: &SourceFile, binding: &Binding) -> Option<DefInfo> {
@@ -612,10 +803,11 @@ fn builtin_dir() -> &'static Path {
     })
 }
 
-/// Every `.janet` file under `roots`, honoring .gitignore, by its canonical path.
+/// The canonical path of every `.janet` file under `roots`, honoring .gitignore. Canonical, so
+/// that a relative root still yields the absolute paths a file URI needs.
 ///
 /// Dependencies live in `jpm_tree`, gitignored or not, and are left to module resolution.
-pub fn janet_files(roots: &[PathBuf]) -> BTreeMap<PathBuf, PathBuf> {
+pub fn janet_files(roots: &[PathBuf]) -> BTreeSet<PathBuf> {
     roots
         .iter()
         .flat_map(|root| {
@@ -628,7 +820,7 @@ pub fn janet_files(roots: &[PathBuf]) -> BTreeMap<PathBuf, PathBuf> {
             entry.file_type().is_some_and(|kind| kind.is_file())
                 && entry.path().extension().is_some_and(|ext| ext == "janet")
         })
-        .map(|entry| (canonical(entry.path()), entry.into_path()))
+        .map(|entry| canonical(entry.path()))
         .collect()
 }
 

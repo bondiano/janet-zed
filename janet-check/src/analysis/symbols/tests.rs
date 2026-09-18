@@ -425,3 +425,26 @@ fn a_lambda_shows_what_the_call_around_it_gives_its_parameters() {
         source
     );
 }
+
+#[test]
+fn hover_on_a_local_inference_knows_nothing_of() {
+    let workspace = workspace("(defn f [store] (def record ((store :find) 1)) record)");
+    let path = PathBuf::from("/ws/main.janet");
+    let binding = workspace
+        .file(&path)
+        .unwrap()
+        .scopes
+        .locals
+        .iter()
+        .position(|local| local.name == "record")
+        .unwrap();
+    let target = Target::Local {
+        file: path,
+        binding,
+        name: "record".into(),
+    };
+    let hover = info(&workspace, &Stdlib::default(), &target)
+        .unwrap()
+        .markdown();
+    assert!(hover.starts_with("```janet\nrecord: :any\n```"), "{hover}");
+}

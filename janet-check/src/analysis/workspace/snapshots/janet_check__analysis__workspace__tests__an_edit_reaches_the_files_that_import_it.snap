@@ -1,5 +1,6 @@
 ---
-source: src/analysis/workspace/tests.rs
+source: janet-check/src/analysis/workspace/tests.rs
+assertion_line: 393
 expression: "format!(\"----- BEFORE\\n{before}\\n\\n----- AFTER\\n{}\\n\",\nhover(&workspace, \"/ws/report.janet\", \"shapes/area\"))"
 ---
 ----- BEFORE
@@ -7,11 +8,11 @@ expression: "format!(\"----- BEFORE\\n{before}\\n\\n----- AFTER\\n{}\\n\",\nhove
 (area shape: {:kind :any :r :number :w :number :h :number & r}) -> :number
 throws :string
 ```
-defn in `shapes.janet`
+defn in `shapes.janet`, type inferred
 
 ----- AFTER
 ```janet
 (area shape: {:kind :any :r :number & r}) -> (or :number :string)
 throws :string
 ```
-defn in `shapes.janet`
+defn in `shapes.janet`, type inferred

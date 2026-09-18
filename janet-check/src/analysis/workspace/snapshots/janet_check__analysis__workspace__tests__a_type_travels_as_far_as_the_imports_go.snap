@@ -1,9 +1,9 @@
 ---
-source: src/analysis/workspace/tests.rs
+source: janet-check/src/analysis/workspace/tests.rs
 expression: "format!(\"----- a.janet\\n{}\\n\\n----- b.janet\\n{}\\n\\n----- c.janet\\n{}\\n\",\ninferred(&workspace, \"/ws/a.janet\"), inferred(&workspace, \"/ws/b.janet\"),\ninferred(&workspace, \"/ws/c.janet\"),)"
 ---
 ----- a.janet
-far: (fn [] :any)
+far: (fn [] :number)
 own: (fn [] :string)
 
 ----- b.janet

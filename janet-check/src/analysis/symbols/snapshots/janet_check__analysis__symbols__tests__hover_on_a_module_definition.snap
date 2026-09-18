@@ -1,5 +1,6 @@
 ---
-source: src/analysis/symbols/tests.rs
+source: janet-check/src/analysis/symbols/tests.rs
+assertion_line: 209
 expression: "(defn area \"Area.\" [shape] 1)\n(defn- hidden [] 2)"
 ---
 ----- SOURCE CODE
@@ -11,6 +12,6 @@ expression: "(defn area \"Area.\" [shape] 1)\n(defn- hidden [] 2)"
 ```janet
 (area shape) -> :number
 ```
-defn in `shapes.janet`
+defn in `shapes.janet`, type inferred
 
 Area.

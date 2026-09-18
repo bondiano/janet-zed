@@ -1,0 +1,65 @@
+# What only strict mode reports, and the near misses it stays quiet about too.
+# Nothing here is reported in the default mode. The mistakes are intentional. Do not fix them.
+
+(comment :declare
+  (def Circle :typedef {:kind :circle :r :number})
+  (def Rect :typedef {:kind :rect :w :number :h :number})
+  (def Shape :typedef (or Circle Rect))
+
+  (defn host/fetch
+    {:params [:string :number] :ret :string}
+    "Read `n` bytes of the path the host resolves."
+    [path n])
+
+  (defn host/seek
+    {:params [(or :string :number)] :ret :nil}
+    "A place in the stream, named or counted."
+    [where]))
+
+(defn sixteen
+  "No metadata: what it returns is inference's reading, not anyone's word."
+  []
+  "16")
+
+(defn fetch-either
+  "A union, one of whose members does not fit."
+  [flag]
+  (host/fetch "ok.txt" (if flag 16 "16")))
+
+(defn fetch-radius
+  "A key only some members hold: `:number?`, and `nil` is no number."
+  {:params [Shape] :ret :string}
+  [shape]
+  (host/fetch "ok.txt" (shape :r)))
+
+(defn fetch-guessed
+  "What a function nobody typed returns, which cannot be a number however it is read."
+  []
+  (host/fetch "ok.txt" (sixteen)))
+
+(defn label
+  {:params [:boolean] :ret :string}
+  "A union returned, one of whose members is not what is declared."
+  [flag]
+  (if flag "yes" 0))
+
+# Nothing below is a mistake, strict or not.
+
+(defn guesses
+  "A guess some part of which fits, a union every member of which does, and nothing known."
+  [n]
+  # A parameter nobody typed.
+  (host/fetch "ok.txt" n)
+  # A `var`, which holds whatever a `set` puts in it: a number among the rest.
+  (var size "16")
+  (set size 16)
+  (host/fetch "ok.txt" size)
+  (host/seek (if n 16 "16")))
+
+(defn circle-radius
+  {:params [Shape] :ret :string?}
+  "A key read where the tag says which member holds it."
+  [shape]
+  (match shape
+    {:kind :circle :r r} (host/fetch "ok.txt" r)
+    {:kind :rect} nil))

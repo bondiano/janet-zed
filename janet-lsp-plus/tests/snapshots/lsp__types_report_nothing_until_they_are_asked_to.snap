@@ -1,6 +1,5 @@
 ---
-source: server/tests/lsp.rs
-assertion_line: 1091
+source: janet-lsp-plus/tests/lsp.rs
 expression: "published(&mut session, &scratch)"
 ---
-janet 1 78: unknown symbol no-such-function
+janet 1 191: unknown symbol no-such-function

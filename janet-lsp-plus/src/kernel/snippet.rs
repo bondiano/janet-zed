@@ -17,7 +17,7 @@ pub fn locate(root: &Path, code: &str) -> Option<Position> {
         return None;
     }
     let files = janet_files(&[root.to_path_buf()]);
-    let mut found = files.values().flat_map(|path| {
+    let mut found = files.iter().flat_map(|path| {
         let text = fs::read_to_string(path).unwrap_or_default();
         text.match_indices(code)
             .map(|(offset, _)| position(path, &text, offset))

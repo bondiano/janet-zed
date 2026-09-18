@@ -7,8 +7,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::Parser;
+use janet_check::analysis::types::infer::Finding;
 use janet_check::analysis::workspace::{Workspace, janet_files};
 use janet_check::analysis::{SourceFile, canonical, uri_of};
+use tree_sitter::Node;
 
 /// Type-check Janet files against the types written for them.
 ///
@@ -23,11 +25,16 @@ struct Args {
     /// Files or directories to check; the working directory by default.
     #[arg(value_name = "PATH", default_value = ".")]
     paths: Vec<PathBuf>,
+
+    /// Also report a union some member of which does not fit, and a type inference guessed that
+    /// cannot fit at all.
+    #[arg(long)]
+    strict: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
-    match check(&args.paths) {
+    match check(&args.paths, args.strict) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
@@ -39,13 +46,14 @@ fn main() -> ExitCode {
 
 /// Whether every file the paths name type-checks. The roots are the directories among them,
 /// so imports resolve the way they do for the editor.
-fn check(paths: &[PathBuf]) -> anyhow::Result<bool> {
+fn check(paths: &[PathBuf], strict: bool) -> anyhow::Result<bool> {
     let files = janet_files(paths);
     anyhow::ensure!(!files.is_empty(), "no .janet files under the given paths");
     let mut workspace = Workspace::new(paths.iter().map(root_of).collect(), None);
-    for (path, found_at) in &files {
+    workspace.set_strict(strict);
+    for path in &files {
         if let Some(file) =
-            uri_of(found_at).and_then(|uri| SourceFile::read(path.clone(), uri, workspace.config()))
+            uri_of(path).and_then(|uri| SourceFile::read(path.clone(), uri, workspace.config()))
         {
             workspace.insert(file);
         }
@@ -53,18 +61,33 @@ fn check(paths: &[PathBuf]) -> anyhow::Result<bool> {
     // After the files: exports are looked up in the projects among them.
     workspace.configure();
     workspace.refresh();
+    workspace.infer(files.iter().map(PathBuf::as_path));
 
+    let here = std::env::current_dir().ok();
     let mut clean = true;
-    for path in files.keys() {
+    for path in &files {
         let Some(file) = workspace.file(path) else {
             continue;
         };
         let doc = &file.document;
-        for finding in &workspace.facts(path).findings {
+        // A file that does not parse is typed from whatever tree-sitter salvaged, so its findings
+        // are guesses. The parse error is the one thing worth reporting about it.
+        let findings = match first_error(doc.root()) {
+            Some(node) => vec![Finding {
+                range: node.byte_range(),
+                message: "parse error".to_string(),
+            }],
+            None => workspace.facts(path).findings.clone(),
+        };
+        for finding in &findings {
             let at = doc.position(finding.range.start);
+            let shown = here
+                .as_ref()
+                .and_then(|here| path.strip_prefix(here).ok())
+                .unwrap_or(path);
             println!(
                 "{}:{}:{}: {}",
-                path.display(),
+                shown.display(),
                 at.line + 1,
                 at.character + 1,
                 finding.message
@@ -73,6 +96,18 @@ fn check(paths: &[PathBuf]) -> anyhow::Result<bool> {
         }
     }
     Ok(clean)
+}
+
+/// The first node tree-sitter could not parse, or that it had to invent to keep going.
+fn first_error(root: Node<'_>) -> Option<Node<'_>> {
+    if !root.has_error() {
+        return None;
+    }
+    if root.is_error() || root.is_missing() {
+        return Some(root);
+    }
+    let mut cursor = root.walk();
+    root.children(&mut cursor).find_map(first_error)
 }
 
 /// The workspace root a path stands for: itself, or the directory holding it.

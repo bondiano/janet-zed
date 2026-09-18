@@ -1,0 +1,14 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "reported.join(\"\\n\")"
+---
+47: :radius is not a key: this form has :kind :r
+52: host/fetch takes 2 arguments, given 3
+57: host/fetch takes :number here, given :string
+62: host/limits is :struct, not a function
+67: host/tag takes :keyword here, given :string
+73: host/fetch takes :number here, given :string
+78: host/fetch takes :number here, given :string
+84: label returns :number, declared :string
+105: case over Shape misses :rect
+111: host/draw takes Shape here, given {:kind :square :side :number}

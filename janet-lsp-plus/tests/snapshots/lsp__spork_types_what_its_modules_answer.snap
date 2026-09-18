@@ -1,6 +1,6 @@
 ---
-source: server/tests/lsp.rs
-assertion_line: 1237
+source: janet-lsp-plus/tests/lsp.rs
+assertion_line: 1435
 expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
 ---
 ----- SOURCE CODE
@@ -19,4 +19,4 @@ Parse JSON. `keywords` makes string keys keywords, `nils` makes null nil rather 
 ```janet
 (parse text: (or :string :buffer)) -> {:string :any}
 ```
-defn in `main.janet`
+defn in `main.janet`, type inferred

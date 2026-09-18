@@ -298,7 +298,7 @@ fn chain() -> Workspace {
 }
 
 #[test]
-fn a_type_travels_three_files_and_no_further() {
+fn a_type_travels_as_far_as_the_imports_go() {
     let workspace = chain();
     insta::assert_snapshot!(format!(
         "----- a.janet\n{}\n\n----- b.janet\n{}\n\n----- c.janet\n{}\n",
@@ -306,6 +306,49 @@ fn a_type_travels_three_files_and_no_further() {
         inferred(&workspace, "/ws/b.janet"),
         inferred(&workspace, "/ws/c.janet"),
     ));
+}
+
+#[test]
+fn each_file_of_a_chain_is_inferred_once() {
+    let workspace = chain();
+    workspace.facts(Path::new("/ws/a.janet"));
+    assert_eq!(workspace.inferences(), 4, "a and the three files under it");
+    for path in ["/ws/b.janet", "/ws/c.janet", "/ws/d.janet"] {
+        workspace.facts(Path::new(path));
+    }
+    assert_eq!(
+        workspace.inferences(),
+        4,
+        "a file under a was inferred again"
+    );
+}
+
+#[test]
+fn a_hover_through_three_imports_reads_as_through_one() {
+    let workspace = chain();
+    let signature = |path: &str| {
+        let shown = hover(&workspace, path, "far []");
+        shown.lines().take(3).collect::<Vec<_>>().join("\n")
+    };
+    assert!(signature("/ws/c.janet").contains("-> :number"));
+    assert_eq!(signature("/ws/a.janet"), signature("/ws/c.janet"));
+}
+
+/// Every file of `workspace` inferred at once, the way `janet-check` does.
+#[test]
+fn inferring_the_workspace_at_once_reads_each_file_once() {
+    let workspace = chain();
+    let paths = ["/ws/a.janet", "/ws/b.janet", "/ws/c.janet", "/ws/d.janet"].map(Path::new);
+    workspace.infer(paths);
+    assert_eq!(workspace.inferences(), 4);
+    let alone = chain();
+    for path in paths {
+        assert_eq!(
+            inferred(&workspace, &path.to_string_lossy()),
+            inferred(&alone, &path.to_string_lossy())
+        );
+    }
+    assert_eq!(workspace.inferences(), 4);
 }
 
 #[test]
@@ -446,4 +489,64 @@ fn a_declaration_beside_a_module_stands_over_what_is_inferred() {
         hover(&workspace, "/ws/report.janet", "shapes/area"),
         inferred(&workspace, "/ws/report.janet"),
     ));
+}
+
+/// A module's own `slurp` shadows the core's: what the core declares for its binding says nothing
+/// about a function the module wrote, typed or not.
+#[test]
+fn an_imported_name_is_not_the_core_binding_it_shadows() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file("/ws/util.janet", "(defn slurp [a b] (+ a b))"));
+    workspace.insert(file("/ws/main.janet", "(use ./util)\n(slurp 1 2)\n"));
+    workspace.refresh();
+    let facts = workspace.facts(Path::new("/ws/main.janet"));
+    let messages: Vec<&str> = facts
+        .findings
+        .iter()
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert!(messages.is_empty(), "{messages:?}");
+}
+
+/// Names the checker saw a macro bind reach the files that import them, however soon a hover
+/// asked for types before they came.
+#[test]
+fn names_a_macro_binds_drop_what_was_inferred_without_them() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file("/ws/lib.janet", "(defthing answer)"));
+    workspace.insert(file(
+        "/ws/main.janet",
+        "(import ./lib)\n(defn out [] (lib/answer))",
+    ));
+    workspace.refresh();
+    let before = inferred(&workspace, "/ws/main.janet");
+    let binding = crate::janet::Binding {
+        name: "answer".to_string(),
+        line: 1,
+        col: 1,
+        doc: None,
+        private: false,
+        annotation: Some("{:params [] :ret :string}".to_string()),
+    };
+    workspace.expand(HashMap::from([(
+        PathBuf::from("/ws/lib.janet"),
+        vec![binding.clone()],
+    )]));
+    let after = inferred(&workspace, "/ws/main.janet");
+    assert_ne!(
+        before, after,
+        "main kept the types read before the macro's names came"
+    );
+    assert_eq!(after, "out: (fn [] :string)");
+    let ran = workspace.inferences();
+    workspace.expand(HashMap::from([(
+        PathBuf::from("/ws/lib.janet"),
+        vec![binding],
+    )]));
+    inferred(&workspace, "/ws/main.janet");
+    assert_eq!(
+        workspace.inferences(),
+        ran,
+        "the same names dropped types again"
+    );
 }

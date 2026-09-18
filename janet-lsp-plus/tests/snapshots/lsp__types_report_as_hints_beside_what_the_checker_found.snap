@@ -1,10 +1,15 @@
 ---
-source: server/tests/lsp.rs
-assertion_line: 1106
+source: janet-lsp-plus/tests/lsp.rs
 expression: "published(&mut session, &scratch)"
 ---
-janet 1 78: unknown symbol no-such-function
-janet-zed 4 36: :radius is not a key: this form has :kind :r
-janet-zed 4 41: host/fetch takes 2 arguments, given 3
-janet-zed 4 46: host/fetch takes :number here, given :string
-janet-zed 4 51: host/limits is :struct, not a function
+janet 1 191: unknown symbol no-such-function
+janet-zed 4 47: :radius is not a key: this form has :kind :r
+janet-zed 4 52: host/fetch takes 2 arguments, given 3
+janet-zed 4 57: host/fetch takes :number here, given :string
+janet-zed 4 62: host/limits is :struct, not a function
+janet-zed 4 67: host/tag takes :keyword here, given :string
+janet-zed 4 73: host/fetch takes :number here, given :string
+janet-zed 4 78: host/fetch takes :number here, given :string
+janet-zed 4 84: label returns :number, declared :string
+janet-zed 4 105: case over Shape misses :rect
+janet-zed 4 111: host/draw takes Shape here, given {:kind :square :side :number}

@@ -6,7 +6,7 @@ expression: "format!(\"----- INFERRED\\n{}\\n\\n----- LOCALS\\nrequest of get-pe
 add-person: (fn [{:body {:email :any :name :any :age :any & r} & r}] {:status :number :body {:id Eid}})  throws :db/unique-violation
 get-person: (fn [{:params {:id :string & r} & r}] (or {:body Entity} {:status :number :body {:error :string}}))  throws :db/not-found
 list-people: (fn [{:query {:min-age :string & r} & r}] {:body @[{:id :any :name :any :age :any}]})
-schema: {:person/name {:db/type :string} :person/age {:db/type :number} :person/email {:db/type :string :db/unique :identity}}
+schema: {:person/name {:db/type :keyword} :person/age {:db/type :keyword} :person/email {:db/type :keyword :db/unique :identity}}
 
 ----- LOCALS
 request of get-person: {:params {:id :string & r} & r}

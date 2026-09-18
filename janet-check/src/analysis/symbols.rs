@@ -4,8 +4,10 @@ use std::borrow::Cow;
 use std::collections::HashSet;
 use std::ops::Range;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
+use smol_str::SmolStr;
 use tree_sitter::Node;
 
 use super::references::Target;
@@ -25,6 +27,8 @@ pub enum Info<'a> {
         /// What inference made of it, `None` where it made nothing: a parameter is typed by the
         /// signature written for the function, a binding by the value it was bound to.
         ty: Option<Type>,
+        /// Whether `ty` is a guess: nothing written, nor a literal, says so.
+        inferred: bool,
     },
     Module {
         file: &'a SourceFile,
@@ -53,15 +57,20 @@ pub fn info<'a>(
 ) -> Option<Info<'a>> {
     match target {
         Target::Local { file, binding, .. } => {
-            let ty = workspace
-                .facts(file)
-                .locals
-                .get(*binding)
-                .filter(|ty| !ty.is_any())
-                .cloned();
+            // `any` too: a hover saying nothing reads as inference never having looked.
+            let ty = workspace.facts(file).locals.get(*binding).cloned();
+            let (ty, inferred) = match ty {
+                Some(Type::Dynamic(inner)) => (Some(Arc::unwrap_or_clone(inner)), true),
+                ty => (ty, false),
+            };
             let file = workspace.file(file)?;
             let local = file.scopes.locals.get(*binding)?;
-            Some(Info::Local { file, local, ty })
+            Some(Info::Local {
+                file,
+                local,
+                ty,
+                inferred,
+            })
         }
         Target::Module { file, name } => {
             let definition = workspace.definition(file, name)?;
@@ -161,9 +170,14 @@ impl Info<'_> {
 
     pub fn markdown(&self) -> String {
         let (heading, kind, doc) = match self {
-            Info::Local { file, local, ty } => {
+            Info::Local {
+                file,
+                local,
+                ty,
+                inferred,
+            } => {
                 let line = file.document.position(local.range.start).line + 1;
-                let kind = format!("local, bound on line {line}");
+                let kind = format!("local, bound on line {line}{}", marked(*inferred));
                 let heading = match ty {
                     Some(ty) => format!("{}: {ty}", local.name),
                     None => local.name.clone(),
@@ -182,7 +196,8 @@ impl Info<'_> {
                 let kind = if definition.declared {
                     format!("declared{place}")
                 } else {
-                    format!("{}{place}", definition.definer)
+                    let inferred = annotation.as_deref().is_some_and(guessed);
+                    format!("{}{place}{}", definition.definer, marked(inferred))
                 };
                 (
                     module_heading(file, name, definition, annotation.as_deref()),
@@ -222,6 +237,27 @@ impl Info<'_> {
         };
         let doc = doc.map_or_else(String::new, |doc| format!("\n\n{doc}"));
         format!("```janet\n{heading}\n```\n{kind}{doc}")
+    }
+}
+
+/// What a hover adds to the kind of a binding whose type inference guessed, so that it reads apart
+/// from one somebody wrote.
+fn marked(inferred: bool) -> &'static str {
+    if inferred { ", type inferred" } else { "" }
+}
+
+/// Whether inference guessed some of what `annotation` says: a metadata never does.
+fn guessed(annotation: &Annotation) -> bool {
+    let dynamic = |ty: &Type| matches!(ty, Type::Dynamic(_));
+    match annotation {
+        Annotation::Value(ty) => dynamic(ty),
+        Annotation::Function(signature) => signature
+            .params
+            .iter()
+            .chain(&signature.rest)
+            .chain([&signature.ret])
+            .any(dynamic),
+        Annotation::Typedef(_) => false,
     }
 }
 
@@ -533,19 +569,19 @@ fn fields_of(
     file: &SourceFile,
     ty: &Type,
     depth: usize,
-) -> Vec<(String, Type)> {
+) -> Vec<(SmolStr, Type)> {
     if depth == 0 {
         return Vec::new();
     }
     let deeper = |ty: &Type| fields_of(workspace, file, ty, depth - 1);
     let fields = match ty {
-        Type::Struct(shape) | Type::Table(shape) => shape.fields.clone(),
-        Type::Nullable(inner) => deeper(inner),
+        Type::Struct(shape) | Type::Table(shape) => shape.fields.to_vec(),
+        Type::Nullable(inner) | Type::Dynamic(inner) => deeper(inner),
         Type::Named(name) => workspace
             .typedef(file, name)
             .map(|named| deeper(&named))
             .unwrap_or_default(),
-        Type::Or(options) => options.iter().flat_map(deeper).collect(),
+        Type::Or(options) | Type::Open(options) => options.iter().flat_map(deeper).collect(),
         _ => Vec::new(),
     };
     let mut seen = HashSet::new();

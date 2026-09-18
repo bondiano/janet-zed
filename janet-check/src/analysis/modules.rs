@@ -12,7 +12,7 @@ use super::canonical;
 use crate::janet;
 use crate::syntax::{self, Document};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ImportSpec {
     /// The module as written: `./shapes`, `/src/shapes`, `spork/json`.
     pub spec: String,

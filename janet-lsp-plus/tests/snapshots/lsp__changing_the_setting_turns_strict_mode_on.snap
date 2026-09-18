@@ -1,0 +1,13 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+assertion_line: 1285
+expression: "format!(\"----- DEFAULT\\n{lenient}\\n\\n----- STRICT\\n{strict}\\n\")"
+---
+----- DEFAULT
+
+
+----- STRICT
+janet-zed 2 26: host/fetch takes :number here, given (or :number :string)
+janet-zed 2 32: host/fetch takes :number here, given :number?
+janet-zed 2 37: host/fetch takes :number here, given :string
+janet-zed 2 43: label returns (or :string :number), declared :string

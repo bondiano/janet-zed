@@ -4,6 +4,10 @@ mod document;
 
 pub use document::Document;
 
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+
 use tree_sitter::{Language, Node, Parser, Tree};
 use tree_sitter_language::LanguageFn;
 
@@ -54,10 +58,29 @@ pub fn is_collection(node: Node) -> bool {
 
 /// Named children except comments: the forms a collection, a reader macro or the root holds.
 pub fn forms(node: Node<'_>) -> Vec<Node<'_>> {
+    // A leaf, most nodes of a file: a cursor over nothing costs more than the check.
+    if node.named_child_count() == 0 {
+        return Vec::new();
+    }
     let mut cursor = node.walk();
     node.named_children(&mut cursor)
         .filter(|child| child.kind() != COMMENT)
         .collect()
+}
+
+/// [`forms`] of every node asked for, read out of the tree once: walking a node's children costs
+/// more than a lookup, and inference walks every form more than once.
+#[derive(Default)]
+pub struct Forms<'d>(RefCell<HashMap<usize, Rc<[Node<'d>]>>>);
+
+impl<'d> Forms<'d> {
+    pub fn of(&self, node: Node<'d>) -> Rc<[Node<'d>]> {
+        self.0
+            .borrow_mut()
+            .entry(node.id())
+            .or_insert_with(|| forms(node).into())
+            .clone()
+    }
 }
 
 pub fn has_comments(node: Node) -> bool {

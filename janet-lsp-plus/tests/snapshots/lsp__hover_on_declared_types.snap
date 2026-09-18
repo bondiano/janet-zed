@@ -1,5 +1,6 @@
 ---
-source: server/tests/lsp.rs
+source: janet-lsp-plus/tests/lsp.rs
+assertion_line: 303
 expression: "format!(\"----- HOVER\\n{}\\n\", shown.join(\"\\n\\n\"))"
 ---
 ----- HOVER
@@ -21,6 +22,6 @@ def in `shapes.janet`
 ```janet
 (timed & body: a) -> [:symbol [:symbol [:symbol] :symbol [:symbol [a]]] [:symbol [:symbol [:symbol] :symbol]]]
 ```
-defmacro in `shapes.janet`
+defmacro in `shapes.janet`, type inferred
 
 Evaluate `body`, return `[result seconds]`.

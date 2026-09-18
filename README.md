@@ -5,29 +5,17 @@ a REPL wired into the editor, and structural editing.
 
 - **Syntax:** highlighting, indentation, outline, bracket matching, text objects, and
   injections, all built on [tree-sitter-janet-simple](https://github.com/sogaiu/tree-sitter-janet-simple).
-- **Language server** (`janet-lsp-plus`):
-  - diagnostics from the Janet compiler as you type;
-  - completion with docs, hover, and signature help;
-  - go-to-definition for locals, imported modules, and the standard library
-    (`boot.janet` and the C sources);
-  - find references and scope-aware rename across the workspace;
-  - document symbols and formatting (spork `fmt`).
-- **Types:** hover, signature help and key completion from the types of a program — written in
-  a definition's metadata, declared in a `*.d.janet` file, or read out of a body by inference —
-  with optional diagnostics for what they rule out.
-- **Code actions:** paredit (slurp, barf, raise, splice, wrap), threading (`->`, `->>`,
-  unthread) and quick fixes for unknown symbols (create the function or `def`, ignore the
-  line, or declare the name).
-- **REPL:** a Jupyter kernel for Zed's built-in REPL. It runs on a shared
-  `spork/netrepl` process, so a terminal REPL sees everything you evaluate from the editor.
-- **Debugger:** a debug adapter for Zed's debugger: breakpoints, stepping, variables and
-  hover evaluation, for a program you run or for the REPL while you evaluate from the editor.
-- **Tasks and runnables:** run a script that has `(defn main …)`, plus `jpm test` and
-  `jpm build` for any `project.janet`.
-- **`project.janet`:** the bindings jpm and janet-pm (`spork/declare-cc`) give it, taken from
-  the installed tools: completion, hover, go-to-definition into their sources, signature help
-  that follows `declare-*` keys, and diagnostics against their real macros.
-- **Snippets** for common forms.
+- **Language server:** diagnostics as you type, completion, hover, signature help,
+  go-to-definition into the stdlib, references, rename, symbols, formatting, and
+  `project.janet` support — see [`janet-lsp-plus`](janet-lsp-plus/README.md).
+- **Types:** hover, signature help and key completion from the types of a program, with
+  optional diagnostics for what they rule out — see [`janet-check`](janet-check/README.md#types).
+- **Code actions:** paredit, threading and quick fixes for unknown symbols — see
+  [structural editing](janet-lsp-plus/README.md#structural-editing).
+- **REPL:** a Jupyter kernel for Zed's built-in REPL, on a shared `spork/netrepl` process.
+- **Debugger:** breakpoints, stepping, variables and hover evaluation, for a program you run
+  or for the REPL.
+- **Tasks, runnables and snippets.**
 
 ## Requirements
 
@@ -37,18 +25,13 @@ a REPL wired into the editor, and structural editing.
 | [spork](https://github.com/janet-lang/spork) (`jpm install spork`) | the REPL, attaching the debugger to it |
 | `jpm` | the `jpm test` / `jpm build` tasks |
 
-Without `janet`, the server still offers the features that need no compiler: completion
-and navigation within the project, rename, symbols, and code actions.
-
 ## Installation
 
 Open **Extensions** (`zed: extensions`), search for **Janet+** and install it. On first
 start the extension downloads the `janet-lsp-plus` build for your platform from
-[GitHub Releases](https://github.com/bondiano/janet-zed/releases).
-
-It also downloads the Janet sources that match `janet/version` (for go-to-definition
-into the stdlib). To find that version, the extension runs `janet -e "(prin janet/version)"`
-once.
+[GitHub Releases](https://github.com/bondiano/janet-zed/releases), and the Janet sources that
+match `janet/version` (for go-to-definition into the stdlib). A `janet-lsp-plus` found on
+`PATH` takes precedence over the downloaded one.
 
 ## Configuration
 
@@ -62,11 +45,12 @@ All settings are optional. Put them in `settings.json`:
         // Use a local Janet checkout instead of downloading the sources.
         "janet_source": "~/src/janet",
         // Report what the types rule out: "off" (default), "hint" or "warning".
-        "types": { "diagnostics": "hint" }
+        // `strict` also reports a union a member of which does not fit, and a type inference
+        // guessed that cannot fit at all.
+        "types": { "diagnostics": "hint", "strict": false }
       },
       "binary": {
         // Server log verbosity: error, warn, info (default), debug or trace.
-        // `debug` logs every request with its timing, buffer sync and flycheck.
         "env": { "JANET_LSP_LOG": "debug" }
       }
     }
@@ -80,214 +64,9 @@ All settings are optional. Put them in `settings.json`:
 }
 ```
 
-A `janet-lsp-plus` found on `PATH` takes precedence over the downloaded one (see
-[Development](#development)).
-
-### Library macros that define names
-
-A macro is opaque to a static analysis: `(db/defentity Delivery …)` defines `Delivery`, and
-nothing in the call says so. `:lint-as` in `.janet-zed/config.jdn` at the workspace root reads
-such a call as a core definer's, the way clj-kondo's option of that name does — hover,
-go-to-definition, references, rename and document symbols then treat the name as defined
-there:
-
-```janet
-{:lint-as {void/db/defentity def
-           void/admin/defresource-admin def}}
-```
-
-The key is the macro's full name, matched through the importing file's imports: `void/db/defentity`
-covers `db/defentity` under `(import void/db :as db)` and `defentity` under `(use void/db)`.
-The value is the core form to read the call as: `def`, `defn`, `defmacro`, …
-
-A library ships its own config instead of asking every application for one. Put it in
-`janet-zed.exports/<lib>/config.jdn` and install it with the sources:
-
-```janet
-(declare-source :source ["void" "janet-zed.exports"])
-```
-
-Exported configs merge; the workspace's own `.janet-zed/config.jdn` wins over all of them.
-
-Names that no config covers are still found when diagnostics run: a check reports what the
-macros it expanded bound, so a name a macro defines under a different name than the symbol in
-the call resolves once that file has been checked.
-
-The same check is where the types come from. `:lint-as` gives a call the name it defines and
-nothing more; a macro that annotates what it expands to — `~(def ,name {:type Thing} …)` — has
-those types shown on the name once the file has been checked.
-
-### Comment directives
-
-A script its host concatenates with other files, or runs with names already defined, can say
-so in comments. Diagnostics then stop reporting those names as unknown, and go-to-definition,
-hover and references follow included files:
-
-```janet
-# janet-zed: include ./json.janet ./helpers.janet
-# janet-zed: declare host/file host/args
-```
-
-`include` loads the files, relative to this one, into the same environment first, private
-definitions included. `declare` names bindings the host provides.
-
-`ignore` silences unknown symbols on one line: the line the comment ends, or the next code
-line below a comment of its own. `ignore-file` silences them in the whole file. Without names,
-every unknown symbol is ignored:
-
-```janet
-# janet-zed: ignore unknown-symbol undefined-function
-(undefined-function 1)
-(other-function 2) # janet-zed: ignore unknown-symbol
-# janet-zed: ignore-file unknown-symbol
-```
-
-## Types
-
-The server reads the types of a Janet program and shows them: in hover, in signature help, and
-in the keys completion offers. They are hints and nothing more — nothing has to be annotated,
-and an unannotated file is typed all the same, from its own literals and calls.
-
-Types come from three places, the more local winning: an annotation written in the source, a
-declaration file, and, under both, what inference reads out of a body. Where nothing says, the
-type is `:any`, which says nothing and complains about nothing.
-
-### The type language
-
-A type is written as the value it stands for. The atoms are what `(type x)` answers, plus
-`:any` and `:never`:
-
-```janet
-:nil :boolean :number :string :buffer :keyword :symbol :function :fiber :any
-:string?                        # (or :string :nil) — the `?` suffix on any atom or name
-Person  Entity?                 # a named type, declared with :typedef
-a b r                           # a type variable: a lowercase symbol
-[:number]                       # a tuple of numbers (one element stands for every element)
-[:number :string :number]       # a tuple of a fixed shape
-@[:string]                      # an array of strings
-{:status :number :body :any}    # a struct with these keys and no others
-{:status :number & r}           # an open struct: these keys and some more
-{:keyword :any}                 # a dictionary: any key of one type, any value of another
-@{:tx :number :tempids @{}}     # a table
-(or :string :keyword)           # a union
-(enum :get :post :put)          # one of these values
-(fn [a] b)                      # a function; (fn [a & as] b) takes a rest argument
-```
-
-An absent key and a `nil` one read the same in Janet, so `{:age :number?}` covers both and
-there is no separate optional key.
-
-### Writing types down
-
-Types live in the metadata Janet already keeps for a definition, so they survive into the
-compiled environment and a running REPL reports them back:
-
-```janet
-(def Shape :typedef (or {:kind :circle :r :number} {:kind :rect :w :number :h :number}))
-
-(defn area
-  {:params [Shape] :ret :number :throws [:string]}
-  "Area of any shape."
-  [shape]
-  ...)
-```
-
-`:params` is one type per parameter, in order, the rest parameter's type standing for every
-argument from its position on; a vector of the wrong length is ignored rather than shown.
-`:ret` is what the call answers, `:throws` what its body raises, and `:type` is the form for a
-`def` or `var`. A predicate adds `:narrows`: what its argument is wherever it answers truly,
-or `:any` for one that tests a value rather than a type and so tells a branch nothing.
-
-`(def Name :typedef …)` names a shape. Named types are visible to their file and to the whole
-workspace through declaration files, they may refer to themselves, and hover expands them.
-
-### What inference reads
-
-Inference runs over the syntax tree and unifies gradually: `:any` fits anything, and a mismatch
-widens to a union instead of failing, so a file always comes out with types, however vague. The
-top level is walked twice, the second walk seeing what the first learned, which is what mutually
-recursive definitions need. Across files it reads the one it is typing and two more; what a
-module further away than that says is `:any` rather than another round of inference, which is
-also what ends a cycle of imports.
-
-- Literals and the calls around them: `(string/format …)` answers a string however deep the
-  call nests, and a struct literal is typed key by key.
-- A parameter from what the body does with it: `(request :body)` makes `request` at least
-  `{:body :any & r}`, and destructuring adds the keys it names.
-- Branches join: an `if` is the union of its arms, and an arm that only ever raises drops out
-  of the union and lands in `:throws` instead.
-- A test narrows what it guards: inside `(when (string? x) …)`, `x` is a string, and the
-  branch where it does not hold has that subtracted. Which test says what is written down as
-  `:narrows`, never built in.
-- Polymorphism is generalised per definition: `(defn ident [x] x)` is `(fn [a] a)`, and two
-  calls with a number and a string do not run into each other.
-- Threading, recursion and mutual recursion settle; a type that would grow forever stops at
-  `:any` rather than hang, as does a macro the analysis cannot see through.
-
-Signature help instantiates what the arguments already written pin down: at
-`(map (fn [x] |) [1 2 3])` the lambda's `x` is `:number`. Completion offers the keys of a form
-it knows the shape of — after `(request :`, inside `(get-in request [:params :`, and in a
-destructuring `{:` — and the values of an `(enum …)` argument.
-
-### Declaration files
-
-A `*.d.janet` file is Janet by syntax and never runs: it says what names the host, or a library,
-gives a file, and what types they take and answer.
-
-```janet
-# host.d.janet, anywhere under the workspace: every file sees these names.
-(def Entity :typedef {:db/id :number & r})
-
-(defn db/pull
-  {:params [[:keyword] :number] :ret Entity? :throws [:db/not-found]}
-  "Entity attributes selected by a pull pattern."
-  [pattern eid])
-```
-
-Such a file is no module: nothing imports it, it imports nothing, and its names never become
-`unknown symbol`. Where the same name is written down twice, the more local wins: a
-`(comment :declare …)` block in the file itself, then `*.d.janet` under the workspace, then what
-a library exports as `janet-zed.exports/<lib>/*.d.janet` beside its config.
-
-`shapes.d.janet` beside `shapes.janet` is read as the types of that module: a module whose own
-source carries no annotations is typed by the file next to it, in every file that imports it.
-
-The server carries types for spork's `json`, `http`, `path`, `sh` and `misc`, reachable through
-an import of the module — `(import spork/json)` types `(json/decode text)` as `{:string :any}`.
-
-### Type diagnostics
-
-Types mark nothing up by default. The `types.diagnostics` setting turns four of them into
-diagnostics, at the severity you name:
-
-| Reported | Example |
-|---|---|
-| A key a named type does not have | `(circle :radius)` where `Circle` is `{:kind :circle :r :number}` |
-| More arguments than a declaration takes | `(host/fetch "a" 1 2)` against `[path n]` |
-| A literal of the wrong kind | `(host/fetch "a" "1")` where the second parameter is `:number` |
-| A value called as a function | `(host/limits)` where `host/limits` is declared a struct |
-
-They speak only for types someone wrote down — a declaration's metadata, `*.d.janet`, or the
-core — never for what inference read out of a body: a type it guessed is no ground for a
-complaint. A union, an `:any` or a variable anywhere in the position ends the matter, and
-arity is left to Janet's own compiler for every name it binds. What the checker reports comes
-out alongside these, under the same buffer version.
-
-`fixtures/diagnostics/types.janet` has one case of each and the near misses that stay quiet.
-
-### Checking outside the editor
-
-`janet-check` reports the same findings from a terminal, for a pre-commit hook or CI. It
-takes files or directories, defaults to the working directory, and exits non-zero when it
-finds something:
-
-```sh
-cargo install janet-check
-janet-check src/
-# src/report.janet:12:4: host/fetch takes :number here, given :string
-```
-
-It needs no `janet` on `PATH`: the core types are built in, and nothing is run.
+Project-level analysis — [`:lint-as`](janet-check/README.md#library-macros-that-define-names)
+for library macros and [comment directives](janet-check/README.md#comment-directives) — is
+documented in `janet-check`.
 
 ## REPL
 
@@ -298,20 +77,8 @@ It needs no `janet` on `PATH`: the core types are built in, and nothing is run.
    With no selection, Zed runs the current line, or the whole cell if the cursor is
    between `# %%` markers (see the `cell` snippet).
 4. For a terminal on the same Janet process, run the **Janet: attach to REPL kernel** task.
-   A `def` evaluated in the editor is visible there, and the other way round.
 
-Things to know:
-
-- Zed sends only the selected text. Running one line of a multi-line form is a parse
-  error: select the whole form, or use a cell or the keybinding below.
-- The netrepl server listens on `127.0.0.1:9365`. All Zed windows share one Janet process,
-  and the kernel attaches to a server that is already running on that port.
-- Interrupting is not supported: to stop a runaway evaluation, restart the kernel.
-- A name the analysis cannot find is asked of the running REPL: hover shows what it is bound
-  to there, with its docstring and the types its metadata declares, and go-to-definition jumps
-  to the file the REPL recorded. Types written in the source win over the REPL's.
-  The server only attaches to a REPL that is already running, and never loads a module into
-  it.
+See [the kernel's caveats](janet-lsp-plus/README.md#kernel).
 
 ## Debugger
 
@@ -341,24 +108,7 @@ Set breakpoints in the gutter, then start a session with `debugger: start`:
 ]
 ```
 
-Launch takes `program`, `args`, `cwd`, `env`, `janet` (the executable) and `stopOnEntry`.
-Attach takes `host` and `port`; the default is the kernel's `127.0.0.1:9365`.
-
-Things to know:
-
-- A breakpoint is verified once code on its line is compiled. A line without code stays
-  unverified, and so does a line in a file that is not loaded yet.
-- Step Into enters Janet functions called directly. It does not enter C functions or code that
-  runs in a new fiber (`try`, `defer`, `protect`), though breakpoints there still stop.
-- There is no pause, no conditional breakpoints or logpoints, and no setting variables. An
-  evaluation sees the frame's locals, but assigning to one does not change the frame.
-- Breakpoints do not stop code running in `ev` tasks (`ev/spawn`, `ev/go`).
-- When attached, only code evaluated from the editor stops. Code from a terminal client prints
-  a `debug:` trace at a breakpoint and runs on. Errors do not stop unless you turn on
-  **Uncaught errors**.
-- To put breakpoints in evaluated code, the kernel looks the code up in the project's files on
-  disk. Code from an unsaved buffer, or code that appears in several places, runs without file
-  positions, so its breakpoints do not stop.
+See [the debug adapter's options and caveats](janet-lsp-plus/README.md#debug-adapter).
 
 ## Keymap examples
 
@@ -388,29 +138,9 @@ On Linux and Windows `ctrl-c` copies, so choose another prefix there.
 `cmd-alt-e` is `editor::SelectEnclosingSymbol`. It selects the enclosing outline item,
 which is any top-level `def`, `defn`, `defmacro`, `var` and so on.
 
-## Structural editing
-
-Zed has no paredit, so the editing commands are code actions. Put the cursor on a form
-and press `cmd-.` (`ctrl-.` on Linux and Windows):
-
-| Action | Before | After |
-| --- | --- | --- |
-| Slurp forward | `(a│ b) c` | `(a b c)` |
-| Barf forward | `(a│ b c)` | `(a b) c` |
-| Raise | `(f (g │x))` | `(f x)` |
-| Splice | `(f (g │x))` | `(f g x)` |
-| Wrap with `( )` `[ ]` `{ }` | `│x` | `(x)` |
-| Thread first / last | `(f (g x))` | `(-> x g f)` |
-| Unthread | `(->> xs (map f))` | `(map f xs)` |
-| Create function `name` | `(name a b)` | adds `(defn name [a b])` above |
-| Define `name` | `(+ name 1)` | adds `(def name nil)` in the enclosing body |
-
-Slurp and barf also work backward. The menu order follows the cursor: on a bracket,
-threading comes first; inside a form, paredit does. Quick fixes are always on top.
-
-Zed's own commands work well with these: `editor::SelectLargerSyntaxNode`,
-`editor::MoveToEnclosingBracket`, `editor::UnwrapSyntaxNode`, plus vim text objects
-(`af`/`if`) and surround.
+Structural editing actions are under `cmd-.` (`ctrl-.` on Linux and Windows). Zed's own
+`editor::SelectLargerSyntaxNode`, `editor::MoveToEnclosingBracket`,
+`editor::UnwrapSyntaxNode`, vim text objects (`af`/`if`) and surround work well with them.
 
 ## Tasks
 
@@ -444,12 +174,9 @@ Run them with `task: spawn`, or from the gutter icon next to `(defn main …)` a
 
 ## Limitations
 
-- No parinfer: Zed has no on-type editing hook for extensions.
-- Scope analysis knows the core binding forms. A library macro that binds *locals* falls
-  back to matching names within the top-level form; one that defines a top-level name needs
-  [`:lint-as`](#library-macros-that-define-names), or a check of that file to have run.
-- Go-to-definition does not reach third-party native modules, and imports of the form
-  `@x` (relative to a dynamic binding) are not resolved.
+No parinfer: Zed has no on-type editing hook for extensions. For the analysis and the server,
+see [`janet-check`](janet-check/README.md#limitations) and
+[`janet-lsp-plus`](janet-lsp-plus/README.md#limitations).
 
 ## Development
 
@@ -467,11 +194,10 @@ server, restart it with `editor: restart language server`.
 Layout:
 
 - `src/lib.rs`: the extension (wasm). It locates or downloads the server.
-- `janet-check/`: analysis and type inference, editor-independent: parsing, scopes,
-  modules, the core environment and the types. Publishable on its own, with
-  `janet-check` as a CLI over it.
-- `janet-lsp-plus/`: the language server, the Jupyter kernel (`janet-lsp-plus kernel`)
-  and the debug adapter (`janet-lsp-plus dap`), over `janet-check`.
+- [`janet-check/`](janet-check/README.md): analysis and type inference, editor-independent,
+  with `janet-check` as a CLI over it.
+- [`janet-lsp-plus/`](janet-lsp-plus/README.md): the language server, the Jupyter kernel and
+  the debug adapter, over `janet-check`.
 - `debug_adapter_schemas/Janet.json`: the launch and attach configuration.
 - `languages/janet/`: tree-sitter queries, tasks, and language config.
 - `snippets/janet.json`: snippets.

@@ -35,11 +35,20 @@ fn fixture(name: &str) -> String {
 /// The names `source` declares, as an ambient declaration file would.
 fn ambient(source: &str) -> HashMap<String, Annotation> {
     let doc = Document::new(source.to_string());
-    declarations(&doc).1
+    declarations(&doc, &Forms::default()).1
 }
 
 /// The types of `source`, with the core and `declared` in scope.
 fn infer(source: &str, declared: &HashMap<String, Annotation>) -> (Document, Scopes, Facts) {
+    infer_in(source, declared, false)
+}
+
+/// [`infer`], in strict mode or not.
+fn infer_in(
+    source: &str,
+    declared: &HashMap<String, Annotation>,
+    strict: bool,
+) -> (Document, Scopes, Facts) {
     let doc = Document::new(source.to_string());
     let scopes = Scopes::new(&doc);
     let lookup = |name: &str| {
@@ -55,6 +64,7 @@ fn infer(source: &str, declared: &HashMap<String, Annotation>) -> (Document, Sco
             all: &lookup,
             written: &lookup,
         },
+        strict,
     );
     (doc, scopes, facts)
 }
@@ -242,8 +252,8 @@ fn two_calls_of_one_function_keep_their_own_types() {
 
 /// Inference is on the path of every edit: a file nobody would call small still has to finish
 /// between keystrokes.
-#[test]
-fn a_thousand_lines_are_inferred_in_milliseconds() {
+/// `report.janet` repeated, its definitions renamed each round, to a thousand lines at least.
+fn thousand_lines() -> String {
     let report = fixture("report.janet");
     let repeats = 1000 / report.lines().count() + 1;
     let source: String = (0..repeats)
@@ -257,7 +267,12 @@ fn a_thousand_lines_are_inferred_in_milliseconds() {
         .collect::<Vec<_>>()
         .join("\n");
     assert!(source.lines().count() >= 1000, "a file of a thousand lines");
-    let doc = Document::new(source);
+    source
+}
+
+#[test]
+fn a_thousand_lines_are_inferred_in_milliseconds() {
+    let doc = Document::new(thousand_lines());
     let scopes = Scopes::new(&doc);
     // The core's own types are read once per server, not once per edit.
     let lookup = |name: &str| types::core().binding(name).cloned();
@@ -270,6 +285,7 @@ fn a_thousand_lines_are_inferred_in_milliseconds() {
             all: &lookup,
             written: &lookup,
         },
+        false,
     );
     let elapsed = started.elapsed();
     assert!(!facts.definitions.is_empty());
@@ -307,6 +323,7 @@ fn nothing_in_a_janet_file_makes_inference_panic() {
                 all: &lookup,
                 written: &lookup,
             },
+            false,
         );
     }
 }
@@ -450,13 +467,13 @@ fn a_nullable_name_is_there_inside_the_branch_that_checked() {
     );
 }
 
-/// The four classes of §5.4, and the near misses of each, drawn under the source.
-#[test]
-fn a_written_signature_is_what_a_finding_speaks_for() {
-    let path =
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/diagnostics/types.janet");
+/// The findings of a diagnostics fixture, drawn under its source.
+fn findings_drawn(name: &str, strict: bool) -> String {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../fixtures/diagnostics")
+        .join(name);
     let source = std::fs::read_to_string(&path).expect("the diagnostics fixture");
-    let (doc, _, facts) = alone(&source);
+    let (doc, _, facts) = infer_in(&source, &HashMap::new(), strict);
     let shown: Vec<String> = facts
         .findings
         .iter()
@@ -470,11 +487,28 @@ fn a_written_signature_is_what_a_finding_speaks_for() {
         .iter()
         .map(|finding| finding.range.clone())
         .collect();
-    insta::assert_snapshot!(format!(
+    format!(
         "----- FINDINGS\n{}\n\n----- SOURCE CODE\n{}\n",
         shown.join("\n"),
         crate::test_support::mark(&doc.text, &ranges)
-    ));
+    )
+}
+
+/// The four classes of §5.4, and the near misses of each, drawn under the source.
+#[test]
+fn a_written_signature_is_what_a_finding_speaks_for() {
+    insta::assert_snapshot!(findings_drawn("types.janet", false));
+}
+
+/// Strict mode holds a union to every member and a guess to what it could be; the default mode
+/// says nothing about the same file.
+#[test]
+fn strictly_a_union_and_a_guess_answer_to_what_is_written() {
+    assert!(
+        findings_drawn("strict.janet", false).starts_with("----- FINDINGS\n\n"),
+        "the default mode reports none of it"
+    );
+    insta::assert_snapshot!(findings_drawn("strict.janet", true));
 }
 
 /// Janet as it is written: the fixture project, and every package the installed Janet holds.
@@ -502,6 +536,7 @@ fn nothing_written_the_usual_way_is_complained_about() {
                     all: &lookup,
                     written: &lookup,
                 },
+                false,
             );
             facts
                 .findings
@@ -514,4 +549,419 @@ fn nothing_written_the_usual_way_is_complained_about() {
         })
         .collect();
     assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// Equality, `case` and `match`, each narrowing the local it reads, by value or by one key.
+const MATCHED: &str = r#"(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+
+(defn equal {:params [Shape (enum :get :post) :boolean]} [shape method flag]
+  (if (= (shape :kind) :circle) (def eq-circle shape) (def eq-rect shape))
+  (when (= :get method) (def eq-get method))
+  (def maybe (if flag "s" nil))
+  (if (= maybe nil) (def eq-nil maybe) (def eq-there maybe)))
+
+(defn cased {:params [Shape]} [shape]
+  (case (shape :kind)
+    :circle (def case-circle shape)
+    (def case-rect shape)))
+
+(defn matched {:params [Shape [:number :string] :any]} [shape pair value]
+  (match shape
+    {:kind :circle :r r} (def match-circle shape)
+    {:kind :rect :w w} (def match-rect shape))
+  (match pair [n s] (def both [n s]))
+  (match value
+    :ok (def match-ok value)
+    (x (number? x)) (def guarded x)
+    [head & tail] (def rest tail)
+    other (def match-other other)))
+
+(defn read {:params [Shape]} [shape]
+  (def radius (shape :r)))
+
+(defn optional {:params [:number :string]} [a &opt b]
+  (def opt-b b))
+
+(defn unwritten [a &opt b]
+  (+ a b))
+"#;
+
+#[test]
+fn equality_case_and_match_narrow_what_they_read() {
+    let (_, scopes, facts) = alone(MATCHED);
+    let locals: Vec<String> = scopes
+        .locals
+        .iter()
+        .zip(&facts.locals)
+        .map(|(local, ty)| format!("{}: {ty}", local.name))
+        .collect();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{MATCHED}\n----- LOCALS\n{}\n",
+        locals.join("\n")
+    ));
+}
+
+/// What a `match` pattern takes out of a tagged union is the member it matched, key by key.
+#[test]
+fn a_struct_pattern_binds_what_the_member_holds() {
+    let (_, scopes, facts) = alone(MATCHED);
+    assert_eq!(local(&scopes, &facts, "r"), ":number");
+    assert_eq!(local(&scopes, &facts, "match-circle"), "Circle");
+    assert_eq!(
+        local(&scopes, &facts, "radius"),
+        ":number?",
+        "a member without the key holds `nil` there"
+    );
+    assert_eq!(
+        local(&scopes, &facts, "opt-b"),
+        ":string?",
+        "`&opt` may be left out"
+    );
+    assert_eq!(
+        defined(&facts, "unwritten"),
+        "(fn [:number :number?] :number)"
+    );
+}
+
+/// Tagged unions, closed and open: what a tag test picks out, what a key read answers, and which
+/// `case` or `match` without a default misses a tag.
+const TAGGED: &str = r"(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+(def Event :typedef (or {:kind :click :x :number} {:kind :key :code :string} &))
+(def Method :typedef (enum :get :post :put))
+
+(defn closed {:params [Shape Method]} [shape method]
+  (match shape
+    {:kind :circle :r r} r)
+  (case method
+    :get 1
+    :post 2)
+  (case method
+    :get 1
+    :post 2
+    :put 3))
+
+(defn open {:params [Event]} [event]
+  (def read (event :x))
+  (case (event :kind)
+    :click 1)
+  (match event
+    {:kind :click :x x} x
+    {:kind :scroll :dy dy} (def scrolled event))
+  (if (= (event :kind) :key)
+    (def key event)
+    (def not-key event))
+  (when (= (event :kind) :drag)
+    (def dragged event)))
+
+(defn unwritten [shape]
+  (case (shape :kind)
+    :circle 1))
+
+(defn nested {:params [{:shape Shape :at :number}]} [box]
+  (if (= ((box :shape) :kind) :circle)
+    (def deep-circle box)
+    (def deep-rect box))
+  (case ((box :shape) :kind)
+    :circle 1))
+";
+
+#[test]
+fn a_tag_picks_a_member_and_a_closed_union_is_held_to_every_tag() {
+    let (doc, scopes, facts) = alone(TAGGED);
+    let locals: Vec<String> = scopes
+        .locals
+        .iter()
+        .zip(&facts.locals)
+        .map(|(local, ty)| format!("{}: {ty}", local.name))
+        .collect();
+    let findings: Vec<String> = facts
+        .findings
+        .iter()
+        .map(|finding| {
+            let line = doc.position(finding.range.start).line + 1;
+            format!("{line}: {}", finding.message)
+        })
+        .collect();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{TAGGED}\n----- LOCALS\n{}\n\n----- FINDINGS\n{}\n",
+        locals.join("\n"),
+        findings.join("\n")
+    ));
+}
+
+/// Declarations the pitfalls below call, each taking one written kind.
+const TAKERS: &str = r"(defn my-mode {:params [:keyword] :ret :keyword} [m])
+(defn takes-string {:params [:string] :ret :nil} [s])
+(defn takes-number {:params [:number] :ret :nil} [s])
+(defn takes-table {:params [:table] :ret :nil} [t])
+(defn takes-array {:params [:array] :ret :nil} [t])
+(defn takes-nil {:params [:nil] :ret :nil} [t])
+(defn takes-method {:params [(enum :get :post)] :ret :nil} [m])
+";
+
+/// Programs a finding once wrongly spoke for: what inference guessed ended up static, or a union
+/// lost the member that makes the call right. Every one of them must stay quiet.
+const PITFALLS: [(&str, &str); 17] = [
+    (
+        "a union keeps every member through a call",
+        "(defn h [flag]\n  (def v (if flag \"s\" 1))\n  (my-mode v)\n  (if (keyword? v) nil (takes-number v)))",
+    ),
+    (
+        "a union of tuples keeps every member through destructuring",
+        "(defn g {:params [(or [:number :number] [:string :string])]} [p]\n  (let [[a b] p] (takes-string a)))",
+    ),
+    (
+        "a union of structs keeps every member through destructuring",
+        "(defn g {:params [(or {:a :number} {:b :string})]} [p]\n  (let [{:a a} p] (takes-nil a)))",
+    ),
+    (
+        "a parameter vector destructures a union of collections",
+        "(defn g {:params [(or [:number] @[:string])]} [[x]]\n  (takes-string x))",
+    ),
+    (
+        "a core parameter does not type a local nobody typed",
+        "(defn read-with [f]\n  (def mode (dyn :mode))\n  (file/read f mode)\n  (my-mode mode))",
+    ),
+    (
+        "a core parameter does not type a parameter written :any",
+        "(defn read-with {:params [:any :any]} [f mode]\n  (file/read f mode)\n  (my-mode mode))",
+    ),
+    (
+        "a written parameter does not type a local nobody typed",
+        "(defn h []\n  (def m (dyn :method))\n  (takes-method m)\n  (case m :get 1))",
+    ),
+    (
+        "a key read on :any is a guess",
+        "(defn h {:params [:any]} [x]\n  (x :a)\n  (takes-table x))",
+    ),
+    (
+        "a put on :any is a guess",
+        "(defn h {:params [:any]} [x]\n  (put x :a 1)\n  (takes-table x))",
+    ),
+    (
+        "a put on a dynamic local is a guess",
+        "(defn h []\n  (def cache (dyn :cache))\n  (put cache :a 1)\n  (takes-table cache))",
+    ),
+    (
+        "an index on a type variable is a guess",
+        "(defn g {:params [a]} [xs]\n  (xs 0)\n  (takes-array xs))",
+    ),
+    (
+        "a key destructured out of a table is what was put last",
+        "(def t @{:a 1})\n(put t :a \"x\")\n(defn g []\n  (let [{:a a} t] (takes-string a)))",
+    ),
+    (
+        "an element destructured out of an array is what was put last",
+        "(def arr @[1 2])\n(put arr 0 \"x\")\n(defn g []\n  (let [[x] arr] (takes-string x)))",
+    ),
+    (
+        "a body that loops forever returns nothing to check",
+        "(defn serve {:params [] :ret :never} []\n  (forever (print 1)))",
+    ),
+    (
+        "a label returns what return gives it",
+        "(defn first-hit {:params [] :ret :number} []\n  (label result\n    (forever (return result 1))))",
+    ),
+    (
+        "a prompt returns what return gives it",
+        "(defn h {:params [] :ret :number} []\n  (prompt :tag\n    (each x [1 2] (return :tag x))))",
+    ),
+    (
+        "a try catches whatever the callees raise",
+        "(defn k [] (error \"boom\"))\n(defn h []\n  (try (do (k) (some-unknown-fn)) ([e] (my-mode e))))",
+    ),
+];
+
+#[test]
+fn a_guess_is_never_what_a_finding_speaks_for() {
+    let declared = ambient(TAKERS);
+    let complaints: Vec<String> = PITFALLS
+        .iter()
+        .flat_map(|(label, source)| {
+            let (_, _, facts) = infer(source, &declared);
+            facts
+                .findings
+                .into_iter()
+                .map(move |finding| format!("{label}: {}", finding.message))
+        })
+        .collect();
+    assert!(complaints.is_empty(), "{}", complaints.join("\n"));
+}
+
+/// A written parameter is a constraint on the call, not a type the argument grows into: a
+/// `:string` handed to a function inference reads as taking a number stays a `:string`.
+#[test]
+fn a_call_does_not_widen_what_was_written() {
+    let declared = ambient(TAKERS);
+    let source = "(defn inc-it [x] (+ x 1))\n\
+                  (defn g {:params [:string]} [s]\n  (inc-it s)\n  (takes-number s))\n\
+                  (defn h []\n  (def size \"16\")\n  (inc-it size)\n  size)\n";
+    let (_, scopes, facts) = infer(source, &declared);
+    let messages: Vec<&str> = facts
+        .findings
+        .iter()
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert_eq!(messages, ["takes-number takes :number here, given :string"]);
+    assert_eq!(local(&scopes, &facts, "size"), ":string");
+}
+
+#[test]
+#[ignore = "a profile of the corpus, run by hand"]
+fn zz_slowest_corpus_files() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let mut sources: Vec<PathBuf> = walk(&root.join("fixtures/project"));
+    sources.extend(walk(&root.join("fixtures/exports")));
+    if let Ok(syspath) = crate::analysis::modules::syspath("janet") {
+        sources.extend(walk(&syspath));
+    }
+    let mut times: Vec<(std::time::Duration, String)> = sources
+        .iter()
+        .filter_map(|path| Some((path, std::fs::read_to_string(path).ok()?)))
+        .map(|(path, text)| {
+            let doc = Document::new(text);
+            let scopes = Scopes::new(&doc);
+            let lookup = |name: &str| types::core().binding(name).cloned();
+            let started = std::time::Instant::now();
+            facts(
+                &doc,
+                &scopes,
+                Known {
+                    all: &lookup,
+                    written: &lookup,
+                },
+                false,
+            );
+            (started.elapsed(), path.display().to_string())
+        })
+        .collect();
+    times.sort();
+    let total: std::time::Duration = times.iter().map(|(t, _)| *t).sum();
+    eprintln!("TOTAL {total:?} over {}", times.len());
+    for (t, p) in times.iter().rev().take(5) {
+        eprintln!("{t:?} {p}");
+    }
+}
+
+#[test]
+#[ignore = "a median of the thousand-line benchmark, run by hand in release"]
+fn zz_thousand_lines_median() {
+    let doc = Document::new(thousand_lines());
+    let scopes = Scopes::new(&doc);
+    let lookup = |name: &str| types::core().binding(name).cloned();
+    types::core();
+    let mut times: Vec<std::time::Duration> = (0..1000)
+        .map(|_| {
+            let started = std::time::Instant::now();
+            facts(
+                &doc,
+                &scopes,
+                Known {
+                    all: &lookup,
+                    written: &lookup,
+                },
+                false,
+            );
+            started.elapsed()
+        })
+        .collect();
+    times.sort();
+    eprintln!("MEDIAN {:?}", times[times.len() / 2]);
+}
+
+/// A written union with `nil` in it reads the way its `?` spelling does.
+#[test]
+fn an_element_of_a_written_nullable_union_is_what_it_holds() {
+    let (_, scopes, facts) = alone(
+        "(defn f {:params [] :ret (or @[:string] :nil)} [])\n\
+         (defn g [] (each x (f) (def y x)) (def z ((f) 0)))\n",
+    );
+    assert_eq!(local(&scopes, &facts, "y"), ":string");
+    assert_eq!(local(&scopes, &facts, "z"), ":string");
+}
+
+/// A tag no member of an open union has rules nothing out: what the path reads through keeps its
+/// name on the side where the test fails.
+#[test]
+fn a_path_that_rules_nothing_out_leaves_the_type_named() {
+    let (_, scopes, facts) = alone(
+        "(def Meta :typedef (or {:kind :a} {:kind :b} &))\n\
+         (def Event :typedef {:meta Meta :id :number})\n\
+         (defn f {:params [Event]} [e]\n  \
+         (if (= ((e :meta) :kind) :zzz) (def inside e) (def outside e)))\n",
+    );
+    assert_eq!(local(&scopes, &facts, "outside"), "Event");
+    assert_eq!(
+        local(&scopes, &facts, "inside"),
+        "{:meta {:kind :zzz & r} :id :number}"
+    );
+}
+
+/// `:pairs` hands the body the keys and the values of what it walks, and `tabseq` builds a
+/// dictionary out of them rather than a table nobody knows the shape of.
+#[test]
+fn a_rebuilt_dictionary_keeps_what_it_was_built_from() {
+    let (_, scopes, facts) = alone(
+        "(defn f {:params [{:by :keyword :email :string}]} [creds]\n  \
+         (def rebuilt (tabseq [[k v] :pairs creds] k v))\n  \
+         (def by (rebuilt :by)))\n",
+    );
+    assert_eq!(local(&scopes, &facts, "k"), "(enum :by :email)");
+    assert_eq!(local(&scopes, &facts, "v"), "(or :keyword :string)");
+    assert_eq!(
+        local(&scopes, &facts, "rebuilt"),
+        "@{(enum :by :email) (or :keyword :string)}"
+    );
+    assert_eq!(local(&scopes, &facts, "by"), "(or :keyword :string)");
+}
+
+/// A dictionary rebuilt key by key cannot carry the shape it was built from: the keys are
+/// computed. `:type` on the definition is where the shape is written back.
+#[test]
+fn a_written_type_stands_over_what_a_value_infers_to() {
+    let (_, scopes, facts) = alone(
+        "(def Creds :typedef {:by (or (enum :email :username) :nil) :email :string?})\n\
+         (defn check {:params [(or {:any :any} :nil)]} [credentials0]\n  \
+         (def laundered (tabseq [[k v] :pairs (or credentials0 {})] (keyword k) v))\n  \
+         (def credentials {:type Creds} (tabseq [[k v] :pairs (or credentials0 {})] (keyword k) v))\n  \
+         (def by (or (credentials :by) :email)))\n",
+    );
+    assert_eq!(local(&scopes, &facts, "laundered"), "@{:keyword :any}");
+    assert_eq!(local(&scopes, &facts, "credentials"), "Creds");
+    assert_eq!(local(&scopes, &facts, "by"), "(enum :email :username)");
+}
+
+/// What a set of definitions is told, one message a finding.
+fn messages(source: &str) -> Vec<String> {
+    let (_, _, facts) = alone(source);
+    facts.findings.iter().map(|f| f.message.clone()).collect()
+}
+
+/// `:type` holds the value to what is written; `:as-type` takes what is written either way, wider
+/// or narrower, and says nothing.
+#[test]
+fn a_written_type_is_checked_and_a_cast_is_not() {
+    assert_eq!(
+        messages("(defn f []\n  (def n {:type :string} 1))\n"),
+        ["n is :number, declared :string; :as-type casts it"]
+    );
+    let (_, scopes, facts) = alone(
+        "(defn f [x]\n  \
+         (def wide {:as-type :any} 1)\n  \
+         (def narrow {:as-type :string} (if x \"a\" 1))\n  \
+         (def other {:as-type :string} 1)\n  \
+         (def gradual {:type :string} x))\n",
+    );
+    assert!(
+        facts.findings.is_empty(),
+        "a cast and an unknown value are quiet"
+    );
+    assert_eq!(local(&scopes, &facts, "wide"), ":any");
+    assert_eq!(local(&scopes, &facts, "narrow"), ":string");
+    assert_eq!(local(&scopes, &facts, "other"), ":string");
+    assert_eq!(local(&scopes, &facts, "gradual"), ":string");
 }
