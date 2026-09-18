@@ -723,3 +723,19 @@ fn an_applied_type_expands_with_its_arguments() {
         "{:one {:value :number} :any {:value :any}}"
     );
 }
+
+/// The names after `&named` are one tail to a signature, so a hover shows them however many.
+#[test]
+fn named_parameters_are_shown_as_one_tail() {
+    let Some(Annotation::Function(signature)) = annotations(
+        "(defn f {:params [:keyword :string? :keyword?] :ret :nil} [k &named of from] nil)",
+    )
+    .pop()
+    .and_then(|(_, annotation)| annotation) else {
+        panic!("f declares a signature")
+    };
+    assert_eq!(
+        signature.render("f", "[k &named of from]").as_deref(),
+        Some("(f k: :keyword &named of from) -> :nil")
+    );
+}

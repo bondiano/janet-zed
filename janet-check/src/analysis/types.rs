@@ -498,7 +498,13 @@ impl Signature {
         }
         let forms = syntax::forms(vector);
         let marker = |node: &Node| MARKERS.contains(&doc.text_of(*node));
-        let taken = forms.iter().filter(|form| !marker(form)).count();
+        // The names after `&named` are one tail, as `split_rest` reads them.
+        let named = forms.iter().position(|form| doc.text_of(*form) == "&named");
+        let taken = forms[..named.unwrap_or(forms.len())]
+            .iter()
+            .filter(|form| !marker(form))
+            .count()
+            + usize::from(named.is_some());
         let declared = self.params.len() + usize::from(self.rest.is_some());
         if declared != 0 && declared != taken {
             return None;

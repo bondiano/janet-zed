@@ -7,7 +7,7 @@ expression: "findings_drawn(\"strict.janet\", true)"
 27: host/fetch takes :number here, given (or :number :string)
 33: host/fetch takes :number here, given :number?
 38: host/fetch takes :number here, given :string
-44: label returns (or :string :number), declared :string
+44: caption returns (or :string :number), declared :string
 
 ----- SOURCE CODE
 # What only strict mode reports, and the near misses it stays quiet about too.
@@ -52,7 +52,7 @@ expression: "findings_drawn(\"strict.janet\", true)"
   (host/fetch "ok.txt" (sixteen)))
                        ▔▔▔▔▔▔▔▔▔
 
-(defn label
+(defn caption
   {:params [:boolean] :ret :string}
   "A union returned, one of whose members is not what is declared."
   [flag]

@@ -37,7 +37,7 @@
   []
   (host/fetch "ok.txt" (sixteen)))
 
-(defn label
+(defn caption
   {:params [:boolean] :ret :string}
   "A union returned, one of whose members is not what is declared."
   [flag]

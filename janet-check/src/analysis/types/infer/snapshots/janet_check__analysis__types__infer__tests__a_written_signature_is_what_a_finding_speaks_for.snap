@@ -10,7 +10,7 @@ expression: "format!(\"----- FINDINGS\\n{}\\n\\n----- SOURCE CODE\\n{}\\n\", sho
 68: host/tag takes :keyword here, given :string
 74: host/fetch takes :number here, given :string
 79: host/fetch takes :number here, given :string
-85: label returns :number, declared :string
+85: caption returns :number, declared :string
 106: case over Shape misses :rect
 112: host/draw takes Shape here, given {:kind :square :side :number}
 
@@ -102,7 +102,7 @@ expression: "format!(\"----- FINDINGS\\n{}\\n\\n----- SOURCE CODE\\n{}\\n\", sho
   (host/fetch "some.txt" (string/format "%d" 16)))
                          ▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔▔
 
-(defn label
+(defn caption
   {:params [:number] :ret :string}
   "A number where the declaration returns a string."
   [n]

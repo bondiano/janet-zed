@@ -14,6 +14,6 @@ janet-zed 2 62: host/limits is :struct, not a function
 janet-zed 2 67: host/tag takes :keyword here, given :string
 janet-zed 2 73: host/fetch takes :number here, given :string
 janet-zed 2 78: host/fetch takes :number here, given :string
-janet-zed 2 84: label returns :number, declared :string
+janet-zed 2 84: caption returns :number, declared :string
 janet-zed 2 105: case over Shape misses :rect
 janet-zed 2 111: host/draw takes Shape here, given {:kind :square :side :number}

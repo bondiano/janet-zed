@@ -32,7 +32,7 @@ fn a_relative_path_reports_what_the_types_rule_out() {
             "fixtures/diagnostics/types.janet:68:31: host/tag takes :keyword here, given :string",
             "fixtures/diagnostics/types.janet:74:26: host/fetch takes :number here, given :string",
             "fixtures/diagnostics/types.janet:79:26: host/fetch takes :number here, given :string",
-            "fixtures/diagnostics/types.janet:85:3: label returns :number, declared :string",
+            "fixtures/diagnostics/types.janet:85:3: caption returns :number, declared :string",
             "fixtures/diagnostics/types.janet:106:3: case over Shape misses :rect",
             "fixtures/diagnostics/types.janet:112:14: host/draw takes Shape here, given {:kind :square :side :number}",
         ]
@@ -52,7 +52,7 @@ fn strict_reports_what_the_default_mode_lets_pass() {
             "fixtures/diagnostics/strict.janet:27:24: host/fetch takes :number here, given (or :number :string)",
             "fixtures/diagnostics/strict.janet:33:24: host/fetch takes :number here, given :number?",
             "fixtures/diagnostics/strict.janet:38:24: host/fetch takes :number here, given :string",
-            "fixtures/diagnostics/strict.janet:44:3: label returns (or :string :number), declared :string",
+            "fixtures/diagnostics/strict.janet:44:3: caption returns (or :string :number), declared :string",
         ]
     );
     assert!(!strict.status.success());

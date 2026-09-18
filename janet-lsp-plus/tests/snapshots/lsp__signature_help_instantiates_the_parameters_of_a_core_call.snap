@@ -1,9 +1,9 @@
 ---
-source: server/tests/lsp.rs
+source: janet-lsp-plus/tests/lsp.rs
 expression: "format!(\"----- CALL\\n(map | [1 2 3])\\n\\n----- SIGNATURE\\n{}\\n\",\nhelp[\"signatures\"][0][\"label\"].as_str().unwrap())"
 ---
 ----- CALL
 (map | [1 2 3])
 
 ----- SIGNATURE
-(map f: (fn [:number] b) ind: (or [:number] @[:number]) & inds: (or [:any] @[:any])) -> @[b]
+(map f: (fn [:number] b) x: (or [:number] @[:number]) & xs: (or [:any] @[:any])) -> @[b]

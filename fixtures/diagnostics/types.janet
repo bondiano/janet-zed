@@ -78,7 +78,7 @@
   []
   (host/fetch "some.txt" (string/format "%d" 16)))
 
-(defn label
+(defn caption
   {:params [:number] :ret :string}
   "A number where the declaration returns a string."
   [n]
