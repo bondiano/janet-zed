@@ -2,8 +2,8 @@
 //! forms alone. Unification is gradual — `:any` fits anything, and a mismatch widens to a union
 //! instead of failing — so a file always comes out with types, however vague.
 
-// ponytail: a macro declared outside the core has its arguments held to `:params` like a function's,
-// though they are forms; `Annotation` would need to say which definitions are macros.
+// ponytail: a macro's arguments are held to `:params` as values, but for a bare symbol where it writes
+// `:symbol`; typing every argument as the form it is would need the core's macros declared so too.
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -516,6 +516,7 @@ impl<'d> Infer<'d> {
                 throws: all(&signature.throws, self, fresh),
                 narrows: signature.narrows.clone(),
                 bounds: Vec::new(),
+                expands: signature.expands,
             })),
             Type::Named { name, args } => Type::named(name.clone(), all(args, self, fresh).into()),
             Type::Keyword(_) | Type::Enum(_) => ty.clone(),
@@ -670,6 +671,7 @@ impl<'d> Infer<'d> {
                     throws: distinct(a.throws.iter().chain(&b.throws).cloned()),
                     narrows: a.narrows.clone().or_else(|| b.narrows.clone()),
                     bounds: Vec::new(),
+                    expands: a.expands,
                 }))
             }
             (Type::Enum(values), Type::Keyword(value))
@@ -866,8 +868,11 @@ impl<'d> Infer<'d> {
                     let signature = signature
                         .map(|signature| self.instance(Arc::new(signature.within_bounds())));
                     let value = self.function(rest[at], body, signature.as_deref());
-                    if let (Some(name), Some(signature), Some(last), Type::Fn(inferred)) =
-                        (name, &signature, body.last(), &value)
+                    // A macro's body answers the code of its expansion; `:ret` is what that
+                    // code evaluates to, which only the call site sees.
+                    let expands = definer.starts_with("defmacro");
+                    if let (Some(name), Some(signature), Some(last), Type::Fn(inferred), false) =
+                        (name, &signature, body.last(), &value, expands)
                     {
                         self.returns(name, *last, &inferred.ret, &signature.ret);
                     }
@@ -965,6 +970,7 @@ impl<'d> Infer<'d> {
             throws: distinct(throws.into_iter()),
             narrows: None,
             bounds: Vec::new(),
+            expands: false,
         }))
     }
 
@@ -1038,10 +1044,41 @@ impl<'d> Infer<'d> {
     }
 
     fn each_expr(&mut self, node: Node<'d>) -> Vec<Type> {
-        self.forms(node)
+        let forms = self.forms(node);
+        let types = forms.iter().map(|form| self.expr(*form)).collect();
+        self.flattened(&forms, types)
+    }
+
+    /// The element types of a tuple or array literal whose forms are `forms` and whose forms'
+    /// own types are `types`. A splice among them puts its elements in, as many as it holds, so
+    /// the literal is one of any length that holds what every form does.
+    fn flattened(&mut self, forms: &[Node<'d>], types: Vec<Type>) -> Vec<Type> {
+        if !forms.iter().any(|form| self.splices(*form)) {
+            return types;
+        }
+        let held = forms
             .iter()
-            .map(|form| self.expr(*form))
-            .collect()
+            .zip(types)
+            .map(|(form, ty)| {
+                if self.splices(*form) {
+                    self.element(&ty)
+                } else {
+                    ty
+                }
+            })
+            .collect();
+        vec![unions(held)]
+    }
+
+    /// Whether `form` is a splice: `;xs`, or `,;xs` in a quasiquote.
+    fn splices(&self, form: Node<'d>) -> bool {
+        match form.kind() {
+            "splice_lit" => true,
+            "unquote_lit" => {
+                matches!(&self.forms(form)[..], [inner] if inner.kind() == "splice_lit")
+            }
+            _ => false,
+        }
     }
 
     /// The type of one form, kept under the byte it starts at for whoever asks later. A literal
@@ -1120,11 +1157,9 @@ impl<'d> Infer<'d> {
     /// of a quasiquote are code again.
     fn data(&mut self, node: Node<'d>) -> Type {
         let all = |infer: &mut Self, node: Node<'d>| {
-            infer
-                .forms(node)
-                .iter()
-                .map(|form| infer.data(*form))
-                .collect::<Vec<Type>>()
+            let forms = infer.forms(node);
+            let types = forms.iter().map(|form| infer.data(*form)).collect();
+            infer.flattened(&forms, types)
         };
         match node.kind() {
             syntax::SYMBOL => atom("symbol"),
@@ -1186,6 +1221,7 @@ impl<'d> Infer<'d> {
             throws: Vec::new(),
             narrows: None,
             bounds: Vec::new(),
+            expands: false,
         }))
     }
 
@@ -1194,7 +1230,7 @@ impl<'d> Infer<'d> {
         let Some((head, args)) = forms.split_first() else {
             return nil();
         };
-        if head.kind() != syntax::SYMBOL {
+        if head.kind() != syntax::SYMBOL || self.scopes.calls.contains(&head.start_byte()) {
             let callee = self.expr(*head);
             return self.call(*head, &callee, args);
         }
@@ -1288,9 +1324,33 @@ impl<'d> Infer<'d> {
             let ty = self.expr(*key);
             return self.index(Some(*key), callee, &ty);
         }
-        let types: Vec<Type> = args.iter().map(|arg| self.expr(*arg)).collect();
+        let mut types: Vec<Type> = args.iter().map(|arg| self.expr(*arg)).collect();
+        self.as_forms(head, callee, args, &mut types);
         self.inspect(head, args, &types);
         self.apply(callee, &types)
+    }
+
+    /// A macro takes its arguments as forms: a bare symbol where it writes `:symbol` is that
+    /// symbol, however the name it spells is bound. Every other argument keeps its value's type,
+    /// which is what a macro that splices it into code evaluates.
+    fn as_forms(&mut self, head: Node<'d>, callee: &Type, args: &[Node<'d>], types: &mut [Type]) {
+        let signature = match self.written_annotation(head) {
+            Some(Annotation::Function(signature)) => signature,
+            _ => match unwrap(&self.unwrapped(callee)) {
+                Type::Fn(signature) => signature.clone(),
+                _ => return,
+            },
+        };
+        if !signature.expands {
+            return;
+        }
+        let symbol = atom("symbol");
+        for (at, arg) in args.iter().enumerate() {
+            let param = signature.params.get(at).or(signature.rest.as_ref());
+            if arg.kind() == syntax::SYMBOL && param == Some(&symbol) {
+                types[at] = symbol.clone();
+            }
+        }
     }
 
     /// What a call says against the types someone wrote for its callee. Only contradictions that
@@ -2003,6 +2063,8 @@ impl<'d> Infer<'d> {
                     let ty = self.expr(*object);
                     let bound = match self.text(*verb) {
                         ":range" | ":range-to" | ":down" | ":down-to" => atom("number"),
+                        // The value itself, for as long as it is truthy.
+                        ":iterate" => self.without_nil(&ty),
                         ":keys" => self.key(&ty),
                         ":pairs" => Type::Tuple([self.key(&ty), self.element(&ty)].into()),
                         _ => self.element(&ty),
@@ -2746,6 +2808,7 @@ fn zonk(subst: &Subst, ty: &Type, depth: usize) -> Type {
             throws: all(&signature.throws),
             narrows: signature.narrows.as_ref().map(deeper),
             bounds: signature.bounds.clone(),
+            expands: signature.expands,
         })),
         Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
         Type::Keyword(_) | Type::Enum(_) => ty.clone(),
@@ -3142,6 +3205,7 @@ fn rename(ty: &Type, names: &[(Var, Type)]) -> Type {
             throws: all(&signature.throws),
             narrows: signature.narrows.clone(),
             bounds: signature.bounds.clone(),
+            expands: signature.expands,
         })),
         Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
         Type::Keyword(_) | Type::Enum(_) => ty.clone(),

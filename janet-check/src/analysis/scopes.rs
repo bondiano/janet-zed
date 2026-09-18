@@ -13,6 +13,23 @@ use crate::syntax::{self, Document};
 
 const PARAM_MARKERS: [&str; 4] = ["&", "&opt", "&keys", "&named"];
 
+/// The compiler's own forms: no definition shadows these, unlike a core macro.
+const SPECIALS: [&str; 13] = [
+    "def",
+    "var",
+    "fn",
+    "do",
+    "quote",
+    "if",
+    "splice",
+    "while",
+    "break",
+    "set",
+    "quasiquote",
+    "unquote",
+    "upscope",
+];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local {
     pub name: String,
@@ -27,6 +44,9 @@ pub struct Scopes {
     pub locals: Vec<Local>,
     /// Start byte of every symbol naming a local, binding sites included → index in `locals`.
     pub uses: HashMap<usize, usize>,
+    /// Start byte of every head naming a core macro the file has shadowed by then — a local, or
+    /// a definition above it: the form is a call, not the macro.
+    pub calls: HashSet<usize>,
 }
 
 impl Scopes {
@@ -35,6 +55,7 @@ impl Scopes {
             doc,
             scopes: Self::default(),
             env: Vec::new(),
+            globals: HashSet::new(),
         };
         for form in syntax::forms(doc.root()) {
             binder.form(form, true);
@@ -65,6 +86,8 @@ struct Binder<'d> {
     scopes: Scopes,
     /// Bindings in scope, innermost last.
     env: Vec<(&'d str, usize)>,
+    /// Names defined at the top of the file so far.
+    globals: HashSet<&'d str>,
 }
 
 impl<'d> Binder<'d> {
@@ -163,6 +186,12 @@ impl<'d> Binder<'d> {
         } else {
             ""
         };
+        let shadowed = !SPECIALS.contains(&name)
+            && (self.globals.contains(name) || self.env.iter().any(|(bound, _)| *bound == name));
+        if shadowed {
+            self.scopes.calls.insert(head.start_byte());
+        }
+        let name = if shadowed { "" } else { name };
         match name {
             // Definitions bind in the enclosing scope.
             "defn" | "defn-" | "defmacro" | "defmacro-" | "varfn" => {
@@ -245,8 +274,12 @@ impl<'d> Binder<'d> {
         let Some((name, rest)) = args.split_first() else {
             return;
         };
-        if !top && name.kind() == syntax::SYMBOL {
-            self.bind(*name);
+        if name.kind() == syntax::SYMBOL {
+            if top {
+                self.globals.insert(self.text(*name));
+            } else {
+                self.bind(*name);
+            }
         }
         self.scoped(end, |binder| binder.params_and_body(rest));
     }
@@ -259,6 +292,8 @@ impl<'d> Binder<'d> {
         self.forms(rest);
         if !top {
             self.pattern(*target);
+        } else if target.kind() == syntax::SYMBOL {
+            self.globals.insert(self.text(*target));
         }
     }
 

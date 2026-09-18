@@ -234,7 +234,7 @@ call of its head.
 | --- | --- | --- |
 | Literal | Its face: `1` is `:number`, `:k` is the keyword `:k` | Not recorded; read back off the source |
 | Symbol | The local's slot, the module name (instantiated), the known name (instantiated), else `:any` | |
-| `[a b]`, `@[a b]` | Tuple / array of the elements | |
+| `[a b]`, `@[a b]` | Tuple / array of the elements | A splice, `;xs` (or `,;xs` in a quasiquote), makes it a tuple / array of any length holding what every form does |
 | `{:k v …}` | A closed struct of exactly those keys; a computed key makes it open | |
 | `'x`, `~(…)` | Data: symbols are `:symbol`, lists are tuples, unquotes are code again | |
 | `\|(…)` | `(fn [& :any] body)` | |
@@ -254,7 +254,7 @@ call of its head.
 | `(case v k b …)` | The union of the bodies | Each body narrowed as `(= v k)` would, each later clause by the keys before it failing |
 | `(match v p b …)` | The union of the bodies | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
 | `(and …)`, `(or …)` | The union of the arguments | Each argument narrowed by the ones before it |
-| `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:keys` and `:pairs` bind `:any` |
+| `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any` |
 | `(seq …)`, `(catseq …)`, `(generate …)` | An array of the body's type | |
 | `(tabseq …)` | An open table | |
 | `(let [p v …] …)`, `(with …)` | The body | Patterns bound |
@@ -269,9 +269,19 @@ call of its head.
 | `(import …)`, `(use …)` | `:nil` | |
 | `(comment …)` | `:nil` | Its forms are walked as top-level forms, which is how `(comment :declare …)` blocks declare |
 
+A core macro the file shadows by the time it is called — a local of its name, or a definition
+above the call — is read as a call to that, as Janet compiles it. The compiler's own forms (`def`,
+`if`, `fn`, `set` …) cannot be shadowed.
+
 Parameters: each is a fresh variable, unified with the declared type when the declaration has as
-many entries as the vector has names. `&`, `&keys` and `&named` make the rest parameter, whose
-pattern is bound to `[element]`; a parameter after `&opt` is `T?`, since a call may leave it out.
+many entries as the vector has names, and with `:any` for each when it writes no `:params`. `&`
+and `&keys` make the rest parameter, whose pattern is bound to `[element]`; `&named` makes a rest of
+`:any` after the parameters before it, whatever names follow it; a parameter after `&opt` is `T?`,
+since a call may leave it out.
+
+A macro's body answers the code of its expansion, so its `:ret` is held only at the call. Its
+arguments are held to `:params` as values, but for a bare symbol where it writes `:symbol`: that is
+the symbol, however the name it spells is bound.
 Destructuring patterns say what the value must hold: `{:a x}` unifies the value with
 `{:a fresh & row}`, `[x y]` with `[fresh fresh]`, and each name is bound to its fresh.
 
@@ -494,8 +504,10 @@ Marked `ponytail:` in the source, each with its ceiling:
 - `int?`, `odd?`, `empty?` narrow `:any`: the type language cannot hold the difference.
 - Library macros that bind locals leave their symbols to name matching.
 - Dependencies outside the workspace are read once and never watched.
-- The arguments of a macro declared outside the core are held to its `:params` like a function's,
-  though they are forms rather than values.
+- The arguments of a macro are held to its `:params` as values, but for a bare symbol where it
+  writes `:symbol`: typing every argument as the form it is would need the core's macros declared
+  so too.
+- The values of `&named` are not held to what `:params` writes for their names.
 
 ## Glossary
 

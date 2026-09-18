@@ -1135,3 +1135,123 @@ fn two_open_forms_share_their_rest() {
     let (_, scopes, facts) = alone("(defn f [p] (def a (p :a)) (def b (p :b)) (+ a 1) p)\n");
     assert_eq!(local(&scopes, &facts, "p"), "{:a :number :b :any & r}");
 }
+
+/// A splice puts its elements into the literal around it, as many as it holds: the literal is one
+/// of any length, holding what every form does.
+#[test]
+fn a_splice_puts_its_elements_into_a_literal() {
+    let (_, scopes, facts) = alone(
+        "(defn f {:params [[:keyword] [:string] [:string] [:number]]} [path a b xs]\n  \
+         (def tail [;path :x])\n  \
+         (def both @[;a ;b])\n  \
+         (def form ~(+ ,;xs)))\n",
+    );
+    assert_eq!(local(&scopes, &facts, "tail"), "[(or :keyword :x)]");
+    assert_eq!(local(&scopes, &facts, "both"), "@[:string]");
+    assert_eq!(local(&scopes, &facts, "form"), "[(or :symbol :number)]");
+    assert!(
+        messages(
+            "(defn keys-of {:params [[:keyword]] :ret :nil} [p] nil)\n\
+             (defn f {:params [[:keyword]]} [path] (keys-of [;path :x]))\n"
+        )
+        .is_empty(),
+        "a spliced literal of keywords is a tuple of keywords"
+    );
+}
+
+/// A macro's `:ret` is what its expansion evaluates to, which the call site reads; its body
+/// answers the code, and is not held to it.
+#[test]
+fn a_macro_is_held_to_its_ret_where_it_is_called() {
+    let (_, scopes, facts) = alone(
+        "(defn reg {:params [:any] :ret :keyword} [x] :k)\n\
+         (defmacro defk {:params [:keyword] :ret :keyword} [name] ~(,reg ,name))\n\
+         (defn f [] (def k (defk :a)))\n",
+    );
+    assert!(facts.findings.is_empty(), "the body answers code");
+    assert_eq!(local(&scopes, &facts, "k"), ":keyword");
+}
+
+/// A macro takes its arguments as forms: a bare symbol where it writes `:symbol` is the symbol,
+/// whatever the name is bound to. A function still takes the value.
+#[test]
+fn a_macro_takes_a_symbol_as_the_symbol() {
+    assert!(
+        messages(
+            "(defmacro defthing {:params [:symbol :keyword] :ret :tuple} [name k] ~(defn ,name [] ,k))\n\
+             (def trace 5)\n\
+             (defthing trace :x)\n"
+        )
+        .is_empty(),
+        "the name the macro binds is not the value it names elsewhere"
+    );
+    assert_eq!(
+        messages(
+            "(defn named {:params [:symbol] :ret :nil} [s] nil)\n\
+             (def trace 5)\n\
+             (named trace)\n"
+        ),
+        ["named takes :symbol here, given :number"]
+    );
+}
+
+/// `&named` takes keyword-value pairs, any of them or none, after the positional parameters,
+/// which are still held to `:params`.
+#[test]
+fn named_parameters_take_options_after_the_positional_ones() {
+    assert_eq!(
+        messages(
+            "(defn amb {:params [:keyword :string :keyword] :ret :nil} [k &named of from] nil)\n\
+             (amb :x :of \"p\" :from :y)\n\
+             (amb :x)\n\
+             (amb 5 :of \"p\")\n"
+        ),
+        ["amb takes :keyword here, given :number"]
+    );
+}
+
+/// A signature that writes only `:ret` takes what its parameter vector takes.
+#[test]
+fn a_signature_without_params_takes_its_vector() {
+    assert!(
+        messages(
+            "(defn f {:ret :number} [x] 1)\n(f 1)\n\
+             (defn g {:ret :number} [x &opt y] 1)\n(g 1 2)\n(g 1)\n\
+             (defn h {:ret :number} [x & ys] 1)\n(h 1 2 3)\n\
+             (defn k {:ret :number} [x &keys o] 1)\n(k 1 :a 2)\n"
+        )
+        .is_empty()
+    );
+}
+
+/// A file that defines `match` calls its own below the definition, and the core macro above it;
+/// a special form is the compiler's, whatever the file defines.
+#[test]
+fn a_definition_shadows_a_core_macro_below_it() {
+    assert_eq!(
+        messages(
+            "(defn early {:params [:any] :ret :any} [x] (match x [a] a _ nil))\n\
+             (def Table :typedef {:routes :number})\n\
+             (defn match {:params [Table :keyword :string] :ret :number} [t m p] 1)\n\
+             (defn use {:params [Table {:method :keyword :path :string}] :ret :number} [table req]\n\
+               (match table (req :method) (req :path)))\n\
+             (match {:routes 1} \"bad\" \"p\")\n"
+        ),
+        ["match takes :keyword here, given :string"]
+    );
+}
+
+/// `:iterate` binds the value itself, not what it holds: a line read, not its bytes.
+#[test]
+fn iterate_binds_the_value_while_it_is_truthy() {
+    assert!(
+        messages(
+            "(defn size {:params [(or :string :buffer)] :ret :number} [s] (length s))\n\
+             (defn f {:params [:core/file] :ret :nil} [f]\n\
+               (loop [line :iterate (file/read f :line)] (size line)))\n\
+             (defn g {:params [] :ret :string?} [] \"x\")\n\
+             (loop [s :iterate (g)] (size s))\n"
+        )
+        .is_empty()
+    );
+}

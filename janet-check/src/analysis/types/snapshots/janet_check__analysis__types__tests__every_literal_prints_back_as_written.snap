@@ -49,9 +49,9 @@ a
 (enum :get :post :put)
   Enum(["get", "post", "put"])
 (fn [a] b)
-  Fn(Signature { params: [Var("a")], rest: None, ret: Var("b"), throws: [], narrows: None, bounds: [] })
+  Fn(Signature { params: [Var("a")], rest: None, ret: Var("b"), throws: [], narrows: None, bounds: [], expands: false })
 (fn [a & as] b)
-  Fn(Signature { params: [Var("a")], rest: Some(Var("as")), ret: Var("b"), throws: [], narrows: None, bounds: [] })
+  Fn(Signature { params: [Var("a")], rest: Some(Var("as")), ret: Var("b"), throws: [], narrows: None, bounds: [], expands: false })
 (Box :number)
   Named { name: "Box", args: [Keyword("number")] }
 (Pair :string? [a])

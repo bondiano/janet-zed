@@ -248,7 +248,7 @@ struct Entry {
 }
 
 /// The positions nobody has written a type for yet.
-const ANY_POSITIONS: usize = 457;
+const ANY_POSITIONS: usize = 452;
 
 fn core_entries() -> Vec<Entry> {
     let doc = Document::new(CORE.to_string());
@@ -385,8 +385,15 @@ fn every_core_entry_parses_and_matches_its_docstring() {
             vector, written,
             "the parameters of {name} are not its docstring's"
         );
+        // `&named` options are one tail of anything, however many names follow it.
+        let named = written
+            .split_whitespace()
+            .skip_while(|word| *word != "&named")
+            .skip(1)
+            .count();
+        let spans = Parameters::parse(line).spans.len();
         assert_eq!(
-            Parameters::parse(line).spans.len(),
+            if named > 0 { spans - named + 1 } else { spans },
             signature.params.len() + usize::from(signature.rest.is_some()),
             "{name} declares types for other than its {written:?}"
         );

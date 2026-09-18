@@ -199,6 +199,9 @@ pub struct Signature {
     /// `:where {a (or :number :string)}`: what each variable may stand for. A call is held to it,
     /// and the body reads the variable as it.
     pub bounds: Vec<(Var, Type)>,
+    /// A macro's: its arguments are forms, so a bare symbol given where `:symbol` is written is
+    /// the symbol, not the value it would name.
+    pub expands: bool,
 }
 
 /// What the metadata of one definition declares.
@@ -567,6 +570,7 @@ impl Signature {
                 .filter(|(var, _)| !bound.contains_key(var))
                 .cloned()
                 .collect(),
+            expands: self.expands,
         }
     }
 
@@ -604,17 +608,17 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
         Some(node) => types_of(doc, *node),
         None => Some(Vec::new()),
     };
-    let written = declared(":params")?;
+    let mut written = declared(":params")?;
     // A `:params` of another length than the parameter vector says nothing anyone can hold a call
-    // to, and a signature built around it would.
-    if entries.contains_key(":params")
-        && let Some(vector) = definition.params
-    {
+    // to, and a signature built around it would. Without one, every parameter takes anything.
+    if let Some(vector) = definition.params {
         let taken = syntax::forms(vector)
             .iter()
             .filter(|form| !MARKERS.contains(&doc.text_of(**form)))
             .count();
-        if taken != written.len() {
+        if !entries.contains_key(":params") {
+            written = vec![Type::Keyword("any".into()); taken];
+        } else if taken != written.len() {
             return None;
         }
     }
@@ -645,6 +649,7 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
             throws,
             narrows,
             bounds,
+            expands: definition.definer.starts_with("defmacro"),
         }))
     })
 }
@@ -666,11 +671,21 @@ fn split_rest(
     vector: Option<Node>,
     mut params: Vec<Type>,
 ) -> (Vec<Type>, Option<Type>) {
-    let variadic = vector.is_some_and(|node| {
-        syntax::forms(node)
+    let forms = vector.map(syntax::forms).unwrap_or_default();
+    // `&named a b` takes its names as keyword-value pairs, in any order and any of them: a tail
+    // of anything, after the parameters before it.
+    // ponytail: the values of `&named` are not held to what `:params` writes for their names.
+    if let Some(at) = forms.iter().position(|form| doc.text_of(*form) == "&named") {
+        let positional = forms[..at]
             .iter()
-            .any(|form| matches!(doc.text_of(*form), "&" | "&keys"))
-    });
+            .filter(|form| !MARKERS.contains(&doc.text_of(**form)))
+            .count();
+        params.truncate(positional);
+        return (params, Some(Type::Keyword("any".into())));
+    }
+    let variadic = forms
+        .iter()
+        .any(|form| matches!(doc.text_of(*form), "&" | "&keys"));
     match variadic.then(|| params.pop()).flatten() {
         Some(rest) => (params, Some(rest)),
         None => (params, None),
@@ -893,6 +908,7 @@ fn call(doc: &Document, node: Node) -> Option<Type> {
                     throws: Vec::new(),
                     narrows: None,
                     bounds: Vec::new(),
+                    expands: false,
                 })))
             }
             _ => None,
