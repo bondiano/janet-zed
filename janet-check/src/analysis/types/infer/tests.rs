@@ -763,7 +763,7 @@ const PITFALLS: [(&str, &str); 17] = [
         "(defn serve {:params [] :ret :never} []\n  (forever (print 1)))",
     ),
     (
-        "a label returns what return gives it",
+        "a caption returns what return gives it",
         "(defn first-hit {:params [] :ret :number} []\n  (label result\n    (forever (return result 1))))",
     ),
     (
@@ -1065,7 +1065,7 @@ fn a_signature_is_instantiated_once() {
 }
 
 /// `{:of [a]}` makes a typedef a function of its arguments: `(Box :number)` is `{:value :number}`,
-/// a bare `Box` is `{:value :any}`, and another number of arguments names no type at all.
+/// a bare `Box` is `{:value :any}`, and another number of arguments is told where it is written.
 #[test]
 fn a_typedef_takes_arguments() {
     let defs = "(def Box :typedef {:of [a]} '{:value a})\n\
@@ -1075,7 +1075,6 @@ fn a_typedef_takes_arguments() {
                 (defn len-of {:params [:string] :ret :number} [s] 0)\n\
                 (defn numbers {:params [(Box :number)] :ret :number} [b] 0)\n\
                 (defn bare {:params [Box] :ret :number} [b] 0)\n\
-                (defn wrong {:params [(Box :number :string)] :ret :number} [b] 0)\n\
                 (defn total {:params [(List :number)] :ret :number} [l] 0)\n";
     let told = |calls: &str| messages(&format!("{defs}{calls}"));
     assert_eq!(
@@ -1094,13 +1093,34 @@ fn a_typedef_takes_arguments() {
         "(len-of (unbox {:value \"x\"}))\n",
         "(numbers {:value 1})\n",
         "(bare {:value \"x\"})\n",
-        "(wrong {:value \"x\"})\n",
         "(len-of (head {:head \"x\" :tail {:head \"y\" :tail nil}}))\n",
         "(total {:head 1 :tail {:head 2 :tail nil}})\n",
     ];
     for calls in silent {
         assert!(told(calls).is_empty(), "{calls}: {:?}", told(calls));
     }
+    assert_eq!(
+        told(
+            "(defn wrong {:params [(Box :number :string)] :ret :number} [b] 0)\n\
+             (def Pair :typedef {:of [a b]} '[a b])\n\
+             (def Point :typedef {:x :number})\n\
+             (def Nested :typedef {:of [a]} '{:items @[(Pair a)]})\n\
+             (def p {:type (Point :number)} {:x 1})\n\
+             (def call-is-not-a-type (Box 1 2))\n"
+        ),
+        [
+            "Box takes 1 type argument, given 2",
+            "Pair takes 2 type arguments, given 1",
+            "Point takes no type arguments, given 1",
+            "Box is {:value a}, not a function",
+        ]
+    );
+    assert_eq!(
+        told(
+            "(comment :declare\n  (def host-box {:type (Box)} nil)\n  (defn host {:params [(Box :number :string)]} [b]))\n"
+        ),
+        ["Box takes 1 type argument, given 2"]
+    );
 }
 
 /// A row is bound to the keys it stands for: what a call hands a signature through `& r` comes

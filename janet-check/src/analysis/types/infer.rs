@@ -64,6 +64,9 @@ type Narrowing = Vec<(usize, Type)>;
 pub struct Finding {
     pub range: Range<usize>,
     pub message: String,
+    /// About a type as written rather than a value held to one: it holds in a declaration too,
+    /// where the values stand in for the host's.
+    pub about_type: bool,
 }
 
 /// What inference read out of one file.
@@ -444,13 +447,7 @@ impl<'d> Infer<'d> {
     /// What a named type applied to `args` is defined as, here or in the declarations around the
     /// file.
     fn expand(&self, name: &str, args: &[Type]) -> Option<Type> {
-        let (ty, vars) = match self.named.get(name) {
-            Some((ty, vars)) => (ty.clone(), vars.clone()),
-            None => match (self.known.all)(name) {
-                Some(Annotation::Typedef(ty, vars)) => (ty, vars),
-                _ => return None,
-            },
-        };
+        let (ty, vars) = self.typedef(name)?;
         // A copy, like any written type: a variable free in a typedef is its own at every use.
         // The parameters stay as they are, for the arguments to take their place.
         let copy = if is_ground(&ty) {
@@ -460,6 +457,48 @@ impl<'d> Infer<'d> {
             self.rename(&self.zonk(&ty, DEPTH), &mut fresh)
         };
         super::apply(&copy, &vars, args)
+    }
+
+    /// The named type `name` and its parameters, here or in the declarations around the file.
+    fn typedef(&self, name: &str) -> Option<Typedef> {
+        match self.named.get(name) {
+            Some(typedef) => Some(typedef.clone()),
+            None => match (self.known.all)(name) {
+                Some(Annotation::Typedef(ty, vars)) => Some((ty, vars)),
+                _ => None,
+            },
+        }
+    }
+
+    /// Every `(Name …)` written in `node` that gives a named type another number of arguments
+    /// than it takes: a type nobody can read, which would otherwise say nothing at all.
+    fn arities(&mut self, node: Node<'d>) {
+        let forms = self.forms(node);
+        if let (syntax::LIST, [head, args @ ..]) = (node.kind(), &*forms) {
+            let name = self.text(*head);
+            if name.starts_with(char::is_uppercase)
+                && let Some((_, vars)) = self.typedef(name)
+                && !args.is_empty()
+                && args.len() != vars.len()
+            {
+                let takes = match vars.len() {
+                    0 => "no type arguments".to_string(),
+                    1 => "1 type argument".to_string(),
+                    n => format!("{n} type arguments"),
+                };
+                let given = args.len();
+                if self.record {
+                    self.findings.push(Finding {
+                        range: node.byte_range(),
+                        message: format!("{name} takes {takes}, given {given}"),
+                        about_type: true,
+                    });
+                }
+            }
+        }
+        for form in forms.iter() {
+            self.arities(*form);
+        }
     }
 
     /// A fresh copy of a polymorphic type: every use gets its own variables, so two calls do not
@@ -807,10 +846,20 @@ impl<'d> Infer<'d> {
         }
         match self.text(*head) {
             // Declarations, read by `declarations`: a `nil` there stands in for a host value.
+            // Only what they write as types is checked.
             "comment"
                 if args
                     .first()
-                    .is_some_and(|marker| self.text(*marker) == ":declare") => {}
+                    .is_some_and(|marker| self.text(*marker) == ":declare") =>
+            {
+                for declaration in &args[1..] {
+                    if let [head, _, rest @ ..] = &*self.forms(*declaration)
+                        && definitions::core(self.text(*head)).is_some()
+                    {
+                        self.written_arities(self.text(*head), rest);
+                    }
+                }
+            }
             "comment" | "upscope" => {
                 for arg in args {
                     self.top(*arg);
@@ -833,6 +882,7 @@ impl<'d> Infer<'d> {
         };
         let definer = self.text(*head);
         let name = (target.kind() == syntax::SYMBOL).then(|| self.text(*target));
+        self.written_arities(definer, rest);
         let declared = name.and_then(|name| self.declared.get(name)).cloned();
         // What the name grows into: a fresh variable, unless the file declares its types, in
         // which case the declaration stands and the body only fills in the locals.
@@ -909,6 +959,28 @@ impl<'d> Infer<'d> {
             None => {}
         }
         value
+    }
+
+    /// [`Self::arities`] of what a definition writes as types: its metadata, and the value of a
+    /// `:typedef`. The code of a value or a body is not a type, whatever it calls.
+    fn written_arities(&mut self, definer: &str, rest: &[Node<'d>]) {
+        let written = if definitions::is_function(definer) {
+            let at = rest.iter().position(|node| node.kind() == TUPLE);
+            &rest[..at.unwrap_or(rest.len())]
+        } else {
+            match rest.split_last() {
+                Some((_, metadata))
+                    if metadata.iter().any(|node| self.text(*node) == ":typedef") =>
+                {
+                    rest
+                }
+                Some((_, metadata)) => metadata,
+                None => rest,
+            }
+        };
+        for node in written {
+            self.arities(*node);
+        }
     }
 
     /// What the author wrote over a definition's value stands over what it infers to, which is
@@ -1515,7 +1587,11 @@ impl<'d> Infer<'d> {
 
     fn complain(&mut self, range: Range<usize>, message: String) {
         if self.record {
-            self.findings.push(Finding { range, message });
+            self.findings.push(Finding {
+                range,
+                message,
+                about_type: false,
+            });
         }
     }
 

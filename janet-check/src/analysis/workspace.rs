@@ -461,9 +461,10 @@ impl Workspace {
         };
         let mut facts = infer::facts(&file.document, &file.scopes, known, self.strict);
         // A declaration file declares and never runs: the `nil` of `(def x {:type T} nil)` there
-        // stands in for a value the host has, so nothing in it is held to its type.
+        // stands in for a value the host has, so nothing in it is held to its type. What it
+        // writes as types is still read.
         if is_declaration(path) {
-            facts.findings.clear();
+            facts.findings.retain(|finding| finding.about_type);
         }
         // A `x.d.janet` beside `x.janet` is written down, so it stands over whatever inference
         // reads out of the body, here and in every file that imports it.

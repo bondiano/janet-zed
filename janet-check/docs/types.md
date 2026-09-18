@@ -359,7 +359,8 @@ A `:typedef` is a real `def` in a file that runs: its value is the type literal,
 
 A typedef takes parameters when its metadata lists them in `{:of [...]}`, and is then applied to
 as many types: `(Box :number)` is `{:value :number}`. A bare `Box` is `Box` applied to `:any` in
-every place, and a `(Box …)` of another number of arguments names no type and says nothing.
+every place. A `(Box …)` of another number of arguments names no type, and is told where it is
+written: `Box takes 1 type argument, given 2`.
 
 ```janet
 (def Box :typedef {:of [a]} '{:value a})

@@ -83,6 +83,7 @@ fn check(paths: &[PathBuf], strict: bool) -> anyhow::Result<bool> {
             Some(node) => vec![Finding {
                 range: node.byte_range(),
                 message: "parse error".to_string(),
+                about_type: false,
             }],
             None => workspace.facts(path).findings.clone(),
         };

@@ -491,6 +491,27 @@ fn a_declaration_beside_a_module_stands_over_what_is_inferred() {
     ));
 }
 
+/// A declaration file holds no value to its type, but what it writes as a type is still read: a
+/// typedef of another number of arguments is told there too.
+#[test]
+fn a_declaration_file_is_told_only_about_its_types() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file(
+        "/ws/host.d.janet",
+        "(def Box :typedef {:of [a]} '{:value a})\n\
+         (def n {:type :string} 1)\n\
+         (def b {:type (Box :number :string)} nil)\n",
+    ));
+    workspace.refresh();
+    let facts = workspace.facts(Path::new("/ws/host.d.janet"));
+    let messages: Vec<&str> = facts
+        .findings
+        .iter()
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert_eq!(messages, ["Box takes 1 type argument, given 2"]);
+}
+
 /// A module's own `slurp` shadows the core's: what the core declares for its binding says nothing
 /// about a function the module wrote, typed or not.
 #[test]
