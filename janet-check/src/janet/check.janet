@@ -212,8 +212,10 @@
   (def env (make-env check/base))
   # `# janet-zed: declare` names get stand-ins; `# janet-zed: include` files load into this env,
   # as when the host concatenates them. A broken include is not this file's problem.
+  # A declaration of a core name, like `core.d.janet`, must not shadow the real binding.
   (each name declared
-    (put env (symbol name) @{:value nil}))
+    (unless (get env (symbol name))
+      (put env (symbol name) @{:value nil})))
   (each path includes
     (protect (dofile path :env env :evaluator check/evaluator)))
   (put env :current-file file)

@@ -1,6 +1,5 @@
 ---
 source: janet-lsp-plus/tests/lsp.rs
-assertion_line: 303
 expression: "format!(\"----- HOVER\\n{}\\n\", shown.join(\"\\n\\n\"))"
 ---
 ----- HOVER
@@ -20,7 +19,7 @@ def in `shapes.janet`
 
 -- defmacro timed
 ```janet
-(timed & body: a) -> [:symbol [:symbol [:symbol] :symbol [:symbol [a]]] [:symbol [:symbol [:symbol] :symbol]]]
+(timed & body: a) -> [:symbol [:symbol [:symbol] :symbol [(or :symbol a)]] [:symbol [:symbol [:symbol] :symbol]]]
 ```
 defmacro in `shapes.janet`, type inferred
 

@@ -395,3 +395,22 @@ fn reports_what_macros_bind() {
         "a loaded module is reported once"
     );
 }
+
+#[test]
+fn declared_core_names_keep_their_bindings() {
+    let dir = std::env::temp_dir().join("janet-tooling-declared-core-test");
+    std::fs::create_dir_all(&dir).unwrap();
+    let declared = ["def-".to_string(), "defn".to_string(), "host".to_string()];
+    let problems = Worker::new("janet")
+        .check(&Check {
+            path: &dir.join("a.janet"),
+            text: "(def- x 1)\n(defn f [] (host x))\n",
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &declared,
+        })
+        .unwrap()
+        .problems;
+    assert_eq!(show_problems(&problems), "");
+}

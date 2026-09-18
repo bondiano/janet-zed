@@ -113,3 +113,44 @@ fn a_workspace_with_the_syspath_is_checked_in_seconds() {
         "the check took {elapsed:?}, more than {budget}s"
     );
 }
+
+/// A directory inside a project is checked in the context of the whole project: its prefix
+/// imports and ambient declarations resolve, and only the files under the path are reported.
+#[test]
+fn a_subdirectory_of_a_project_keeps_the_project_context() {
+    let root = std::env::temp_dir().join(format!("janet-check-subdir-{}", std::process::id()));
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    };
+    write(
+        "project.janet",
+        "(declare-project :name \"p\")\n(declare-source :prefix \"p\" :source [\"src/lib.janet\"])\n",
+    );
+    write(
+        "src/host.d.janet",
+        "(defn host/fetch {:params [:number] :ret :string} [n])\n",
+    );
+    write(
+        "src/lib.janet",
+        "(defn twice {:params [:number] :ret :number} [n] (* 2 n))\n(host/fetch \"x\")\n",
+    );
+    write(
+        "test/lib.janet",
+        "(import p/lib)\n(lib/twice \"x\")\n(host/fetch \"y\")\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(&root)
+        .arg("test")
+        .output()
+        .expect("janet-check runs");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        [
+            "test/lib.janet:2:12: lib/twice takes :number here, given :string",
+            "test/lib.janet:3:13: host/fetch takes :number here, given :string",
+        ]
+    );
+}

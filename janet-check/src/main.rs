@@ -3,6 +3,7 @@
 //! Every call that contradicts a declared signature is printed as `path:line:col: message`,
 //! and the exit status is 1 when there is one.
 
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -44,14 +45,20 @@ fn main() -> ExitCode {
     }
 }
 
-/// Whether every file the paths name type-checks. The roots are the directories among them,
-/// so imports resolve the way they do for the editor.
+/// Whether every file the paths name type-checks. The whole project around each path is read,
+/// so imports and ambient declarations resolve the way they do for the editor.
 fn check(paths: &[PathBuf], strict: bool) -> anyhow::Result<bool> {
     let files = janet_files(paths);
     anyhow::ensure!(!files.is_empty(), "no .janet files under the given paths");
-    let mut workspace = Workspace::new(paths.iter().map(root_of).collect(), None);
+    let roots: Vec<PathBuf> = paths
+        .iter()
+        .map(root_of)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let mut workspace = Workspace::new(roots.clone(), None);
     workspace.set_strict(strict);
-    for path in &files {
+    for path in janet_files(&roots).union(&files) {
         if let Some(file) =
             uri_of(path).and_then(|uri| SourceFile::read(path.clone(), uri, workspace.config()))
         {
@@ -110,12 +117,18 @@ fn first_error(root: Node<'_>) -> Option<Node<'_>> {
     root.children(&mut cursor).find_map(first_error)
 }
 
-/// The workspace root a path stands for: itself, or the directory holding it.
+/// The workspace root a path stands for: the nearest directory holding it that is a project
+/// (`project.janet` or `.janet-zed/`), else the path itself or the directory holding it.
 fn root_of(path: impl AsRef<Path>) -> PathBuf {
     let path = canonical(path.as_ref());
-    if path.is_dir() {
+    let dir = if path.is_dir() {
         path
     } else {
         path.parent().map(PathBuf::from).unwrap_or(path)
-    }
+    };
+    dir.ancestors()
+        .find(|ancestor| {
+            ancestor.join("project.janet").is_file() || ancestor.join(".janet-zed").is_dir()
+        })
+        .map_or_else(|| dir.clone(), Path::to_path_buf)
 }

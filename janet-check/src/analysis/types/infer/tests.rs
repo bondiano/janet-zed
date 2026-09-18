@@ -1255,3 +1255,19 @@ fn iterate_binds_the_value_while_it_is_truthy() {
         .is_empty()
     );
 }
+
+/// A file's own `match`, or a local one, is called like any function: the core macro of that
+/// name no longer reads its arguments.
+#[test]
+fn a_definition_shadows_the_core_form_of_its_name() {
+    let source = "(defn match {:params [:string] :ret :any} [text] text)\n\
+                  (match 1)\n\
+                  (defn f [] (let [match (fn [a] a)] (match 1)))\n";
+    let (_, _, facts) = alone(source);
+    let messages: Vec<&str> = facts
+        .findings
+        .iter()
+        .map(|finding| finding.message.as_str())
+        .collect();
+    assert_eq!(messages, ["match takes :string here, given :number"]);
+}
