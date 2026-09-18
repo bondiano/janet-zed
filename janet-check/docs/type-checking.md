@@ -98,7 +98,7 @@ skipping `r`, which every row is printed as. A variable that occurs once says no
 
 | Metadata | Annotation |
 | --- | --- |
-| `{:params [...] :ret T :throws [...] :narrows T}` on a function or macro | `Function(Signature)` |
+| `{:params [...] :ret T :throws [...] :narrows T :where {a T}}` on a function or macro | `Function(Signature)`; `:where` fills `bounds` |
 | `{:type T}` or `{:as-type T}` on a `def` or `var` | `Value(T)`; `:as-type` wins where both are written |
 | `(def Name :typedef T)` | `Typedef(T)` |
 
@@ -176,8 +176,8 @@ A variable is a number, `Var(u32)`: fresh per file (`#1`, `#2`, …), or one som
 `r`), whose name is kept once for the whole process and is the same number in every file. A
 variable bound to another is bound to the end of that one's chain, so the substitution is a
 union-find without ranks. A row variable is the name of the keys a form has
-besides the known ones; a row is never bound, so two open forms merge their keys rather than
-tell their rows apart.
+besides the known ones. A row is bound to a `Struct` of the keys it turned out to have, and
+`zonk` (and `spliced`, where a key is read or a shape fitted) writes them back into the form.
 
 ### Polymorphism
 
@@ -187,8 +187,19 @@ instantiates it (`instantiate`), replacing every variable with a fresh one, so t
 *not* instantiated: a recursive call constrains the one type, which is what makes recursion
 settle rather than walk off.
 
-A declared signature is instantiated once per parameter vector, so `(fn [a] a)` written in
-metadata behaves the same as an inferred one.
+A declared signature is instantiated once as a whole, so `{:params [a a] :ret a}` ties both
+parameters and the result, and `(fn [a] a)` written in metadata behaves the same as an inferred
+one. A written variable never reaches the substitution itself: every use of a signature, a
+`:type` or a typedef is a copy in fresh variables (`Subst::insert` asserts it in debug builds),
+so two signatures that both write `a` never share it.
+
+A call is checked against `Signature::pinned`: the variables bound, first come, from the static
+arguments only, so a finding never rests on a guess. `Signature::instantiated` binds through
+`Dynamic` too; it is what signature help shows, never what a call is held to.
+
+`fit` of a function against `(fn …)` holds the parameters the other way round (what the wanted
+signature passes must fit what the given one takes) and the result as it stands. A position only
+one side has is an arity mismatch, unless the given parameter takes `nil`, as `&opt` reads.
 
 ### Unification
 
@@ -207,7 +218,7 @@ for on the way. It never fails. In order:
 | A union against a member | The union; against a type shaped like a member (a tuple for a tuple, a struct for a struct), that member unified; against anything else, the union grown by one |
 | An atom against a shape of that kind (`:struct` vs `{…}`) | The shape: the detail wins |
 | Tuple/array against tuple/array | Elementwise; one element against many unifies with each; the left's mutability wins |
-| Struct/table against struct/table | Keys merged, a key both have holds both types; open if either side is; the left's mutability wins |
+| Struct/table against struct/table | A key both have holds both types. An open side's row is bound to the keys only the other lists; two open sides share a fresh row, two closed ones keep the keys of both. The left's mutability wins |
 | Dict against dict | Key and value unified; mutable if either is |
 | Dict against struct/table | The dict |
 | Fn against fn | Params by position (the longer list kept), rest, ret unified; throws concatenated; the left's `narrows` |
@@ -477,7 +488,7 @@ Janet's syspath (over a thousand files) through `janet-check` in 5 s, both in re
 
 Marked `ponytail:` in the source, each with its ceiling:
 
-- A row variable is never bound: open forms merge, and two rows are not told apart.
+- Inferred types print every row as `r`: two rows in one hover read alike though they are apart.
 - A tagged tuple, `(or [:ok a] [:err b])`, is not discriminated: only structs are.
 - A predicate in a variable, or `(= (type x) :k)`, narrows nothing.
 - `int?`, `odd?`, `empty?` narrow `:any`: the type language cannot hold the difference.

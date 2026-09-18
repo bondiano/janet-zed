@@ -13,9 +13,9 @@ use std::sync::LazyLock;
 
 use smol_str::SmolStr;
 
-use super::infer::Subst;
+use super::infer::{Subst, spliced};
 use super::narrow::Expand;
-use super::{Fields, Type, is_atom};
+use super::{Fields, Signature, Type, is_atom};
 
 /// How far named types and variables are followed; a type defined in terms of itself stops here.
 const DEPTH: usize = 16;
@@ -100,11 +100,30 @@ impl Check<'_> {
                 }
             }
             (Type::Dynamic(_), _) | (_, Type::Dynamic(_)) => Fit::Maybe,
-            (Type::Named(name), _) => {
-                (self.expand)(name).map_or(Fit::Maybe, |ty| deeper(&ty, expected))
+            // The same type applied to what fits, argument by argument, without expanding it.
+            (
+                Type::Named { name, args },
+                Type::Named {
+                    name: wanted,
+                    args: wants,
+                },
+            ) if name == wanted && args.len() == wants.len() => {
+                let answers: Vec<Fit> = args
+                    .iter()
+                    .zip(wants.iter())
+                    .map(|(l, r)| deeper(l, r))
+                    .collect();
+                if answers.contains(&Fit::No) {
+                    Fit::No
+                } else {
+                    every(answers)
+                }
             }
-            (_, Type::Named(name)) => {
-                (self.expand)(name).map_or(Fit::Maybe, |ty| deeper(actual, &ty))
+            (Type::Named { name, args }, _) => {
+                (self.expand)(name, args).map_or(Fit::Maybe, |ty| deeper(&ty, expected))
+            }
+            (_, Type::Named { name, args }) => {
+                (self.expand)(name, args).map_or(Fit::Maybe, |ty| deeper(actual, &ty))
             }
             (Type::Or(items), _) => self.union(items, expected, depth),
             // What nobody listed may fit or not; only a listed member held to strictly rules out.
@@ -135,6 +154,7 @@ impl Check<'_> {
                 _ => by_kind(actual, "keyword"),
             },
             (_, Type::Keyword(wanted)) => by_kind(actual, wanted),
+            (Type::Fn(given), Type::Fn(wanted)) => self.functions(given, wanted, depth),
             // Janet calls nearly anything: a number, a keyword or a form reads a key. Only `nil`
             // and a boolean never take arguments, whether the function is written `(fn …)` or
             // `:function`.
@@ -159,7 +179,8 @@ impl Check<'_> {
                 }
             }
             (Type::Struct(left) | Type::Table(left), Type::Struct(right) | Type::Table(right)) => {
-                any_no(shared(left, right).map(|(l, r)| deeper(l, r)))
+                let (left, right) = (spliced(self.subst, left), spliced(self.subst, right));
+                any_no(shared(&left, &right).map(|(l, r)| deeper(l, r)))
             }
             (
                 Type::Dict { key, value, .. },
@@ -182,6 +203,42 @@ impl Check<'_> {
                 (Some(_), Some(_)) => Fit::No,
                 _ => Fit::Maybe,
             },
+        }
+    }
+
+    /// A function where a function is wanted: it is called with what `wanted` takes, so each
+    /// parameter is held the other way round, and what it returns is held as it stands. A
+    /// position one side has and the other does not is an arity Janet refuses — except a
+    /// parameter that takes `nil`, which is how `&opt` reads, and may be left out.
+    fn functions(&self, given: &Signature, wanted: &Signature, depth: usize) -> Fit {
+        let deeper = |actual: &Type, expected: &Type| self.fits(actual, expected, depth - 1);
+        let at = |signature: &'_ Signature, index: usize| {
+            signature
+                .params
+                .get(index)
+                .or(signature.rest.as_ref())
+                .cloned()
+        };
+        let positions = given.params.len().max(wanted.params.len());
+        let params = (0..positions).map(|index| match (at(given, index), at(wanted, index)) {
+            (Some(takes), Some(passed)) => deeper(&passed, &takes),
+            (Some(takes), None) => match deeper(&NIL, &takes) {
+                Fit::No => Fit::No,
+                _ => Fit::Maybe,
+            },
+            (None, _) => Fit::No,
+        });
+        let rest = match (&given.rest, &wanted.rest) {
+            (Some(takes), Some(passed)) => deeper(passed, takes),
+            _ => Fit::Yes,
+        };
+        let answers: Vec<Fit> = params
+            .chain([rest, deeper(&given.ret, &wanted.ret)])
+            .collect();
+        if answers.contains(&Fit::No) {
+            Fit::No
+        } else {
+            every(answers)
         }
     }
 
@@ -221,8 +278,8 @@ impl Check<'_> {
     }
 }
 
-/// A value called: `No` for what never takes arguments. A function is not `Yes`: nothing here
-/// compares what it takes.
+/// A value called: `No` for what never takes arguments. Only a function against `(fn …)` is
+/// compared by what it takes, in `functions`.
 fn callable(actual: &Type) -> Fit {
     match kind(actual) {
         Some("nil" | "boolean") => Fit::No,

@@ -965,3 +965,173 @@ fn a_written_type_is_checked_and_a_cast_is_not() {
     assert_eq!(local(&scopes, &facts, "other"), ":string");
     assert_eq!(local(&scopes, &facts, "gradual"), ":string");
 }
+
+/// A variable is held to what the first static argument pins it to, in argument order; a guess,
+/// and what follows a splice, pin nothing.
+#[test]
+fn the_first_static_argument_pins_a_variable() {
+    let defs = "(defn same {:params [a a] :ret a} [x y] x)\n\
+                (defn len-of {:params [:string] :ret :number} [s] 0)\n\
+                (defn apply1 {:params [(fn [a] b) a] :ret b} [f x] (f x))\n\
+                (defn maybe {:params [a? a] :ret a} [x y] y)\n\
+                (defn apply-rev {:params [a (fn [a] b)] :ret b} [x f] (f x))\n\
+                (defn two {:params [:number :number] :ret :number} [x y] x)\n\
+                (defn inc {:params [:number] :ret :number} [x] x)\n\
+                (defn opt {:params [:number :string?] :ret :number} [x &opt s] x)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(
+        told("(same 1 \"x\")\n"),
+        ["same takes :number here (a), given :string"]
+    );
+    assert_eq!(
+        told("(same 1 nil)\n"),
+        ["same takes :number here (a), given :nil"]
+    );
+    assert_eq!(
+        told("(apply1 len-of 5)\n"),
+        ["apply1 takes :string here (a), given :number"]
+    );
+    assert_eq!(
+        told("(apply-rev 5 len-of)\n"),
+        ["apply-rev takes (fn [:number] :number) here (a b), given (fn [:string] :number)"]
+    );
+    assert_eq!(
+        told("(apply-rev 5 two)\n"),
+        ["apply-rev takes (fn [:number] :number) here (a b), given (fn [:number :number] :number)"]
+    );
+    let silent = [
+        "(defn f [x] (same x 1))\n",
+        "(same ;[1 2] \"x\")\n",
+        "(same 1 ;[\"x\"])\n",
+        "(maybe nil 1)\n",
+        "(same 1 2)\n",
+        "(apply1 (fn [s] s) 5)\n",
+        "(apply-rev 5 (fn [s] s))\n",
+        "(apply-rev 5 inc)\n",
+        "(apply-rev 5 opt)\n",
+    ];
+    for calls in silent {
+        assert!(told(calls).is_empty(), "{calls}: {:?}", told(calls));
+    }
+}
+
+/// `:where {a (or :number :string)}`: what a variable is pinned to must fit its bound, and the
+/// body reads the variable as the bound.
+#[test]
+fn a_bounded_variable_holds_calls_and_types_the_body() {
+    let defs = "(defn clamp {:params [a a a] :ret a :where {a (or :number :string)}} [x lo hi] (if (< x lo) lo x))\n\
+                (defn wrong {:params [a] :where {A :number}} [x] x)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(
+        told("(clamp :k :k :k)\n"),
+        ["clamp takes a: (or :number :string), given :k"]
+    );
+    assert_eq!(
+        told("(clamp 1 \"x\" 2)\n"),
+        ["clamp takes :number here (a), given :string"]
+    );
+    let silent = [
+        "(clamp 1 2 3)\n",
+        "(clamp \"a\" \"b\" \"c\")\n",
+        "(defn f [x] (clamp x 1 2))\n",
+        "(wrong :k)\n",
+    ];
+    for calls in silent {
+        assert!(told(calls).is_empty(), "{calls}: {:?}", told(calls));
+    }
+    let (_, scopes, facts) = alone(
+        "(defn inc-by {:params [a] :ret a :where {a :number}} [x]\n  (def y (+ x 1))\n  y)\n",
+    );
+    assert_eq!(local(&scopes, &facts, "x"), ":number");
+    assert_eq!(local(&scopes, &facts, "y"), ":number");
+    assert!(facts.findings.is_empty(), "{:?}", facts.findings);
+}
+
+/// One signature is one copy: `[a a] :ret a` ties both parameters, and a second signature that
+/// writes `a`, or a typedef that leaves `a` free, is a variable of its own.
+#[test]
+fn a_signature_is_instantiated_once() {
+    let (_, scopes, facts) = alone(
+        "(defn same {:params [a a] :ret a} [x y] (+ x 1) y)\n\
+         (defn other {:params [a] :ret a} [z] z)\n\
+         (def Box :typedef {:value a})\n\
+         (defn unbox {:params [Box]} [b] (b :value))\n\
+         (unbox {:value 1})\n\
+         (def boxed {:type (fn [a] a)} (fn [q] q))\n\
+         (boxed 1)\n",
+    );
+    assert_eq!(local(&scopes, &facts, "y"), ":number");
+    assert_eq!(local(&scopes, &facts, "z"), ":any");
+}
+
+/// `{:of [a]}` makes a typedef a function of its arguments: `(Box :number)` is `{:value :number}`,
+/// a bare `Box` is `{:value :any}`, and another number of arguments names no type at all.
+#[test]
+fn a_typedef_takes_arguments() {
+    let defs = "(def Box :typedef {:of [a]} '{:value a})\n\
+                (def List :typedef {:of [a]} '(or nil {:head a :tail (List a)}))\n\
+                (defn unbox {:params [(Box a)] :ret a} [b] (b :value))\n\
+                (defn head {:params [(List a)] :ret a?} [l] (l :head))\n\
+                (defn len-of {:params [:string] :ret :number} [s] 0)\n\
+                (defn numbers {:params [(Box :number)] :ret :number} [b] 0)\n\
+                (defn bare {:params [Box] :ret :number} [b] 0)\n\
+                (defn wrong {:params [(Box :number :string)] :ret :number} [b] 0)\n\
+                (defn total {:params [(List :number)] :ret :number} [l] 0)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(
+        told("(len-of (unbox {:value 1}))\n"),
+        ["len-of takes :string here, given :number"]
+    );
+    assert_eq!(
+        told("(numbers {:value \"x\"})\n"),
+        ["numbers takes (Box :number) here, given {:value :string}"]
+    );
+    assert_eq!(
+        told("(total {:head 1 :tail {:head \"x\" :tail nil}})\n"),
+        ["total takes (List :number) here, given {:head :number :tail {:head :string :tail :nil}}"]
+    );
+    let silent = [
+        "(len-of (unbox {:value \"x\"}))\n",
+        "(numbers {:value 1})\n",
+        "(bare {:value \"x\"})\n",
+        "(wrong {:value \"x\"})\n",
+        "(len-of (head {:head \"x\" :tail {:head \"y\" :tail nil}}))\n",
+        "(total {:head 1 :tail {:head 2 :tail nil}})\n",
+    ];
+    for calls in silent {
+        assert!(told(calls).is_empty(), "{calls}: {:?}", told(calls));
+    }
+}
+
+/// A row is bound to the keys it stands for: what a call hands a signature through `& r` comes
+/// back out of its result, and two rows keep their own keys.
+#[test]
+fn a_row_carries_the_rest_of_the_shape_through_a_call() {
+    let defs = "(defn with-id {:params [{:id :number & r}] :ret {:id :number & r}} [x] x)\n\
+                (defn pair {:params [{:a :number & r} {:b :number & s}]\n\
+                            :ret [{:a :number & r} {:b :number & s}]} [x y] [x y])\n\
+                (defn len-of {:params [:string] :ret :number} [s] 0)\n";
+    let (_, _, facts) = alone(&format!(
+        "{defs}(def one (with-id {{:id 1 :name \"x\"}}))\n\
+         (def two (pair {{:a 1 :x \"s\"}} {{:b 2 :y 3}}))\n"
+    ));
+    assert_eq!(defined(&facts, "one"), "{:id :number :name :string}");
+    assert_eq!(
+        defined(&facts, "two"),
+        "[{:a :number :x :string} {:b :number :y :number}]"
+    );
+    assert_eq!(
+        messages(&format!(
+            "{defs}(len-of ((with-id {{:id 1 :name 2}}) :name))\n"
+        )),
+        ["len-of takes :string here, given :number"]
+    );
+}
+
+/// Two open forms read out of one parameter are one form: each row stands for the keys the other
+/// read, and what neither read is a row they share.
+#[test]
+fn two_open_forms_share_their_rest() {
+    let (_, scopes, facts) = alone("(defn f [p] (def a (p :a)) (def b (p :b)) (+ a 1) p)\n");
+    assert_eq!(local(&scopes, &facts, "p"), "{:a :number :b :any & r}");
+}

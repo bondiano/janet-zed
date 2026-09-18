@@ -20,7 +20,7 @@ use super::infer::{kind, unions};
 use super::{Fields, Type, Var, is_atom};
 
 /// What a named type stands for, as far as the file and its declarations know.
-pub type Expand<'a> = &'a dyn Fn(&str) -> Option<Type>;
+pub type Expand<'a> = &'a dyn Fn(&str, &[Type]) -> Option<Type>;
 
 /// Whether a value of one type can be where another is, as [`super::fit::fit`] answers it.
 pub type Fits<'a> = &'a dyn Fn(&Type, &Type) -> Fit;
@@ -242,7 +242,9 @@ fn keywords(member: &Type, expand: Expand, depth: usize) -> Option<Vec<SmolStr>>
     match member {
         Type::Keyword(name) if !is_atom(name) => Some(vec![name.clone()]),
         Type::Enum(values) => Some(values.to_vec()),
-        Type::Named(name) if depth > 0 => keywords(&expand(name)?, expand, depth - 1),
+        Type::Named { name, args } if depth > 0 => {
+            keywords(&expand(name, args)?, expand, depth - 1)
+        }
         _ => None,
     }
 }
@@ -250,7 +252,9 @@ fn keywords(member: &Type, expand: Expand, depth: usize) -> Option<Vec<SmolStr>>
 fn shape_of(member: &Type, expand: Expand, depth: usize) -> Option<Fields> {
     match member {
         Type::Struct(shape) => Some(shape.clone()),
-        Type::Named(name) if depth > 0 => shape_of(&expand(name)?, expand, depth - 1),
+        Type::Named { name, args } if depth > 0 => {
+            shape_of(&expand(name, args)?, expand, depth - 1)
+        }
         _ => None,
     }
 }
@@ -270,8 +274,8 @@ fn is_open(ty: &Type, expand: Expand, depth: usize) -> bool {
         Type::Open(_) => true,
         Type::Or(items) => items.iter().any(|item| is_open(item, expand, depth)),
         Type::Nullable(inner) => is_open(inner, expand, depth),
-        Type::Named(name) if depth > 0 => {
-            expand(name).is_some_and(|ty| is_open(&ty, expand, depth - 1))
+        Type::Named { name, args } if depth > 0 => {
+            expand(name, args).is_some_and(|ty| is_open(&ty, expand, depth - 1))
         }
         _ => false,
     }
@@ -306,7 +310,7 @@ fn spread(ty: &Type, expand: Expand, depth: usize) -> Vec<Type> {
             .into_iter()
             .chain([nil()])
             .collect(),
-        Type::Named(name) if depth > 0 => match expand(name) {
+        Type::Named { name, args } if depth > 0 => match expand(name, args) {
             Some(expanded @ (Type::Or(_) | Type::Open(_) | Type::Nullable(_))) => {
                 spread(&expanded, expand, depth - 1)
             }
@@ -327,7 +331,7 @@ fn at(member: &Type, key: &str, expand: Expand, depth: usize) -> Option<Type> {
             None => None,
         },
         Type::Dict { value, .. } => Some((**value).clone()),
-        Type::Named(name) if depth > 0 => at(&expand(name)?, key, expand, depth - 1),
+        Type::Named { name, args } if depth > 0 => at(&expand(name, args)?, key, expand, depth - 1),
         Type::Keyword(name) if name == "nil" => Some(nil()),
         _ => None,
     }
@@ -401,7 +405,7 @@ fn atom_of(ty: &Type, expand: Expand, depth: usize) -> Option<SmolStr> {
         Type::Keyword(name) if name == "any" || name == "never" => None,
         Type::Keyword(name) if is_atom(name) => Some(name.clone()),
         Type::Keyword(_) => Some("keyword".into()),
-        Type::Named(name) => atom_of(&expand(name)?, expand, depth - 1),
+        Type::Named { name, args } => atom_of(&expand(name, args)?, expand, depth - 1),
         Type::Var(_) | Type::Nullable(_) | Type::Or(_) | Type::Open(_) => None,
         ty => kind(ty).map(SmolStr::new_static),
     }

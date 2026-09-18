@@ -16,6 +16,7 @@ use tree_sitter::Node;
 
 use super::definitions::{self, Definition};
 use crate::syntax::{self, Document};
+use narrow::Expand;
 
 /// Keywords that name a type: what `(type x)` returns, plus `:any` and `:never`. Any other
 /// keyword is the value itself, as `:circle` in `{:kind :circle}`.
@@ -68,8 +69,12 @@ const QUOTE: [&str; 2] = ["quote_lit", "qq_lit"];
 pub enum Type {
     /// `:number`, `:any`, and literal keyword values like `:circle`.
     Keyword(SmolStr),
-    /// A named type, declared with `:typedef`.
-    Named(SmolStr),
+    /// A named type, declared with `:typedef`, and what it is applied to: `(Box :number)`. No
+    /// arguments for a bare `Box`, whose parameters are then all `:any`.
+    Named {
+        name: SmolStr,
+        args: Arc<[Type]>,
+    },
     /// A type variable: `a`, `r`.
     Var(Var),
     /// `:string?`, `Entity?`: the type or `nil`.
@@ -191,6 +196,9 @@ pub struct Signature {
     /// and what that argument is not wherever it does not. `:any` marks a predicate that tests a
     /// value rather than a type, and so tells a branch nothing.
     pub narrows: Option<Type>,
+    /// `:where {a (or :number :string)}`: what each variable may stand for. A call is held to it,
+    /// and the body reads the variable as it.
+    pub bounds: Vec<(Var, Type)>,
 }
 
 /// What the metadata of one definition declares.
@@ -200,8 +208,8 @@ pub enum Annotation {
     Function(Arc<Signature>),
     /// `{:type ...}` on a `def` or `var`.
     Value(Type),
-    /// `(def Shape :typedef ...)`.
-    Typedef(Type),
+    /// `(def Shape :typedef ...)`, and the parameters of `(def Box :typedef {:of [a]} ...)`.
+    Typedef(Type, Arc<[Var]>),
 }
 
 impl Type {
@@ -209,10 +217,12 @@ impl Type {
     pub fn parse(doc: &Document, node: Node) -> Option<Self> {
         match node.kind() {
             KEYWORD => atom(doc.text_of(node).strip_prefix(':')?, Self::Keyword),
+            // `(or nil …)`: what the literal is, the way a value reads it.
+            "nil_lit" => Some(Self::Keyword("nil".into())),
             syntax::SYMBOL => {
                 let text = doc.text_of(node);
                 if text.starts_with(char::is_uppercase) {
-                    atom(text, Self::Named)
+                    atom(text, |name| Self::named(name, Arc::new([])))
                 } else if text.starts_with(char::is_lowercase) {
                     atom(text, |name| Self::Var(Var::named(&name)))
                 } else {
@@ -238,6 +248,10 @@ impl Type {
         Self::parse(&doc, *syntax::forms(doc.root()).first()?)
     }
 
+    pub fn named(name: SmolStr, args: Arc<[Self]>) -> Self {
+        Self::Named { name, args }
+    }
+
     /// `:any` is what a type is when nobody knows: it says nothing anyone can read.
     pub fn is_any(&self) -> bool {
         matches!(self, Self::Keyword(name) if name == "any")
@@ -245,13 +259,16 @@ impl Type {
 
     /// The same type with named types replaced by what they are defined as, `depth` levels deep.
     #[must_use]
-    pub fn expanded(&self, named: &HashMap<&str, &Self>, depth: usize) -> Self {
+    pub fn expanded(&self, named: &Named, depth: usize) -> Self {
         let expand = |ty: &Self| ty.expanded(named, depth);
         let all = |types: &[Self]| types.iter().map(expand).collect();
         match self {
-            Self::Named(name) => match named.get(name.as_str()) {
-                Some(ty) if depth > 0 => ty.expanded(named, depth - 1),
-                _ => self.clone(),
+            Self::Named { name, args } => match named.get(name.as_str()) {
+                Some((ty, vars)) if depth > 0 => match apply(ty, vars, args) {
+                    Some(ty) => ty.expanded(named, depth - 1),
+                    None => self.clone(),
+                },
+                _ => Self::named(name.clone(), all(args)),
             },
             Self::Nullable(inner) => Self::Nullable(Arc::new(expand(inner))),
             Self::Tuple(items) => Self::Tuple(all(items)),
@@ -275,38 +292,75 @@ impl Type {
     }
 
     /// What the variables of this type stand for, when a value of type `actual` is written for
-    /// it. Only what lines up structurally binds; the rest is left open, since a signature is a
-    /// hint here rather than a check.
-    fn bind(&self, actual: &Type, bound: &mut HashMap<Var, Type>) {
+    /// it. Only what lines up structurally binds; the rest is left open. The first binding of a
+    /// variable holds, as TypeScript reads a call. `pin` binds from what is static alone — no
+    /// guess, unbound variable or union of options — so that a finding can rest on what it pins.
+    fn bind(
+        &self,
+        actual: &Type,
+        bound: &mut HashMap<Var, Type>,
+        pin: bool,
+        expand: Expand,
+        depth: usize,
+    ) {
+        let bind = |left: &Type, right: &Type, bound: &mut HashMap<Var, Type>| {
+            left.bind(right, bound, pin, expand, depth);
+        };
+        let pairwise = |left: &[Type], right: &[Type], bound: &mut HashMap<Var, Type>| {
+            left.iter().zip(right).for_each(|(l, r)| bind(l, r, bound));
+        };
         let all = |left: &[Type], right: &[Type], bound: &mut HashMap<Var, Type>| {
             // One element stands for every element: `[a]` against `[:number :number]`.
             match left {
-                [only] if right.len() != 1 => only.bind(&infer::unions(right.to_vec()), bound),
-                _ => left.iter().zip(right).for_each(|(l, r)| l.bind(r, bound)),
+                [only] if right.len() != 1 => bind(only, &infer::unions(right.to_vec()), bound),
+                _ => pairwise(left, right, bound),
             }
         };
         if actual.is_any() {
             return;
         }
         match (self, actual) {
-            (_, Self::Dynamic(inner)) => self.bind(inner, bound),
+            (_, Self::Dynamic(_) | Self::Var(_)) if pin => {}
+            (_, Self::Dynamic(inner)) => bind(self, inner, bound),
             (Self::Var(name), _) => {
                 bound.entry(*name).or_insert_with(|| actual.clone());
             }
-            (Self::Or(options) | Self::Open(options), _) => {
-                for option in options.iter() {
-                    option.bind(actual, bound);
+            (
+                Self::Named { name, args },
+                Self::Named {
+                    name: other,
+                    args: given,
+                },
+            ) if name == other && args.len() == given.len() => pairwise(args, given, bound),
+            (Self::Named { .. }, _) | (_, Self::Named { .. }) if depth == 0 => {}
+            (Self::Named { name, args }, _) => {
+                if let Some(ty) = expand(name, args) {
+                    ty.bind(actual, bound, pin, expand, depth - 1);
                 }
             }
-            (Self::Nullable(inner), Self::Nullable(other)) => inner.bind(other, bound),
-            (Self::Nullable(inner) | Self::Dynamic(inner), _) => inner.bind(actual, bound),
+            (_, Self::Named { name, args }) => {
+                if let Some(ty) = expand(name, args) {
+                    self.bind(&ty, bound, pin, expand, depth - 1);
+                }
+            }
+            // Which option a value stands for is not something to hold a call to.
+            (Self::Or(_) | Self::Open(_), _) if pin => {}
+            (Self::Or(options) | Self::Open(options), _) => {
+                for option in options.iter() {
+                    bind(option, actual, bound);
+                }
+            }
+            // `nil` is what the `?` allows, and says nothing about the type under it.
+            (Self::Nullable(_), Self::Keyword(name)) if name == "nil" => {}
+            (Self::Nullable(inner), Self::Nullable(other)) => bind(inner, other, bound),
+            (Self::Nullable(inner) | Self::Dynamic(inner), _) => bind(inner, actual, bound),
             (Self::Tuple(left), Self::Tuple(right) | Self::Array(right))
             | (Self::Array(left), Self::Array(right)) => all(left, right, bound),
             (Self::Struct(left), Self::Struct(right) | Self::Table(right))
             | (Self::Table(left), Self::Table(right)) => {
                 for (key, ty) in left.fields.iter() {
                     if let Some((_, other)) = right.fields.iter().find(|(name, _)| name == key) {
-                        ty.bind(other, bound);
+                        bind(ty, other, bound);
                     }
                 }
             }
@@ -318,12 +372,12 @@ impl Type {
                     ..
                 },
             ) => {
-                key.bind(other, bound);
-                value.bind(inside, bound);
+                bind(key, other, bound);
+                bind(value, inside, bound);
             }
             (Self::Fn(left), Self::Fn(right)) => {
                 all(&left.params, &right.params, bound);
-                left.ret.bind(&right.ret, bound);
+                bind(&left.ret, &right.ret, bound);
             }
             _ => {}
         }
@@ -361,20 +415,15 @@ impl Type {
                 value: Arc::new(one(value)),
                 mutable: *mutable,
             },
-            Self::Fn(signature) => Self::Fn(Arc::new(Signature {
-                params: all(&signature.params),
-                rest: signature.rest.as_ref().map(one),
-                ret: one(&signature.ret),
-                throws: all(&signature.throws),
-                narrows: signature.narrows.clone(),
-            })),
-            Self::Keyword(_) | Self::Named(_) | Self::Enum(_) => self.clone(),
+            Self::Fn(signature) => Self::Fn(Arc::new(signature.substituted(bound))),
+            Self::Named { name, args } => Self::named(name.clone(), all(args).into()),
+            Self::Keyword(_) | Self::Enum(_) => self.clone(),
         }
     }
 }
 
 impl Fields {
-    fn expanded(&self, named: &HashMap<&str, &Type>, depth: usize) -> Self {
+    fn expanded(&self, named: &Named, depth: usize) -> Self {
         Self {
             fields: self
                 .fields
@@ -395,10 +444,7 @@ impl Signature {
             written if written.is_empty() => format!("({name})"),
             written => format!("({name} {written})"),
         };
-        Some(match &self.ret {
-            ret if ret.is_any() => head,
-            ret => format!("{head} -> {ret}"),
-        })
+        Some(self.finished(head))
     }
 
     /// `(from-repl :number) -> :string`: the declared types alone, for a name whose parameter
@@ -414,19 +460,30 @@ impl Signature {
             written if written.is_empty() => format!("({name})"),
             written => format!("({name} {written})"),
         };
-        match &self.ret {
-            ret if ret.is_any() => head,
-            ret => format!("{head} -> {ret}"),
-        }
+        self.finished(head)
     }
 
     /// `(fn [x: :number]) -> :number`: a lambda, whose parameters stay in their vector.
     pub fn render_lambda(&self, params: &str) -> Option<String> {
         let head = format!("(fn [{}])", self.written(params)?.join(" "));
-        Some(match &self.ret {
+        Some(self.finished(head))
+    }
+
+    /// `head -> a where a: :number`: the result after the parameters, and the bounds after that.
+    fn finished(&self, head: String) -> String {
+        let head = match &self.ret {
             ret if ret.is_any() => head,
             ret => format!("{head} -> {ret}"),
-        })
+        };
+        if self.bounds.is_empty() {
+            return head;
+        }
+        let bounds: Vec<String> = self
+            .bounds
+            .iter()
+            .map(|(var, bound)| format!("{var}: {bound}"))
+            .collect();
+        format!("{head} where {}", bounds.join(", "))
     }
 
     /// Each parameter of the source vector `params` with its declared type after it.
@@ -465,29 +522,62 @@ impl Signature {
 
     /// The signature a call sees: every variable the arguments already written pin down replaced
     /// by what they pin it to. `(map f ind)` called with `[1 2 3]` gives `f: (fn [:number] b)`.
+    /// Looks through guesses too, which is what signature help wants.
     #[must_use]
-    pub fn instantiated(&self, arguments: &[Option<Type>]) -> Self {
+    pub fn instantiated(&self, arguments: &[Option<Type>], expand: Expand) -> Self {
+        let bound = self.bindings(arguments, false, expand);
+        if bound.is_empty() {
+            return self.clone();
+        }
+        self.substituted(&bound)
+    }
+
+    /// What the arguments bind the variables to. With `pin`, only a static argument pins a
+    /// variable, first come first bound: `(same 1 "x")` against `[a a]` holds `"x"` to `:number`.
+    pub fn bindings(
+        &self,
+        arguments: &[Option<Type>],
+        pin: bool,
+        expand: Expand,
+    ) -> HashMap<Var, Type> {
         let mut bound = HashMap::new();
         let declared = self.params.iter().chain(self.rest.iter().cycle());
         for (param, argument) in declared.zip(arguments) {
             if let Some(argument) = argument {
-                param.bind(argument, &mut bound);
+                param.bind(argument, &mut bound, pin, expand, EXPANSION);
             }
         }
-        if bound.is_empty() {
+        bound
+    }
+
+    /// The same signature with the variables of `bound` replaced.
+    #[must_use]
+    pub fn substituted(&self, bound: &HashMap<Var, Type>) -> Self {
+        let all = |types: &[Type]| types.iter().map(|ty| ty.substituted(bound)).collect();
+        Self {
+            params: all(&self.params),
+            rest: self.rest.as_ref().map(|ty| ty.substituted(bound)),
+            ret: self.ret.substituted(bound),
+            throws: all(&self.throws),
+            narrows: self.narrows.clone(),
+            // A variable replaced is gone, and its bound with it.
+            bounds: self
+                .bounds
+                .iter()
+                .filter(|(var, _)| !bound.contains_key(var))
+                .cloned()
+                .collect(),
+        }
+    }
+
+    /// The signature as its body reads it: every bounded variable its bound, so that `(+ x 1)`
+    /// on `a :where {a :number}` is a number.
+    #[must_use]
+    pub fn within_bounds(&self) -> Self {
+        if self.bounds.is_empty() {
             return self.clone();
         }
-        Self {
-            params: self
-                .params
-                .iter()
-                .map(|ty| ty.substituted(&bound))
-                .collect(),
-            rest: self.rest.as_ref().map(|ty| ty.substituted(&bound)),
-            ret: self.ret.substituted(&bound),
-            throws: self.throws.clone(),
-            narrows: self.narrows.clone(),
-        }
+        self.substituted(&self.bounds.iter().cloned().collect())
     }
 
     /// `throws :db/not-found`, shown under the signature.
@@ -500,7 +590,10 @@ impl Signature {
 pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation> {
     let metadata = &definition.metadata;
     if metadata.iter().any(|node| doc.text_of(*node) == ":typedef") {
-        return Type::parse(doc, definition.value?).map(Annotation::Typedef);
+        return Some(Annotation::Typedef(
+            Type::parse(doc, definition.value?)?,
+            parameters_of(doc, metadata)?,
+        ));
     }
     let table = *metadata.iter().find(|node| node.kind() == STRUCT)?;
     let entries = entries(doc, table);
@@ -535,9 +628,13 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
         Some(node) => Some(Type::parse(doc, *node)?),
         None => None,
     };
+    let bounds = match entries.get(":where") {
+        Some(node) => bounds_of(doc, *node)?,
+        None => Vec::new(),
+    };
     // A struct of other metadata (`{:private true}`) declares no signature; `{:params []}` on a
     // function of no arguments declares one.
-    let signed = [":params", ":ret", ":throws", ":narrows"]
+    let signed = [":params", ":ret", ":throws", ":narrows", ":where"]
         .iter()
         .any(|key| entries.contains_key(key));
     signed.then(|| {
@@ -547,6 +644,7 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
             ret,
             throws,
             narrows,
+            bounds,
         }))
     })
 }
@@ -579,13 +677,14 @@ fn split_rest(
     }
 }
 
+/// Named types of a file with their parameters, by name.
+pub type Named<'a> = HashMap<&'a str, (&'a Type, &'a [Var])>;
+
 /// Named types of a file, to expand a hover with.
-pub fn named<'a>(
-    definitions: impl Iterator<Item = (&'a str, &'a Annotation)>,
-) -> HashMap<&'a str, &'a Type> {
+pub fn named<'a>(definitions: impl Iterator<Item = (&'a str, &'a Annotation)>) -> Named<'a> {
     definitions
         .filter_map(|(name, annotation)| match annotation {
-            Annotation::Typedef(ty) => Some((name, ty)),
+            Annotation::Typedef(ty, vars) => Some((name, (ty, &**vars))),
             _ => None,
         })
         .collect()
@@ -644,6 +743,61 @@ fn read(source: &str) -> Core {
         bindings: collect(bindings),
         peg: collect(peg),
     }
+}
+
+/// The parameters `{:of [a b]}` gives a typedef: none without it, `None` when one is not a
+/// variable.
+fn parameters_of(doc: &Document, metadata: &[Node]) -> Option<Arc<[Var]>> {
+    let Some(table) = metadata.iter().find(|node| node.kind() == STRUCT) else {
+        return Some(Arc::new([]));
+    };
+    let Some(of) = entries(doc, *table).get(":of").copied() else {
+        return Some(Arc::new([]));
+    };
+    if of.kind() != TUPLE {
+        return None;
+    }
+    syntax::forms(of)
+        .iter()
+        .map(|form| match Type::parse(doc, *form)? {
+            Type::Var(var) => Some(var),
+            _ => None,
+        })
+        .collect()
+}
+
+/// `{a (or :number :string)}`: each variable with what it may stand for.
+fn bounds_of(doc: &Document, node: Node) -> Option<Vec<(Var, Type)>> {
+    if node.kind() != STRUCT {
+        return None;
+    }
+    syntax::forms(node)
+        .chunks(2)
+        .map(|pair| match pair {
+            [var, bound] => match Type::parse(doc, *var)? {
+                Type::Var(var) => Some((var, Type::parse(doc, *bound)?)),
+                _ => None,
+            },
+            _ => None,
+        })
+        .collect()
+}
+
+/// A typedef of `vars` over `ty`, applied to `args`: every variable its argument, all of them
+/// `:any` for a bare name. `None` for another number of arguments, which names no type.
+pub fn apply(ty: &Type, vars: &[Var], args: &[Type]) -> Option<Type> {
+    if vars.is_empty() && args.is_empty() {
+        return Some(ty.clone());
+    }
+    let bound = match args {
+        [] => vars
+            .iter()
+            .map(|var| (*var, Type::Keyword("any".into())))
+            .collect(),
+        _ if args.len() == vars.len() => vars.iter().copied().zip(args.iter().cloned()).collect(),
+        _ => return None,
+    };
+    Some(ty.substituted(&bound))
 }
 
 /// A name with an optional `?` suffix: `:string?`, `Entity?`.
@@ -738,10 +892,15 @@ fn call(doc: &Document, node: Node) -> Option<Type> {
                     ret: Type::parse(doc, *result)?,
                     throws: Vec::new(),
                     narrows: None,
+                    bounds: Vec::new(),
                 })))
             }
             _ => None,
         },
+        // `(Box :number)`: a named type applied to its arguments.
+        name if name.starts_with(char::is_uppercase) && !args.is_empty() => {
+            Some(Type::named(name.into(), types(doc, args)?.into()))
+        }
         _ => None,
     }
 }
@@ -819,7 +978,8 @@ impl fmt::Display for Type {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Keyword(name) => write!(f, ":{name}"),
-            Self::Named(name) => write!(f, "{name}"),
+            Self::Named { name, args } if args.is_empty() => write!(f, "{name}"),
+            Self::Named { name, args } => write!(f, "({name} {})", join(args)),
             Self::Var(var) => write!(f, "{var}"),
             Self::Nullable(inner) => write!(f, "{inner}?"),
             Self::Dynamic(inner) => write!(f, "{inner}"),

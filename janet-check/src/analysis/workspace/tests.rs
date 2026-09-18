@@ -239,7 +239,7 @@ fn inferred(workspace: &Workspace, path: &str) -> String {
         .iter()
         .map(|(name, annotation)| match annotation {
             Annotation::Function(signature) => format!("{name}: {signature}"),
-            Annotation::Value(ty) | Annotation::Typedef(ty) => format!("{name}: {ty}"),
+            Annotation::Value(ty) | Annotation::Typedef(ty, _) => format!("{name}: {ty}"),
         })
         .collect();
     lines.sort();

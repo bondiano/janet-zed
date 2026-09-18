@@ -157,13 +157,13 @@ impl Info<'_> {
                 Annotation::Function(signature) => {
                     Some((*name, definition.params.clone()?, signature))
                 }
-                Annotation::Value(_) | Annotation::Typedef(_) => None,
+                Annotation::Value(_) | Annotation::Typedef(..) => None,
             },
             Info::Core { name, binding, .. } => match self.core_annotation()? {
                 Annotation::Function(signature) => {
                     Some((*name, parameter_vector(binding.signature()?)?, signature))
                 }
-                Annotation::Value(_) | Annotation::Typedef(_) => None,
+                Annotation::Value(_) | Annotation::Typedef(..) => None,
             },
         }
     }
@@ -257,7 +257,7 @@ fn guessed(annotation: &Annotation) -> bool {
             .chain(&signature.rest)
             .chain([&signature.ret])
             .any(dynamic),
-        Annotation::Typedef(_) => false,
+        Annotation::Typedef(..) => false,
     }
 }
 
@@ -409,7 +409,10 @@ pub fn instantiated(
         }
         arguments[at] = facts.expr(&file.document, *argument);
     }
-    signature.instantiated(&arguments).render(name, &params)
+    let expand = |name: &str, args: &[Type]| workspace.typedef(file, name, args);
+    signature
+        .instantiated(&arguments, &expand)
+        .render(name, &params)
 }
 
 /// `(fn [x: :number])`: the lambda whose body the cursor is in, with the types inference gave its
@@ -515,9 +518,11 @@ fn expected_at(
                 // `(get request :|)`, `(in request :|)`: the keys of what is read.
                 (_, "get" | "in", 1) => ty(args.first()?),
                 // `(request :|)`: a form read as a function of its keys.
-                (Type::Struct(_) | Type::Table(_) | Type::Named(_) | Type::Nullable(_), _, 0) => {
-                    Some(called)
-                }
+                (
+                    Type::Struct(_) | Type::Table(_) | Type::Named { .. } | Type::Nullable(_),
+                    _,
+                    0,
+                ) => Some(called),
                 // Whatever the parameter in this position asks for.
                 (Type::Fn(signature), ..) => parameter(signature, argument).cloned(),
                 _ => None,
@@ -577,8 +582,8 @@ fn fields_of(
     let fields = match ty {
         Type::Struct(shape) | Type::Table(shape) => shape.fields.to_vec(),
         Type::Nullable(inner) | Type::Dynamic(inner) => deeper(inner),
-        Type::Named(name) => workspace
-            .typedef(file, name)
+        Type::Named { name, args } => workspace
+            .typedef(file, name, args)
             .map(|named| deeper(&named))
             .unwrap_or_default(),
         Type::Or(options) | Type::Open(options) => options.iter().flat_map(deeper).collect(),
@@ -672,7 +677,7 @@ pub fn declared_heading(
 ) -> Option<String> {
     let declared = match annotation {
         Annotation::Function(declared) => declared,
-        Annotation::Value(ty) | Annotation::Typedef(ty) => return Some(format!("{name}: {ty}")),
+        Annotation::Value(ty) | Annotation::Typedef(ty, _) => return Some(format!("{name}: {ty}")),
     };
     let rendered = match params {
         Some(params) => declared.render(name, params)?,
@@ -695,7 +700,7 @@ fn module_heading(
     let signature =
         || module_signature(name, definition, annotation).unwrap_or_else(|| name.to_string());
     match annotation {
-        Some(Annotation::Typedef(ty)) => {
+        Some(Annotation::Typedef(ty, _)) => {
             let named = types::named(file.definitions.iter().filter_map(|(name, definition)| {
                 Some((name.as_str(), definition.annotation.as_deref()?))
             }));

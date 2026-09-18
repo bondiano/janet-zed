@@ -34,6 +34,7 @@ Every example was run through the checker. A comment after a form shows what it 
 - [Annotations](#annotations)
   - [Functions: `:params`, `:ret`, `:throws`](#functions-params-ret-throws)
   - [Predicates: `:narrows`](#predicates-narrows)
+  - [Bounded variables: `:where`](#bounded-variables-where)
   - [Values: `:type`](#values-type)
   - [Casts: `:as-type`](#casts-as-type)
 - [What fits where](#what-fits-where)
@@ -122,6 +123,7 @@ In a type, a keyword named like an atom, `:number`, is always the atom.
 Type  = Atom | Atom "?"                     :number  :string?
       | Keyword                             :circle            a keyword value
       | Name | Name "?"                     Shape  Shape?      a :typedef; capitalised
+      | "(" Name Type+ ")"                  (Box :number)      a :typedef applied
       | var                                 a  b  r            a type variable; lowercase
       | "[" Type "]"                        [:number]          a tuple of any length
       | "[" Type Type+ "]"                  [:number :string]  a tuple of this shape
@@ -137,6 +139,7 @@ Type  = Atom | Atom "?"                     :number  :string?
                                             (fn [:number & :string] :nil)
       | "'" Type | "~" Type                 '{:a :number & r}  quoted; the same type
 Rest  = "&" var
+Where = "{" (var Type)* "}"                 {a (or :number :string)}  the bounds in :where
 Atom  = :nil :boolean :number :string :buffer :keyword :symbol :function :cfunction :fiber
         :tuple :array :struct :table :abstract :pointer :any :never
 ```
@@ -241,6 +244,14 @@ none. `'…` and `~…` read the same, and the quote is spelling, not part of th
 (retry {:retries "3"})                # ! retry takes Options here, given {:retries :string}
 ```
 
+A row written in both `:params` and `:ret` hands back the keys it was given, so a function that
+wants `:id` keeps the rest of the shape:
+
+```janet
+(defn with-id {:params [{:id :number & r}] :ret {:id :number & r}} [x] x)
+(def user (with-id {:id 1 :name "ada"}))  # user : {:id :number :name :string}
+```
+
 ### Dictionaries
 
 A struct or table of one entry whose key is an atom is a dictionary: any key of the one type,
@@ -287,7 +298,17 @@ declared type is a form, called with other than one argument:
 (host/limits)               # ! host/limits is :struct, not a function
 ```
 
-What a function takes is not compared with what `(fn …)` wants: any function is quiet there.
+A function given where `(fn …)` is wanted is compared with it: the same number of arguments
+(a rest parameter takes the tail, a parameter that takes `nil` may be left out), each parameter
+taking what is passed to it, and the result fitting what is wanted. A lambda whose parameters
+nobody wrote is a guess, and stays quiet.
+
+```janet
+(defn apply-rev {:params [a (fn [a] b)] :ret b} [x f] (f x))
+(defn len-of {:params [:string] :ret :number} [s] (length s))
+(apply-rev 5 len-of)        # ! apply-rev takes (fn [:number] :number) here (a b), given (fn [:string] :number)
+(apply-rev 5 (fn [s] s))    # quiet
+```
 
 ### Type variables
 
@@ -308,8 +329,21 @@ and two calls do not run into each other:
 (ident "a")                 # :string
 ```
 
-A variable in a signature is never complained about: `a` holds whatever it is given. `r` in
-`& r` is a variable too, the row of an open struct, and is what every row prints as.
+At a call, the first static argument for a variable pins it, in argument order, and the rest are
+held to what it was pinned to. A guess, `:any`, an argument after a splice, and a position with
+a union of options (`(or a :string)`) pin nothing, so a variable nothing pinned holds whatever it
+is given. A function argument pins its parameters and result, and `nil` passed where `a?` is
+written pins nothing.
+
+```janet
+(defn same {:params [a a] :ret a} [x y] x)
+(same 1 "x")                # ! same takes :number here (a), given :string
+(defn len-of {:params [:string] :ret :number} [s] (length s))
+(defn apply1 {:params [(fn [a] b) a] :ret b} [f x] (f x))
+(apply1 len-of 5)           # ! apply1 takes :string here (a), given :number
+```
+
+`r` in `& r` is a variable too, the row of an open struct, and is what every row prints as.
 
 ### Named types
 
@@ -322,6 +356,18 @@ may refer to itself, and hover expands it.
 ```
 
 A `:typedef` is a real `def` in a file that runs: its value is the type literal, as data.
+
+A typedef takes parameters when its metadata lists them in `{:of [...]}`, and is then applied to
+as many types: `(Box :number)` is `{:value :number}`. A bare `Box` is `Box` applied to `:any` in
+every place, and a `(Box …)` of another number of arguments names no type and says nothing.
+
+```janet
+(def Box :typedef {:of [a]} '{:value a})
+(def List :typedef {:of [a]} '(or nil {:head a :tail (List a)}))
+(defn unbox {:params [(Box a)] :ret a} [b] (b :value))
+```
+
+The parameters are listed rather than read off the body, so that moving a field never swaps them.
 
 ### Tagged unions
 
@@ -413,6 +459,27 @@ compiled environment and a running REPL reports them back.
 (defn log-all {:params [:string :keyword]} [msg & tags] msg)
 (log-all "x" :a :b 3)       # ! log-all takes :keyword here, given :number
 ```
+
+### Bounded variables: `:where`
+
+`:where` bounds a [type variable](#type-variables) of the signature: whatever a call pins it to
+must fit the bound, and the body reads the variable as its bound, so arithmetic, keys and
+narrowing work on it.
+
+```janet
+(defn clamp {:params [a a a] :ret a :where {a (or :number :string)}} [x lo hi]
+  (if (< x lo) lo x))       # x : (or :number :string)
+(clamp 1 2 3)               # :number
+(clamp :k :k :k)            # ! clamp takes a: (or :number :string), given :k
+(clamp 1 "x" 2)             # ! clamp takes :number here (a), given :string
+```
+
+Hover and signature help show the bounds after the result,
+`(clamp x: a lo: a hi: a) -> a where a: (or :number :string)`, and drop a bound once the
+arguments written so far pin its variable.
+
+A key that is not a lowercase variable, or a bound that does not parse, makes the whole
+signature declare nothing.
 
 ### Predicates: `:narrows`
 

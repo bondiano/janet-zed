@@ -5,7 +5,7 @@ use crate::analysis::symbols::Parameters;
 use crate::analysis::{definitions, peg, stdlib};
 
 /// Every construct of the type language, each of which prints back as written.
-const LITERALS: [&str; 25] = [
+const LITERALS: [&str; 27] = [
     ":nil",
     ":boolean",
     ":number",
@@ -31,6 +31,8 @@ const LITERALS: [&str; 25] = [
     "(enum :get :post :put)",
     "(fn [a] b)",
     "(fn [a & as] b)",
+    "(Box :number)",
+    "(Pair :string? [a])",
 ];
 
 const ANNOTATED: &str = r#"(def Circle :typedef {:kind :circle :r :number})
@@ -69,7 +71,7 @@ fn shown(source: &str) -> String {
             let params = definition.params.map(|node| doc.text_of(node));
             let declared = match (annotation(&doc, definition), params) {
                 (None, _) => "-".to_string(),
-                (Some(Annotation::Typedef(ty)), _) => format!(":typedef {ty}"),
+                (Some(Annotation::Typedef(ty, _)), _) => format!(":typedef {ty}"),
                 (Some(Annotation::Value(ty)), _) => format!("{name}: {ty}"),
                 (Some(Annotation::Function(signature)), Some(params)) => {
                     let rendered = signature.render(name, params);
@@ -166,31 +168,48 @@ fn markers_take_no_type_of_their_own() {
     );
 }
 
+/// A bound is shown after the result, and goes once a call has pinned its variable.
+#[test]
+fn bounds_are_shown_until_a_call_pins_them() {
+    let Some(Annotation::Function(signature)) = annotations(
+        "(defn clamp {:params [a a a] :ret a :where {a (or :number :string)}} [x lo hi] x)",
+    )
+    .pop()
+    .and_then(|(_, declared)| declared) else {
+        panic!("no signature")
+    };
+    assert_eq!(
+        signature.render("clamp", "[x lo hi]").as_deref(),
+        Some("(clamp x: a lo: a hi: a) -> a where a: (or :number :string)")
+    );
+    let pinned = signature.instantiated(&[Some(Type::Keyword("number".into()))], &|_, _| None);
+    assert_eq!(
+        pinned.render("clamp", "[x lo hi]").as_deref(),
+        Some("(clamp x: :number lo: :number hi: :number) -> :number")
+    );
+}
+
 #[test]
 fn named_types_expand_to_their_shape() {
     let declared = annotations(ANNOTATED);
-    let named: HashMap<&str, &Type> = declared
-        .iter()
-        .filter_map(|(name, declared)| match declared {
-            Some(Annotation::Typedef(ty)) => Some((name.as_str(), ty)),
-            _ => None,
-        })
-        .collect();
-    let shape = named.get("Shape").expect("Shape is a typedef");
+    let named = super::named(
+        declared
+            .iter()
+            .filter_map(|(name, declared)| Some((name.as_str(), declared.as_ref()?))),
+    );
+    let (shape, _) = named.get("Shape").expect("Shape is a typedef");
     insta::assert_snapshot!(shape.expanded(&named, EXPANSION).to_string());
 }
 
 #[test]
 fn a_recursive_type_stops_expanding() {
     let declared = annotations("(def Tree :typedef {:children [Tree]})");
-    let named: HashMap<&str, &Type> = declared
-        .iter()
-        .filter_map(|(name, declared)| match declared {
-            Some(Annotation::Typedef(ty)) => Some((name.as_str(), ty)),
-            _ => None,
-        })
-        .collect();
-    let tree = named.get("Tree").expect("Tree is a typedef");
+    let named = super::named(
+        declared
+            .iter()
+            .filter_map(|(name, declared)| Some((name.as_str(), declared.as_ref()?))),
+    );
+    let (tree, _) = named.get("Tree").expect("Tree is a typedef");
     assert_eq!(
         tree.expanded(&named, 2).to_string(),
         "{:children [{:children [{:children [Tree]}]}]}"
@@ -208,7 +227,7 @@ fn a_quoted_typedef_is_the_type_it_quotes() {
     ] {
         let quoted = annotations(source);
         assert_eq!(quoted, plain, "`{source}` read as another type");
-        let [(_, Some(Annotation::Typedef(ty)))] = quoted.as_slice() else {
+        let [(_, Some(Annotation::Typedef(ty, _)))] = quoted.as_slice() else {
             panic!("Adapter is a typedef")
         };
         assert_eq!(ty.to_string(), "{:find :function & r}");
@@ -251,7 +270,7 @@ fn core_entries() -> Vec<Entry> {
             declared: annotation(&doc, definition),
         })
         // A `:typedef` names a shape the entries use, and is no binding of its own.
-        .filter(|entry| !matches!(entry.declared, Some(Annotation::Typedef(_))))
+        .filter(|entry| !matches!(entry.declared, Some(Annotation::Typedef(..))))
         .collect()
 }
 
@@ -271,7 +290,8 @@ fn any_positions(declared: &Annotation) -> usize {
     fn types(ty: &Type) -> usize {
         match ty {
             Type::Keyword(name) => usize::from(name == "any"),
-            Type::Named(_) | Type::Var(_) | Type::Enum(_) => 0,
+            Type::Named { args, .. } => args.iter().map(types).sum(),
+            Type::Var(_) | Type::Enum(_) => 0,
             Type::Nullable(inner) | Type::Dynamic(inner) => types(inner),
             Type::Tuple(items) | Type::Array(items) | Type::Or(items) | Type::Open(items) => {
                 items.iter().map(types).sum()
@@ -293,7 +313,7 @@ fn any_positions(declared: &Annotation) -> usize {
     }
     match declared {
         Annotation::Function(signature) => signature_positions(signature),
-        Annotation::Value(ty) | Annotation::Typedef(ty) => types(ty),
+        Annotation::Value(ty) | Annotation::Typedef(ty, _) => types(ty),
     }
 }
 
@@ -563,7 +583,7 @@ fn spork_declares_every_binding_of_the_five_modules() {
 fn only_static_disjoint_types_do_not_fit() {
     use fit::{Fit, fit};
     let read = |source: &str| Type::read(source).unwrap_or_else(|| panic!("{source} is a type"));
-    let named = |name: &str| match name {
+    let named = |name: &str, _: &[Type]| match name {
         "Circle" => Some(read("{:kind :circle :r :number}")),
         "Rect" => Some(read("{:kind :rect :w :number}")),
         _ => None,
@@ -629,7 +649,7 @@ fn only_static_disjoint_types_do_not_fit() {
 fn strict_types_are_a_subset_and_guesses_meet() {
     use fit::{Fit, fit};
     let read = |source: &str| Type::read(source).unwrap_or_else(|| panic!("{source} is a type"));
-    let named = |name: &str| match name {
+    let named = |name: &str, _: &[Type]| match name {
         "Circle" => Some(read("{:kind :circle :r :number}")),
         "Rect" => Some(read("{:kind :rect :w :number}")),
         _ => None,
@@ -677,4 +697,22 @@ fn strict_types_are_a_subset_and_guesses_meet() {
         let shown = format!("{actual:?} against {expected}");
         assert_eq!(answer(actual, expected), want, "{shown}");
     }
+}
+
+#[test]
+fn an_applied_type_expands_with_its_arguments() {
+    let declared = annotations(
+        "(def Box :typedef {:of [a]} '{:value a})\n\
+         (def Boxes :typedef '{:one (Box :number) :any Box})",
+    );
+    let named = super::named(
+        declared
+            .iter()
+            .filter_map(|(name, declared)| Some((name.as_str(), declared.as_ref()?))),
+    );
+    let (boxes, _) = named.get("Boxes").expect("Boxes is a typedef");
+    assert_eq!(
+        boxes.expanded(&named, EXPANSION).to_string(),
+        "{:one {:value :number} :any {:value :any}}"
+    );
 }

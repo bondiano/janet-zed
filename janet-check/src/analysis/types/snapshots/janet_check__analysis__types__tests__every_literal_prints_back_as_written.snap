@@ -15,9 +15,9 @@ expression: "parsed.join(\"\\n\")"
 :db/not-found
   Keyword("db/not-found")
 Person
-  Named("Person")
+  Named { name: "Person", args: [] }
 Entity?
-  Nullable(Named("Entity"))
+  Nullable(Named { name: "Entity", args: [] })
 a
   Var("a")
 [:number]
@@ -39,16 +39,20 @@ a
 @{:tx :number :tempids @{}}
   Table(Fields { fields: [(":tx", Keyword("number")), (":tempids", Table(Fields { fields: [], rest: None }))], rest: None })
 {:string Eid}
-  Dict { key: Keyword("string"), value: Named("Eid"), mutable: false }
+  Dict { key: Keyword("string"), value: Named { name: "Eid", args: [] }, mutable: false }
 (or :string :keyword)
   Or([Keyword("string"), Keyword("keyword")])
 (or Circle Rect &)
-  Open([Named("Circle"), Named("Rect")])
+  Open([Named { name: "Circle", args: [] }, Named { name: "Rect", args: [] }])
 (or :string &)
   Open([Keyword("string")])
 (enum :get :post :put)
   Enum(["get", "post", "put"])
 (fn [a] b)
-  Fn(Signature { params: [Var("a")], rest: None, ret: Var("b"), throws: [], narrows: None })
+  Fn(Signature { params: [Var("a")], rest: None, ret: Var("b"), throws: [], narrows: None, bounds: [] })
 (fn [a & as] b)
-  Fn(Signature { params: [Var("a")], rest: Some(Var("as")), ret: Var("b"), throws: [], narrows: None })
+  Fn(Signature { params: [Var("a")], rest: Some(Var("as")), ret: Var("b"), throws: [], narrows: None, bounds: [] })
+(Box :number)
+  Named { name: "Box", args: [Keyword("number")] }
+(Pair :string? [a])
+  Named { name: "Pair", args: [Nullable(Keyword("string")), Tuple([Var("a")])] }

@@ -4,9 +4,8 @@
 
 // ponytail: a macro declared outside the core has its arguments held to `:params` like a function's,
 // though they are forms; `Annotation` would need to say which definitions are macros.
-// ponytail: an open form's row variable is never bound: two open forms merge their keys instead,
-// which is enough for reading keys out of a parameter but not to tell two rows apart.
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
@@ -53,6 +52,9 @@ pub struct Known<'a> {
 /// The fresh variables a copy of a type was given, by the ones they replace.
 type Renamed = Vec<(Var, Var)>;
 
+/// A named type and its parameters.
+type Typedef = (Type, Arc<[Var]>);
+
 /// Locals a test narrowed, by their index in [`Scopes::locals`].
 type Narrowing = Vec<(usize, Type)>;
 
@@ -81,34 +83,26 @@ pub struct Facts {
     pub findings: Vec<Finding>,
 }
 
-/// What each type variable stands for: the ones inference made up by their number, the written
-/// ones by theirs. Every variable is a small number, so a slot is an index rather than a hash.
+/// What each variable inference made up stands for, by its number. A written variable stands for
+/// nothing: every use of it is a copy in made-up ones. Every variable is a small number, so a slot
+/// is an index rather than a hash.
 /// A variable bound to another is bound to the end of that one's chain: the union-find of the
 /// variables that stand for each other, without the rank, since chains rarely grow past one.
 #[derive(Debug, Default)]
-pub(super) struct Subst {
-    fresh: Vec<Option<Type>>,
-    written: Vec<Option<Type>>,
-}
+pub(super) struct Subst(Vec<Option<Type>>);
 
 impl Subst {
     pub(super) fn get(&self, var: Var) -> Option<&Type> {
-        match var.slot() {
-            Ok(at) => self.fresh.get(at),
-            Err(at) => self.written.get(at),
-        }
-        .and_then(Option::as_ref)
+        self.0.get(var.slot().ok()?)?.as_ref()
     }
 
     fn insert(&mut self, var: Var, ty: Type) {
-        let (slots, at) = match var.slot() {
-            Ok(at) => (&mut self.fresh, at),
-            Err(at) => (&mut self.written, at),
-        };
-        if slots.len() <= at {
-            slots.resize(at + 1, None);
+        debug_assert!(var.slot().is_ok(), "{var:?} was bound without a copy");
+        let Ok(at) = var.slot() else { return };
+        if self.0.len() <= at {
+            self.0.resize(at + 1, None);
         }
-        slots[at] = Some(ty);
+        self.0[at] = Some(ty);
     }
 
     /// The variable at the end of `var`'s chain: the one that stands for all of them.
@@ -157,10 +151,10 @@ fn literal(doc: &Document, node: Node) -> Option<Type> {
 pub fn facts(doc: &Document, scopes: &Scopes, known: Known, strict: bool) -> Facts {
     let forms = Forms::default();
     let (defines, declared) = declarations(doc, &forms);
-    let named: HashMap<SmolStr, Type> = declared
+    let named: HashMap<SmolStr, Typedef> = declared
         .iter()
         .filter_map(|(name, annotation)| match annotation {
-            Annotation::Typedef(ty) => Some((name.into(), ty.clone())),
+            Annotation::Typedef(ty, vars) => Some((name.into(), (ty.clone(), vars.clone()))),
             _ => None,
         })
         .collect();
@@ -205,14 +199,14 @@ struct Infer<'d> {
     scopes: &'d Scopes,
     known: Known<'d>,
     /// Named types the file and its declarations define.
-    named: &'d HashMap<SmolStr, Type>,
+    named: &'d HashMap<SmolStr, Typedef>,
     /// What the file's own metadata declares, which inference never overrules.
     declared: &'d HashMap<String, Annotation>,
     /// Every name the file defines: what it is so far.
     module: HashMap<String, Type>,
     /// What a type variable stands for.
     subst: Subst,
-    count: u32,
+    count: Cell<u32>,
     /// By index in `scopes.locals`.
     locals: Vec<Type>,
     /// The definition being inferred: inside it, its own name is one type rather than a fresh
@@ -247,7 +241,7 @@ impl<'d> Infer<'d> {
         forms: &'d Forms<'d>,
         scopes: &'d Scopes,
         known: Known<'d>,
-        named: &'d HashMap<SmolStr, Type>,
+        named: &'d HashMap<SmolStr, Typedef>,
         declared: &'d HashMap<String, Annotation>,
         defines: &[String],
         previous: &HashMap<String, Type>,
@@ -261,7 +255,7 @@ impl<'d> Infer<'d> {
             declared,
             module: HashMap::new(),
             subst: Subst::default(),
-            count: 0,
+            count: Cell::new(0),
             locals: vec![any(); scopes.locals.len()],
             current: None,
             raised: vec![Vec::new()],
@@ -322,14 +316,14 @@ impl<'d> Infer<'d> {
         &self.doc.text[node.byte_range()]
     }
 
-    fn fresh(&mut self) -> Type {
+    fn fresh(&self) -> Type {
         Type::Var(self.row())
     }
 
     /// A fresh row variable: the name of the keys a form has besides the known ones.
-    fn row(&mut self) -> Var {
-        self.count += 1;
-        Var::fresh(self.count)
+    fn row(&self) -> Var {
+        self.count.set(self.count.get() + 1);
+        Var::fresh(self.count.get())
     }
 
     // ---- types ------------------------------------------------------------------------------
@@ -348,14 +342,23 @@ impl<'d> Infer<'d> {
     /// or to read a key, and far cheaper than [`Self::zonk`] on a path every form takes. Whether
     /// anyone wrote it is [`Self::is_dynamic`]'s to say.
     fn resolve(&self, ty: &Type) -> Type {
-        self.outside(ty).0.clone()
+        self.spliced(self.outside(ty).0)
     }
 
     /// What a variable stands for, `nil` aside: `Entity?` holds what `Entity` does.
     fn unwrapped(&self, ty: &Type) -> Type {
         match self.outside(ty).0 {
             Type::Nullable(inner) => self.resolve(inner),
-            resolved => resolved.clone(),
+            resolved => self.spliced(resolved),
+        }
+    }
+
+    /// A form with the keys its row was bound to, for reading a key out of it.
+    fn spliced(&self, ty: &Type) -> Type {
+        match ty {
+            Type::Struct(shape) => Type::Struct(spliced(&self.subst, shape)),
+            Type::Table(shape) => Type::Table(spliced(&self.subst, shape)),
+            ty => ty.clone(),
         }
     }
 
@@ -398,7 +401,7 @@ impl<'d> Infer<'d> {
             actual,
             expected,
             &self.subst,
-            &|name| self.expand(name),
+            &|name, args| self.expand(name, args),
             false,
         )
     }
@@ -406,7 +409,7 @@ impl<'d> Infer<'d> {
     /// Whether a written `expected` rules `actual` out, as the mode reads it: what a finding
     /// asks. Inference and narrowing ask [`Infer::fits`], so the types are the same in both modes.
     fn rules_out(&self, actual: &Type, expected: &Type) -> bool {
-        let expand = |name: &str| self.expand(name);
+        let expand = |name: &str, args: &[Type]| self.expand(name, args);
         fit(actual, expected, &self.subst, &expand, self.strict) == Fit::No
     }
 
@@ -433,24 +436,35 @@ impl<'d> Infer<'d> {
                     || signature.rest.as_ref().is_some_and(deeper)
                     || deeper(&signature.ret)
             }
-            Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => false,
+            Type::Named { args, .. } => any_of(args),
+            Type::Keyword(_) | Type::Enum(_) => false,
         }
     }
 
-    /// What a named type is defined as, here or in the declarations around the file.
-    fn expand(&self, name: &str) -> Option<Type> {
-        if let Some(ty) = self.named.get(name) {
-            return Some(ty.clone());
-        }
-        match (self.known.all)(name) {
-            Some(Annotation::Typedef(ty)) => Some(ty),
-            _ => None,
-        }
+    /// What a named type applied to `args` is defined as, here or in the declarations around the
+    /// file.
+    fn expand(&self, name: &str, args: &[Type]) -> Option<Type> {
+        let (ty, vars) = match self.named.get(name) {
+            Some((ty, vars)) => (ty.clone(), vars.clone()),
+            None => match (self.known.all)(name) {
+                Some(Annotation::Typedef(ty, vars)) => (ty, vars),
+                _ => return None,
+            },
+        };
+        // A copy, like any written type: a variable free in a typedef is its own at every use.
+        // The parameters stay as they are, for the arguments to take their place.
+        let copy = if is_ground(&ty) {
+            ty
+        } else {
+            let mut fresh: Renamed = vars.iter().map(|var| (*var, *var)).collect();
+            self.rename(&self.zonk(&ty, DEPTH), &mut fresh)
+        };
+        super::apply(&copy, &vars, args)
     }
 
     /// A fresh copy of a polymorphic type: every use gets its own variables, so two calls do not
     /// glue their arguments together.
-    fn instantiate(&mut self, ty: &Type) -> Type {
+    fn instantiate(&self, ty: &Type) -> Type {
         // Most of what a name is known as has no variables at all: a core binding, a declaration.
         // Copying it is a pointer, where zonking and renaming it rebuilds every signature inside.
         if is_ground(ty) {
@@ -461,8 +475,16 @@ impl<'d> Infer<'d> {
         self.rename(&resolved, &mut fresh)
     }
 
-    fn rename(&mut self, ty: &Type, fresh: &mut Renamed) -> Type {
-        let all = |types: &[Type], infer: &mut Self, fresh: &mut Renamed| {
+    /// [`Self::instantiate`] for a signature, which stays one.
+    fn instance(&self, signature: Arc<Signature>) -> Arc<Signature> {
+        match self.instantiate(&Type::Fn(signature.clone())) {
+            Type::Fn(instance) => instance,
+            _ => signature,
+        }
+    }
+
+    fn rename(&self, ty: &Type, fresh: &mut Renamed) -> Type {
+        let all = |types: &[Type], infer: &Self, fresh: &mut Renamed| {
             types
                 .iter()
                 .map(|ty| infer.rename(ty, fresh))
@@ -493,12 +515,14 @@ impl<'d> Infer<'d> {
                 ret: self.rename(&signature.ret, fresh),
                 throws: all(&signature.throws, self, fresh),
                 narrows: signature.narrows.clone(),
+                bounds: Vec::new(),
             })),
-            Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => ty.clone(),
+            Type::Named { name, args } => Type::named(name.clone(), all(args, self, fresh).into()),
+            Type::Keyword(_) | Type::Enum(_) => ty.clone(),
         }
     }
 
-    fn rename_fields(&mut self, shape: &Fields, fresh: &mut Renamed) -> Fields {
+    fn rename_fields(&self, shape: &Fields, fresh: &mut Renamed) -> Fields {
         Fields {
             fields: shape
                 .fields
@@ -509,7 +533,7 @@ impl<'d> Infer<'d> {
         }
     }
 
-    fn rename_var(&mut self, var: Var, fresh: &mut Renamed) -> Var {
+    fn rename_var(&self, var: Var, fresh: &mut Renamed) -> Var {
         if let Some((_, renamed)) = fresh.iter().find(|(was, _)| *was == var) {
             return *renamed;
         }
@@ -542,10 +566,27 @@ impl<'d> Infer<'d> {
             (other, Type::Dynamic(inner)) => dynamic(self.unify_at(other, inner, step)),
             // Gradual: `:any` fits anything and learns nothing from it.
             (ty, other) | (other, ty) if ty.is_any() => other.clone(),
-            (Type::Named(name), other) | (other, Type::Named(name)) => match self.expand(name) {
-                Some(ty) => self.unify_at(&ty, other, step),
-                None => unions(vec![left.clone(), right.clone()]),
-            },
+            // The same type applied twice is applied to what the arguments are together.
+            (
+                Type::Named { name, args },
+                Type::Named {
+                    name: other,
+                    args: given,
+                },
+            ) if name == other && args.len() == given.len() => {
+                let merged: Vec<Type> = args
+                    .iter()
+                    .zip(given.iter())
+                    .map(|(left, right)| self.unify_at(left, right, step))
+                    .collect();
+                Type::named(name.clone(), merged.into())
+            }
+            (Type::Named { name, args }, other) | (other, Type::Named { name, args }) => {
+                match self.expand(name, args) {
+                    Some(ty) => self.unify_at(&ty, other, step),
+                    None => unions(vec![left.clone(), right.clone()]),
+                }
+            }
             (Type::Nullable(inner), other) | (other, Type::Nullable(inner)) => {
                 if is_nil(other) {
                     Type::Nullable(inner.clone())
@@ -628,6 +669,7 @@ impl<'d> Infer<'d> {
                     ret,
                     throws: distinct(a.throws.iter().chain(&b.throws).cloned()),
                     narrows: a.narrows.clone().or_else(|| b.narrows.clone()),
+                    bounds: Vec::new(),
                 }))
             }
             (Type::Enum(values), Type::Keyword(value))
@@ -689,22 +731,62 @@ impl<'d> Infer<'d> {
             .collect()
     }
 
-    /// The keys of two forms together: a key both have holds both types, and a form is open when
-    /// either of them is.
+    /// The keys of two forms together: a key both have holds both types. An open form's row
+    /// stands for the keys only the other one lists: `{:a x & r}` against `{:a y :b z}` binds
+    /// `r` to `{:b z}`, and two open forms share one fresh row for what neither lists. Two closed
+    /// forms keep the keys of both: inference merges, it never fails.
     fn merge(&mut self, left: &Fields, right: &Fields, depth: usize) -> Fields {
-        let mut fields = left.fields.to_vec();
-        for (key, ty) in right.fields.iter() {
-            match fields.iter().position(|(name, _)| name == key) {
-                Some(at) => {
-                    let merged = self.unify_at(&fields[at].1.clone(), ty, depth);
-                    fields[at].1 = merged;
-                }
-                None => fields.push((key.clone(), ty.clone())),
-            }
+        let (left, right) = (spliced(&self.subst, left), spliced(&self.subst, right));
+        let only = |of: &Fields, other: &Fields| -> Vec<(SmolStr, Type)> {
+            of.fields
+                .iter()
+                .filter(|(key, _)| other.fields.iter().all(|(name, _)| name != key))
+                .cloned()
+                .collect()
+        };
+        let (left_only, right_only) = (only(&left, &right), only(&right, &left));
+        let mut fields = Vec::with_capacity(left.fields.len() + right_only.len());
+        for (key, ty) in left.fields.iter() {
+            let merged = match right.fields.iter().find(|(name, _)| name == key) {
+                Some((_, other)) => self.unify_at(ty, other, depth),
+                None => ty.clone(),
+            };
+            fields.push((key.clone(), merged));
         }
+        fields.extend(right_only.iter().cloned());
+        let rest = match (left.rest, right.rest) {
+            (Some(row), Some(other)) if row == other => Some(row),
+            (Some(row), Some(other)) => {
+                let shared = self.row();
+                self.bind_row(row, right_only, Some(shared));
+                self.bind_row(other, left_only, Some(shared));
+                Some(shared)
+            }
+            (Some(row), None) => {
+                self.bind_row(row, right_only, None);
+                None
+            }
+            (None, Some(row)) => {
+                self.bind_row(row, left_only, None);
+                None
+            }
+            (None, None) => None,
+        };
         Fields {
             fields: fields.into(),
-            rest: left.rest.or(right.rest),
+            rest,
+        }
+    }
+
+    /// A row stands for the keys it turned out to have. A written row, as narrowing makes one,
+    /// stands for nothing and stays open.
+    fn bind_row(&mut self, row: Var, fields: Vec<(SmolStr, Type)>, rest: Option<Var>) {
+        if row.slot().is_ok() {
+            let shape = Fields {
+                fields: fields.into(),
+                rest,
+            };
+            self.subst.insert(row, Type::Struct(shape));
         }
     }
 
@@ -778,6 +860,11 @@ impl<'d> Infer<'d> {
             match rest.iter().position(|node| node.kind() == TUPLE) {
                 Some(at) => {
                     let body = &rest[at + 1..];
+                    // One copy for the whole signature: `[a a] :ret a` ties both parameters and
+                    // the result together, and to no other signature that writes `a`.
+                    // The body reads a bounded variable as its bound.
+                    let signature = signature
+                        .map(|signature| self.instance(Arc::new(signature.within_bounds())));
                     let value = self.function(rest[at], body, signature.as_deref());
                     if let (Some(name), Some(signature), Some(last), Type::Fn(inferred)) =
                         (name, &signature, body.last(), &value)
@@ -829,7 +916,7 @@ impl<'d> Infer<'d> {
         value: Type,
     ) -> Type {
         match super::written_type(self.doc, metadata) {
-            Some(Written::Cast(written)) => written,
+            Some(Written::Cast(written)) => self.instantiate(&written),
             Some(Written::Checked(written)) => {
                 if self.record && self.rules_out(&value, &written) {
                     let given = self.settled(&value);
@@ -838,7 +925,7 @@ impl<'d> Infer<'d> {
                         format!("{name} is {given}, declared {written}; :as-type casts it");
                     self.complain(value_node.byte_range(), message);
                 }
-                written
+                self.instantiate(&written)
             }
             None => value,
         }
@@ -877,6 +964,7 @@ impl<'d> Infer<'d> {
             ret,
             throws: distinct(throws.into_iter()),
             narrows: None,
+            bounds: Vec::new(),
         }))
     }
 
@@ -918,8 +1006,7 @@ impl<'d> Infer<'d> {
                     signature.params.get(params.len()).cloned()
                 }
             }) {
-                let instance = self.instantiate(&ty);
-                self.unify(&fresh, &instance);
+                self.unify(&fresh, &ty);
             }
             let param = if declared.is_some() {
                 fresh
@@ -1098,6 +1185,7 @@ impl<'d> Infer<'d> {
             ret: dynamic(ret),
             throws: Vec::new(),
             narrows: None,
+            bounds: Vec::new(),
         }))
     }
 
@@ -1215,7 +1303,7 @@ impl<'d> Infer<'d> {
         // `(x k)` on a value that is not a function reads `k` out of it, so one argument is
         // fine whatever the head is. Any other count needs a function, and nothing else will do.
         let written = self.written_annotation(head);
-        if let Some(Annotation::Value(ty) | Annotation::Typedef(ty)) = &written
+        if let Some(Annotation::Value(ty) | Annotation::Typedef(ty, _)) = &written
             && args.len() != 1
             && never_a_function(ty)
         {
@@ -1247,10 +1335,34 @@ impl<'d> Infer<'d> {
         // held to it too — but only for a name the core does not bind. A DSL gives the core's
         // short names its own meaning: `*` is multiplication, and it is also PEG's sequence,
         // written with the strings `(* "task-" :w+)`. A complaint there would be a wrong one.
+        //
+        // A variable is held to what the first static argument pins it to: `(same 1 "x")` against
+        // `[a a]` wants `:number` for `"x"`.
         let core = super::core().binding(called).is_some();
-        let rest = (!core).then_some(&signature.rest).and_then(Option::as_ref);
-        let declared = signature.params.iter().chain(rest.into_iter().cycle());
-        for ((arg, actual), declared) in args.iter().zip(types).zip(declared) {
+        let pins = if core {
+            HashMap::new()
+        } else {
+            self.pins(&signature, args, types)
+        };
+        let pinned = if pins.is_empty() {
+            signature.clone()
+        } else {
+            Arc::new(signature.substituted(&pins))
+        };
+        let positions = |signature: &Signature| {
+            let rest = (!core).then_some(&signature.rest).and_then(Option::as_ref);
+            signature
+                .params
+                .iter()
+                .chain(rest.into_iter().cycle())
+                .take(args.len())
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let (written, declared) = (positions(&signature), positions(&pinned));
+        for (((arg, actual), written), declared) in
+            args.iter().zip(types).zip(&written).zip(&declared)
+        {
             // A splice fills positions nobody can count from here.
             if arg.kind() == "splice_lit" {
                 break;
@@ -1268,10 +1380,49 @@ impl<'d> Infer<'d> {
             };
             if ruled_out {
                 let given = self.settled(actual);
-                let message = format!("{called} takes {declared} here, given {given}");
+                let message = format!(
+                    "{called} takes {declared} here{}, given {given}",
+                    pinned_by(written, declared)
+                );
                 self.complain(arg.byte_range(), message);
             }
         }
+        // `:where {a :number}`: what a variable is pinned to must fit its bound. The finding
+        // sits on the first argument written with the variable.
+        for (var, bound) in &signature.bounds {
+            if let Some(given) = pins.get(var)
+                && self.rules_out(given, bound)
+            {
+                let at = written
+                    .iter()
+                    .zip(args)
+                    .find(|(ty, _)| mentions(ty, *var))
+                    .map_or(head, |(_, arg)| *arg);
+                let given = self.settled(given);
+                let message = format!("{called} takes {var}: {bound}, given {given}");
+                self.complain(at.byte_range(), message);
+            }
+        }
+    }
+
+    /// What the first static argument for each variable of `signature` binds it to. The arguments
+    /// after a splice sit at positions nobody can count, and pin nothing.
+    fn pins(
+        &self,
+        signature: &Arc<Signature>,
+        args: &[Node<'d>],
+        types: &[Type],
+    ) -> HashMap<Var, Type> {
+        if is_ground(&Type::Fn(signature.clone())) {
+            return HashMap::new();
+        }
+        let arguments: Vec<Option<Type>> = args
+            .iter()
+            .zip(types)
+            .take_while(|(arg, _)| arg.kind() != "splice_lit")
+            .map(|(_, ty)| Some(self.zonk(ty, DEPTH)))
+            .collect();
+        signature.bindings(&arguments, true, &|name, args| self.expand(name, args))
     }
 
     /// The types someone wrote for the name being called: the file's own metadata, an ambient
@@ -1314,7 +1465,7 @@ impl<'d> Infer<'d> {
             Type::Nullable(inner) if depth > 0 => {
                 self.reads(&self.resolve(inner), literal, depth - 1)
             }
-            Type::Named(name) if depth > 0 => match self.expand(name) {
+            Type::Named { name, args } if depth > 0 => match self.expand(name, args) {
                 Some(expanded) => self.reads(&self.resolve(&expanded), literal, depth - 1),
                 None => false,
             },
@@ -1470,7 +1621,7 @@ impl<'d> Infer<'d> {
     /// told apart from `:boolean` here, so a boolean is left whole.
     fn without_nil(&self, ty: &Type) -> Type {
         let resolved = self.resolve(ty);
-        let (_, rest) = narrow::split(&resolved, &nil(), &|name| self.expand(name));
+        let (_, rest) = narrow::split(&resolved, &nil(), &|name, args| self.expand(name, args));
         self.as_dynamic_as(ty, rest)
     }
 
@@ -1573,13 +1724,13 @@ impl<'d> Infer<'d> {
     /// for a named type.
     fn tagset(&mut self, ty: &Type) -> Option<Tagset> {
         let find = |infer: &Self| {
-            let expand = |name: &str| infer.expand(name);
+            let expand = |name: &str, args: &[Type]| infer.expand(name, args);
             match narrow::tags(ty, &expand) {
                 Some(tags) => Some((None, tags)),
                 None => narrow::discriminant(ty, &expand).map(|(key, tags)| (Some(key), tags)),
             }
         };
-        let Type::Named(name) = ty else {
+        let Type::Named { name, .. } = ty else {
             return find(self);
         };
         if let Some(found) = self.tagsets.get(name) {
@@ -1671,7 +1822,7 @@ impl<'d> Infer<'d> {
             };
             (self.fact(index, narrow(&self.resolve(local))), Vec::new())
         };
-        let expand = |name: &str| self.expand(name);
+        let expand = |name: &str, args: &[Type]| self.expand(name, args);
         match pattern.kind() {
             STRUCT | TABLE => {
                 let keys: Vec<(SmolStr, Option<Type>)> = self
@@ -1765,7 +1916,9 @@ impl<'d> Infer<'d> {
 
     /// `ty` without `nil`: what a pattern took apart is there.
     fn present(&self, ty: &Type) -> Type {
-        let (_, rest) = narrow::split(&self.resolve(ty), &nil(), &|name| self.expand(name));
+        let (_, rest) = narrow::split(&self.resolve(ty), &nil(), &|name, args| {
+            self.expand(name, args)
+        });
         self.as_dynamic_as(ty, rest)
     }
 
@@ -2234,7 +2387,8 @@ impl<'d> Infer<'d> {
                             return nothing;
                         };
                         let ty = self.resolve(local);
-                        let (inside, rest) = narrow::split(&ty, &want, &|name| self.expand(name));
+                        let (inside, rest) =
+                            narrow::split(&ty, &want, &|name, args| self.expand(name, args));
                         (self.fact(index, inside), self.fact(index, rest))
                     }
                     _ => nothing,
@@ -2259,7 +2413,7 @@ impl<'d> Infer<'d> {
             &self.resolve(local),
             &keys,
             &literal,
-            &|name| self.expand(name),
+            &|name, args| self.expand(name, args),
             &|actual, expected| self.fits(actual, expected),
         );
         (self.fact(index, inside), self.fact(index, rest))
@@ -2308,7 +2462,7 @@ impl<'d> Infer<'d> {
     fn truthy(&self, index: usize) -> Option<(usize, Type)> {
         let local = self.locals.get(index)?;
         let ty = self.resolve(local);
-        let (_, rest) = narrow::split(&ty, &nil(), &|name| self.expand(name));
+        let (_, rest) = narrow::split(&ty, &nil(), &|name, args| self.expand(name, args));
         (rest != ty).then(|| (index, self.as_dynamic_as(local, rest)))
     }
 
@@ -2321,7 +2475,7 @@ impl<'d> Infer<'d> {
             .or_else(|| (self.known.all)(name))?;
         match annotation {
             Annotation::Function(signature) => signature.narrows.clone(),
-            Annotation::Value(_) | Annotation::Typedef(_) => None,
+            Annotation::Value(_) | Annotation::Typedef(..) => None,
         }
     }
 
@@ -2402,7 +2556,7 @@ impl<'d> Infer<'d> {
                 let key = format!(":{name}");
                 // Only a type someone named and wrote the keys of is closed for certain: a form
                 // inference read off a literal grows keys the file puts in it later.
-                let at = at.filter(|_| matches!(unwrap(&resolved), Type::Named(_)));
+                let at = at.filter(|_| matches!(unwrap(&resolved), Type::Named { .. }));
                 self.field(at, target, &resolved, &key)
             }
             _ => match unwrap(&resolved) {
@@ -2459,8 +2613,8 @@ impl<'d> Infer<'d> {
                     .collect();
                 return unions(held);
             }
-            Type::Named(name) => {
-                if let Some(expanded) = self.expand(&name) {
+            Type::Named { name, args } => {
+                if let Some(expanded) = self.expand(&name, &args) {
                     let expanded = self.resolve(&expanded);
                     return self.field(at, target, &expanded, key);
                 }
@@ -2545,13 +2699,16 @@ fn zonk(subst: &Subst, ty: &Type, depth: usize) -> Type {
     }
     let deeper = |ty: &Type| zonk(subst, ty, depth - 1);
     let all = |types: &[Type]| types.iter().map(deeper).collect::<Vec<Type>>();
-    let fields = |shape: &Fields| Fields {
-        fields: shape
-            .fields
-            .iter()
-            .map(|(key, ty)| (key.clone(), deeper(ty)))
-            .collect(),
-        rest: shape.rest,
+    let fields = |shape: &Fields| {
+        let shape = spliced(subst, shape);
+        Fields {
+            fields: shape
+                .fields
+                .iter()
+                .map(|(key, ty)| (key.clone(), deeper(ty)))
+                .collect(),
+            rest: shape.rest,
+        }
     };
     match ty {
         Type::Var(var) => match subst.get(*var) {
@@ -2588,8 +2745,39 @@ fn zonk(subst: &Subst, ty: &Type, depth: usize) -> Type {
             ret: deeper(&signature.ret),
             throws: all(&signature.throws),
             narrows: signature.narrows.as_ref().map(deeper),
+            bounds: signature.bounds.clone(),
         })),
-        Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => ty.clone(),
+        Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
+        Type::Keyword(_) | Type::Enum(_) => ty.clone(),
+    }
+}
+
+/// `shape` with what its row stands for written out: the keys the row was bound to join the listed
+/// ones, down to a row nobody bound or a closed form.
+pub(super) fn spliced(subst: &Subst, shape: &Fields) -> Fields {
+    let bound = |rest: Option<Var>| match subst.get(rest?)? {
+        Type::Struct(more) | Type::Table(more) => Some(more),
+        _ => None,
+    };
+    if bound(shape.rest).is_none() {
+        return shape.clone();
+    }
+    let mut fields = shape.fields.to_vec();
+    let mut rest = shape.rest;
+    for _ in 0..DEPTH {
+        let Some(more) = bound(rest) else { break };
+        let new = more
+            .fields
+            .iter()
+            .filter(|(key, _)| fields.iter().all(|(name, _)| name != key))
+            .cloned()
+            .collect::<Vec<_>>();
+        fields.extend(new);
+        rest = more.rest;
+    }
+    Fields {
+        fields: fields.into(),
+        rest,
     }
 }
 
@@ -2674,7 +2862,7 @@ fn never_a_function(ty: &Type) -> bool {
         | Type::Enum(_) => true,
         Type::Fn(_)
         | Type::Var(_)
-        | Type::Named(_)
+        | Type::Named { .. }
         | Type::Nullable(_)
         | Type::Or(_)
         | Type::Open(_)
@@ -2852,8 +3040,32 @@ fn is_ground(ty: &Type) -> bool {
                 && all(&signature.throws)
                 && signature.narrows.as_ref().is_none_or(is_ground)
         }
-        Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => true,
+        Type::Named { args, .. } => all(args),
+        Type::Keyword(_) | Type::Enum(_) => true,
     }
+}
+
+/// ` (a)`: the variables of the written parameter that pinning bound, for a finding to name.
+fn pinned_by(written: &Type, pinned: &Type) -> String {
+    if written == pinned {
+        return String::new();
+    }
+    let (mut before, mut after) = (Vec::new(), Vec::new());
+    count(written, &mut before);
+    count(pinned, &mut after);
+    let names: Vec<String> = before
+        .iter()
+        .filter(|(var, _)| after.iter().all(|(left, _)| left != var))
+        .map(|(var, _)| var.to_string())
+        .collect();
+    format!(" ({})", names.join(" "))
+}
+
+/// Whether `var` is written anywhere in `ty`.
+fn mentions(ty: &Type, var: Var) -> bool {
+    let mut seen = Vec::new();
+    count(ty, &mut seen);
+    seen.iter().any(|(seen, _)| *seen == var)
 }
 
 fn count(ty: &Type, seen: &mut Vec<(Var, usize)>) {
@@ -2886,7 +3098,8 @@ fn count(ty: &Type, seen: &mut Vec<(Var, usize)>) {
             count(&signature.ret, seen);
             all(&signature.throws, seen);
         }
-        Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => {}
+        Type::Named { args, .. } => all(args, seen),
+        Type::Keyword(_) | Type::Enum(_) => {}
     }
 }
 
@@ -2928,8 +3141,10 @@ fn rename(ty: &Type, names: &[(Var, Type)]) -> Type {
             ret: rename(&signature.ret, names),
             throws: all(&signature.throws),
             narrows: signature.narrows.clone(),
+            bounds: signature.bounds.clone(),
         })),
-        Type::Keyword(_) | Type::Named(_) | Type::Enum(_) => ty.clone(),
+        Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
+        Type::Keyword(_) | Type::Enum(_) => ty.clone(),
     }
 }
 
@@ -2956,7 +3171,7 @@ fn declarations<'d>(
 fn declared_type(annotation: &Annotation) -> Type {
     match annotation {
         Annotation::Function(signature) => Type::Fn(signature.clone()),
-        Annotation::Value(ty) | Annotation::Typedef(ty) => ty.clone(),
+        Annotation::Value(ty) | Annotation::Typedef(ty, _) => ty.clone(),
     }
 }
 

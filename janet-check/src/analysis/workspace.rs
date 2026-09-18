@@ -337,9 +337,9 @@ impl Workspace {
         }
     }
 
-    /// What a named type stands for where `file` reads it: a `:typedef` of the file itself, else
-    /// one an ambient declaration or an imported module gives it.
-    pub fn typedef(&self, file: &SourceFile, name: &str) -> Option<Type> {
+    /// What a named type applied to `args` stands for where `file` reads it: a `:typedef` of the
+    /// file itself, else one an ambient declaration or an imported module gives it.
+    pub fn typedef(&self, file: &SourceFile, name: &str, args: &[Type]) -> Option<Type> {
         let own = file
             .definitions
             .get(name)
@@ -347,7 +347,7 @@ impl Workspace {
         let inferred =
             |module: &Path, name: &str| self.facts(module).definitions.get(name).cloned();
         match own.or_else(|| self.foreign(file, name, Some(&inferred)))? {
-            Annotation::Typedef(ty) => Some(ty),
+            Annotation::Typedef(ty, vars) => types::apply(&ty, &vars, args),
             Annotation::Function(_) | Annotation::Value(_) => None,
         }
     }
