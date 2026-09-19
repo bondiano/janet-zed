@@ -4,7 +4,7 @@
 #![allow(clippy::unwrap_used)]
 
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
@@ -280,7 +280,9 @@ fn attaches_to_the_repl() {
         .enable_all()
         .build()
         .unwrap();
-    let mut repl = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut repl = runtime
+        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .unwrap();
 
     let mut adapter = Adapter::start();
     let program = adapter.program.clone();

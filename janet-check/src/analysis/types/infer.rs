@@ -940,7 +940,10 @@ impl<'d> Infer<'d> {
                     let value = self.expr(*node);
                     dynamic(value)
                 }
-                Some(node) => self.expr(*node),
+                Some(node) => {
+                    let value = self.expr(*node);
+                    self.fillable(*node, value)
+                }
                 None => nil(),
             }
         };
@@ -959,6 +962,31 @@ impl<'d> Infer<'d> {
             None => {}
         }
         value
+    }
+
+    /// A table or array literal under a name is filled in later: `@{:port nil}` holds whatever a
+    /// `put` gives it, which its first contents say nothing about. It stays a table or an array;
+    /// what it holds is a guess, and a table may gain keys.
+    fn fillable(&self, node: Node<'d>, value: Type) -> Type {
+        match (node.kind(), value) {
+            (TABLE, Type::Table(shape)) => Type::Table(Fields {
+                fields: shape
+                    .fields
+                    .iter()
+                    .map(|(key, ty)| (key.clone(), dynamic(ty.clone())))
+                    .collect(),
+                rest: Some(self.row()),
+            }),
+            (TABLE, Type::Dict { key, value, .. }) => Type::Dict {
+                key,
+                value: Arc::new(dynamic(Arc::unwrap_or_clone(value))),
+                mutable: true,
+            },
+            (ARRAY, Type::Array(items)) => {
+                Type::Array(items.iter().cloned().map(dynamic).collect())
+            }
+            (_, value) => value,
+        }
     }
 
     /// [`Self::arities`] of what a definition writes as types: its metadata, and the value of a

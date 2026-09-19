@@ -61,7 +61,7 @@ fn server_asset() -> Result<(String, zed::DownloadedFileType, &'static str)> {
 }
 
 impl JanetExtension {
-    /// `janet-lsp-plus` from PATH (development), else the latest release for this platform,
+    /// `janet-lsp-plus` from PATH (development), else this extension's release for this platform,
     /// downloaded into the extension work dir, else (offline) the one downloaded before.
     fn server_path(
         &mut self,
@@ -76,7 +76,7 @@ impl JanetExtension {
         }
 
         let (asset_name, file_type, binary) = server_asset()?;
-        let path = latest_server(id, &asset_name, file_type, binary)
+        let path = release_server(id, &asset_name, file_type, binary)
             .or_else(|err| installed_server(binary).ok_or(err));
         let status = match &path {
             Ok(_) => zed::LanguageServerInstallationStatus::None,
@@ -89,39 +89,36 @@ impl JanetExtension {
     }
 }
 
-/// The latest release's server binary, downloaded unless it already is.
-fn latest_server(
+/// The server binary released together with this extension, downloaded unless it already is.
+/// Pinned to the extension's own tag: a newer release may rename its assets or change the
+/// protocol, and an older extension must not pick it up.
+fn release_server(
     id: Option<&LanguageServerId>,
     asset_name: &str,
     file_type: zed::DownloadedFileType,
     binary: &str,
 ) -> Result<String> {
+    let tag = concat!("v", env!("CARGO_PKG_VERSION"));
+    let dir = format!("{SERVER_DIR_PREFIX}{tag}");
+    let path = format!("{dir}/{binary}");
+    if is_file(&path) {
+        return Ok(path);
+    }
     set_status(
         id,
         &zed::LanguageServerInstallationStatus::CheckingForUpdate,
     );
-    let release = zed::latest_github_release(
-        SERVER_REPO,
-        zed::GithubReleaseOptions {
-            require_assets: true,
-            pre_release: false,
-        },
-    )?;
+    let release = zed::github_release_by_tag_name(SERVER_REPO, tag)?;
     let asset = release
         .assets
         .iter()
         .find(|asset| asset.name == asset_name)
-        .ok_or_else(|| format!("{SERVER_REPO} {} has no {asset_name}", release.version))?;
-
-    let dir = format!("{SERVER_DIR_PREFIX}{}", release.version);
-    let path = format!("{dir}/{binary}");
-    if !is_file(&path) {
-        set_status(id, &zed::LanguageServerInstallationStatus::Downloading);
-        zed::download_file(&asset.download_url, &dir, file_type)?;
-        zed::make_file_executable(&path)?;
-        remove_stale_versions(SERVER_DIR_PREFIX, &dir);
-        remove_stale_versions(JANET_LSP_DIR_PREFIX, "");
-    }
+        .ok_or_else(|| format!("{SERVER_REPO} {tag} has no {asset_name}"))?;
+    set_status(id, &zed::LanguageServerInstallationStatus::Downloading);
+    zed::download_file(&asset.download_url, &dir, file_type)?;
+    zed::make_file_executable(&path)?;
+    remove_stale_versions(SERVER_DIR_PREFIX, &dir);
+    remove_stale_versions(JANET_LSP_DIR_PREFIX, "");
     Ok(path)
 }
 
@@ -278,6 +275,20 @@ impl zed::Extension for JanetExtension {
             // `{"diagnostics": "off" | "hint" | "warning"}`; the server changes it later on
             // `didChangeConfiguration` too.
             "types": configured(worktree, "types"),
+            // `false` stops compiling open files, which runs the project's code.
+            "compile": configured(worktree, "compile"),
+        })))
+    }
+
+    /// Sent with `didChangeConfiguration`. `types` is always an object, `{}` once the user removes
+    /// it: the server keeps its settings when the key is missing, and resets them on `{}`.
+    fn language_server_workspace_configuration(
+        &mut self,
+        _language_server_id: &LanguageServerId,
+        worktree: &zed::Worktree,
+    ) -> Result<Option<serde_json::Value>> {
+        Ok(Some(serde_json::json!({
+            "types": configured(worktree, "types").unwrap_or_else(|| serde_json::json!({})),
         })))
     }
 

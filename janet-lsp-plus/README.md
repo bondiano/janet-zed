@@ -95,14 +95,22 @@ threading comes first; inside a form, paredit does. Quick fixes are always on to
 
 ## Kernel
 
-The kernel runs on a shared [`spork/netrepl`](https://github.com/janet-lang/spork) process on
-`127.0.0.1:9365`, so a terminal client sees everything evaluated from the editor, and the other
-way round. The language server writes the kernelspec that makes Zed discover it.
+The kernel runs code in a [`spork/netrepl`](https://github.com/janet-lang/spork) process of the
+project, on a free port of `127.0.0.1`, so a terminal client sees everything evaluated from the
+editor, and the other way round. The language server writes the kernelspec that makes Zed
+discover it.
+
+The project is the nearest directory with `.git` or `project.janet` around the file the kernel
+runs; each project has its own Janet process, shared by its editors. The port is recorded in
+`~/.cache/janet-zed/repl/<project path>/port`, readable by you only. The **Janet: attach to REPL
+kernel** task, the debugger's `attach` and the language server's REPL lookups read it from there,
+and all but the task check that the server answering is the project's.
 
 - The client sends only the selected text. Evaluating one line of a multi-line form is a parse
   error.
-- All editor windows share one Janet process, and the kernel attaches to a server that is
-  already running on that port.
+- netrepl has no authentication: another user of the same machine who finds the port can
+  evaluate code in your REPL. The port is random and the file naming it is private, but on a
+  shared machine run the kernel only while you use it.
 - Interrupting is not supported: to stop a runaway evaluation, restart the kernel.
 - A name the analysis cannot find is asked of the running REPL: hover shows what it is bound
   to there, with its docstring and the types its metadata declares, and go-to-definition jumps
@@ -114,7 +122,7 @@ way round. The language server writes the kernelspec that makes Zed discover it.
 
 `launch` runs a program and takes `program`, `args`, `cwd`, `env`, `janet` (the executable) and
 `stopOnEntry`. `attach` connects to the kernel's REPL and takes `host` and `port`; the default
-is `127.0.0.1:9365`. Both give breakpoints, stepping, variables and hover evaluation.
+is the port the kernel recorded for the project on `127.0.0.1`. Both give breakpoints, stepping, variables and hover evaluation.
 
 - A breakpoint is verified once code on its line is compiled. A line without code stays
   unverified, and so does a line in a file that is not loaded yet.

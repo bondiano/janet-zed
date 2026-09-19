@@ -247,8 +247,9 @@ struct Entry {
     declared: Option<Annotation>,
 }
 
-/// The positions nobody has written a type for yet.
-const ANY_POSITIONS: usize = 452;
+/// The positions nobody has written a type for yet. A wrong type made `:any` raises it: a result
+/// Janet does not return is a false finding, which is worse than none.
+const ANY_POSITIONS: usize = 460;
 
 fn core_entries() -> Vec<Entry> {
     let doc = Document::new(CORE.to_string());

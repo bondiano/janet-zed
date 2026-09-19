@@ -1,11 +1,12 @@
 # janet-check
 
-Type-checks [Janet](https://janet-lang.org) files against the types written for them.
+Lints [Janet](https://janet-lang.org) files: what Janet's compiler reports, and calls that
+contradict the types written for them.
 
-Nothing is run and `janet` is not needed on `PATH`: the checker parses the sources, resolves
-imports the way the editor does, and reports only calls that contradict a signature someone
-actually wrote down — in a definition's metadata, in a `*.d.janet` file, or in the core.
-Whatever inference merely guesses about a body never becomes a complaint.
+The checker parses the sources, resolves imports the way the editor does, and reports only calls
+that contradict a signature someone actually wrote down — in a definition's metadata, in a
+`*.d.janet` file, or in the core. Whatever inference merely guesses about a body never becomes a
+complaint.
 
 This is the analysis library behind [Janet+ for Zed](https://github.com/bondiano/janet-zed)
 and [`janet-lsp-plus`](https://crates.io/crates/janet-lsp-plus), published as a crate so that
@@ -18,12 +19,19 @@ $ cargo install janet-check
 $ janet-check src
 src/shapes.janet:37:19: :radius is not a key: this form has :kind :r
 src/fetch.janet:42:4: host/fetch takes 2 arguments, given 3
+src/main.janet:7:2: unknown symbol undefined-fn
 ```
 
 With no arguments it checks the working directory. Directories are walked honoring
 `.gitignore`, and `jpm_tree` is left to module resolution. Output is `path:line:col: message`,
 which the standard errorformat of most editors and CI annotators already parses. The exit
 status is 1 when anything is reported, so it drops into a pre-commit hook or a CI step as is.
+
+Each file is also compiled by the `janet` on `PATH` (or `--janet <path>`), the way the editor
+flychecks it: unknown symbols, wrong arities, modules that do not resolve. **Compiling runs code**:
+the modules a file imports are loaded, fully, and its macros run. Check only code you would run.
+`--types-only` compiles nothing, runs nothing, and needs no `janet`. A file that cannot be read,
+not UTF-8 for one, is reported too.
 
 `--strict` holds more to what is written: a union a member of which does not fit
 (`(if flag 16 "16")` where a number is taken, a `:number?` read out of a union), and a type

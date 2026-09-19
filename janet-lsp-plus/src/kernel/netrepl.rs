@@ -1,7 +1,7 @@
 //! Client for a spork/netrepl server: the shared Janet process behind Zed's REPL and terminal clients.
 
 use std::io;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -9,9 +9,12 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 
-// ponytail: one fixed port, so every Zed window shares one Janet process; derive it per worktree if that bites.
 pub const HOST: &str = "127.0.0.1";
-pub const PORT: u16 = 9365;
+/// Under the user's home: the port files of the REPL kernels, one per project.
+const PORTS: &str = ".cache/janet-zed/repl";
+/// Bound in a kernel's netrepl server to the project it serves, so that a port file left behind
+/// by a dead kernel does not lead to another project's REPL once that one takes the port.
+pub const PROJECT: &str = "janet-zed/project";
 
 const EVAL: &str = include_str!("eval.janet");
 
@@ -36,13 +39,26 @@ pub struct Netrepl {
 }
 
 impl Netrepl {
-    /// Attaches to a netrepl server already listening on `port`, or starts one with `janet`.
-    pub async fn connect(janet: &str, port: u16) -> io::Result<Self> {
-        if let Ok(stream) = TcpStream::connect((HOST, port)).await {
-            return Self::handshake(stream, None, "zed").await;
-        }
-        let (stream, server) = start_server(janet, port).await?;
+    /// Starts a netrepl server with `janet` on `port` and connects to it. Never to a server
+    /// already listening there: whoever holds the port would see every evaluation.
+    pub async fn start(janet: &str, port: u16, project: &Path) -> io::Result<Self> {
+        drop(std::net::TcpListener::bind((HOST, port))?);
+        let (stream, server) = start_server(janet, port, project).await?;
         Self::handshake(stream, Some(server), "zed").await
+    }
+
+    /// Connects as client `name` to the REPL a kernel recorded for `project`.
+    pub async fn attach_recorded(project: &Path, name: &str) -> io::Result<Self> {
+        let port = recorded_port(project)
+            .ok_or_else(|| io::Error::other("no REPL kernel recorded for this project"))?;
+        let mut repl = Self::attach(&format!("{HOST}:{port}"), name).await?;
+        let reply = repl.call(PROJECT).await?;
+        if !serves(&reply, project) {
+            return Err(io::Error::other(format!(
+                "the REPL on port {port} is not this project's"
+            )));
+        }
+        Ok(repl)
     }
 
     /// Connects as client `name` to a netrepl server listening on `address`.
@@ -105,10 +121,78 @@ impl Netrepl {
     }
 }
 
+/// A port nobody listens on. Another process may take it before the server binds it, which
+/// makes the server fail to start rather than connect anywhere else.
+pub fn free_port() -> io::Result<u16> {
+    Ok(std::net::TcpListener::bind((HOST, 0))?.local_addr()?.port())
+}
+
+/// The project a directory belongs to, for its REPL: the nearest directory holding it with a
+/// `.git` or a `project.janet`, else the directory itself. A kernel starts in the directory of
+/// the file it runs, the language server and the terminal task in the worktree root.
+// ponytail: a worktree without either marker gets one REPL per directory its files are in.
+pub fn project_of(dir: &Path) -> PathBuf {
+    let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_path_buf());
+    dir.ancestors()
+        .find(|ancestor| ancestor.join(".git").exists() || ancestor.join("project.janet").is_file())
+        .map_or_else(|| dir.clone(), Path::to_path_buf)
+}
+
+/// Where the REPL of `project` records its port, under `ports`: at the project's own path, so
+/// that the terminal task finds it from `$ZED_WORKTREE_ROOT` alone.
+fn port_file_under(ports: &Path, project: &Path) -> PathBuf {
+    // On Windows `C:\x` becomes `C\x`, relative, as the terminal task spells it too.
+    let project = project.to_string_lossy().replace(':', "");
+    ports
+        .join(project.trim_start_matches(['/', '\\']))
+        .join("port")
+}
+
+/// The port the REPL of `project` recorded, if one has. It may be stale: check what answers.
+pub fn recorded_port(project: &Path) -> Option<u16> {
+    read_port(&port_file_under(&ports_dir()?, project))
+}
+
+fn read_port(file: &Path) -> Option<u16> {
+    std::fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
+/// Records `port` as the REPL of `project`, readable by this user only.
+pub fn record_port(project: &Path, port: u16) -> io::Result<()> {
+    let ports = ports_dir().ok_or_else(|| io::Error::other("no home directory"))?;
+    write_port(&ports, &port_file_under(&ports, project), port)
+}
+
+fn write_port(ports: &Path, file: &Path, port: u16) -> io::Result<()> {
+    std::fs::create_dir_all(file.parent().unwrap_or(ports))?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(ports, std::fs::Permissions::from_mode(0o700))?;
+    }
+    std::fs::write(file, port.to_string())
+}
+
+/// Whether a REPL's `reply` to [`PROJECT`] names `project`.
+pub fn serves(reply: &str, project: &Path) -> bool {
+    reply.starts_with("(true")
+        && jdn_strings(reply)
+            .first()
+            .is_some_and(|served| Path::new(served) == project)
+}
+
+fn ports_dir() -> Option<PathBuf> {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    Some(PathBuf::from(home).join(PORTS))
+}
+
 /// Serves netrepl on `port` until the kernel's end of stdin closes, so a killed kernel leaves no orphan.
-async fn start_server(janet: &str, port: u16) -> io::Result<(TcpStream, Child)> {
+async fn start_server(janet: &str, port: u16, project: &Path) -> io::Result<(TcpStream, Child)> {
+    // A JSON string is a valid Janet string literal.
+    let project = serde_json::to_string(&project.to_string_lossy())?;
     let serve = format!(
         "(import spork/netrepl)
+(def {PROJECT} {project})
 (ev/thread (fn [] (file/read stdin :all) (os/exit 0)) nil :n)
 (netrepl/run-server-single \"{HOST}\" \"{port}\")"
     );

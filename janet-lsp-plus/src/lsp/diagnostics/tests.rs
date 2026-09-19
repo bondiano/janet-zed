@@ -12,7 +12,7 @@ fn show_highlight(source: &str, line: usize, col: usize, message: &str) -> Strin
     };
     format!(
         "----- PROBLEM\n{line}:{col} {message}\n\n----- HIGHLIGHT\n{}\n",
-        mark(&doc.text, &[problem_range(&doc, &problem)])
+        mark(&doc.text, &[problem.range(&doc)])
     )
 }
 

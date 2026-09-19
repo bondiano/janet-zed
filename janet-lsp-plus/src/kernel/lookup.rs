@@ -7,7 +7,7 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use super::netrepl::{HOST, jdn_strings};
+use super::netrepl::{self, HOST, jdn_strings};
 
 const LOOKUP: &str = include_str!("lookup.janet");
 /// How a binding's declared types are written back, for `lookup.janet` to call.
@@ -41,6 +41,19 @@ impl Repl {
         // A plain first message is the client name; the server answers with a prompt.
         repl.send(b"janet-zed-lsp")?;
         repl.recv()?;
+        Ok(repl)
+    }
+
+    /// Attaches to the REPL a kernel recorded for `project`, when that is what answers there.
+    pub fn attach_recorded(project: &Path) -> io::Result<Self> {
+        let port = netrepl::recorded_port(project)
+            .ok_or_else(|| io::Error::other("no REPL kernel recorded for this project"))?;
+        let mut repl = Self::attach(port)?;
+        repl.send(&[&[0xFF], netrepl::PROJECT.as_bytes()].concat())?;
+        let reply = String::from_utf8_lossy(&repl.recv()?).into_owned();
+        if !netrepl::serves(&reply, project) {
+            return Err(io::Error::other("the recorded REPL is not this project's"));
+        }
         Ok(repl)
     }
 

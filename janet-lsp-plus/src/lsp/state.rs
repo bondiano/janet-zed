@@ -2,7 +2,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use lsp_types::{Diagnostic, DiagnosticSeverity, FileChangeType, FileEvent, Uri};
@@ -10,6 +10,7 @@ use serde::Deserialize;
 
 use super::diagnostics::Job;
 use crate::kernel::lookup::{self, Repl};
+use crate::kernel::netrepl::project_of;
 use janet_check::analysis::stdlib::Stdlib;
 use janet_check::analysis::workspace::{self, Workspace};
 use janet_check::analysis::{SourceFile, canonical, config, path_of, uri_of};
@@ -51,7 +52,9 @@ pub struct State {
     open: HashMap<Uri, Buffer>,
     /// The diagnostics last published for each open buffer.
     pub diagnostics: HashMap<Uri, Vec<Diagnostic>>,
-    repl_port: u16,
+    /// The netrepl port hover and go-to-definition ask; the port the REPL kernel recorded for a
+    /// workspace root when not set.
+    repl_port: Option<u16>,
     /// Requests take `&State`; the connection is kept between them and dropped on an error.
     repl: RefCell<Option<Repl>>,
     /// What `types.diagnostics` is set to, from `initializationOptions` and every
@@ -67,7 +70,7 @@ impl State {
         workspace: Workspace,
         stdlib: Stdlib,
         janet: String,
-        repl_port: u16,
+        repl_port: Option<u16>,
         reporting: Reporting,
     ) -> Self {
         let mut state = Self {
@@ -119,10 +122,23 @@ impl State {
         let mut repl = self.repl.borrow_mut();
         let found = match &mut *repl {
             Some(connection) => connection.lookup(candidates),
-            None => Repl::attach(self.repl_port)
+            None => self
+                .attach_repl()
                 .and_then(|connection| repl.insert(connection).lookup(candidates)),
         };
         found.inspect_err(|_| *repl = None).ok().flatten()
+    }
+
+    /// The REPL at the configured port, else the one a kernel recorded for a workspace root.
+    fn attach_repl(&self) -> std::io::Result<Repl> {
+        if let Some(port) = self.repl_port {
+            return Repl::attach(port);
+        }
+        self.workspace
+            .roots()
+            .iter()
+            .find_map(|root| Repl::attach_recorded(&project_of(root)).ok())
+            .ok_or_else(|| std::io::Error::other("no REPL kernel for this workspace"))
     }
 
     pub fn is_open(&self, uri: &Uri) -> bool {
@@ -142,35 +158,8 @@ impl State {
     pub fn job(&self, uri: &Uri) -> Option<Job> {
         let buffer = self.open.get(uri)?;
         let file = self.workspace.file(&buffer.path)?;
-        // Janet resolves `/x` imports and `jpm_tree` from the project root: the nearest
-        // `project.janet`, else the workspace root, else the file's directory.
-        let cwd = buffer
-            .path
-            .ancestors()
-            .skip(1)
-            .find(|dir| dir.join("project.janet").is_file())
-            .map(Path::to_path_buf)
-            .or_else(|| {
-                self.workspace
-                    .roots()
-                    .iter()
-                    .map(|root| canonical(root))
-                    .find(|root| buffer.path.starts_with(root))
-            })
-            .or_else(|| buffer.path.parent().map(Path::to_path_buf))?;
-        // Ambient declarations and `(comment :declare …)` blocks: names Janet never binds.
-        let declared = self
-            .workspace
-            .declarations(&file.imports)
-            .into_iter()
-            .map(|declared| declared.label)
-            .chain(
-                file.definitions
-                    .iter()
-                    .filter(|(_, info)| info.declared)
-                    .map(|(name, _)| name.clone()),
-            )
-            .collect();
+        let cwd = self.workspace.project_root(&buffer.path)?;
+        let declared = self.workspace.unbound(&buffer.path);
         Some(Job {
             uri: uri.clone(),
             version: buffer.version,

@@ -2,7 +2,6 @@
 //! typing pauses, and the problems are published for the version that was checked.
 
 use std::collections::HashMap;
-use std::ops::Range;
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -12,7 +11,7 @@ use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
 use super::state::Reporting;
-use janet_check::analysis::ignores::{self, Ignore, ignores};
+use janet_check::analysis::ignores::ignores;
 use janet_check::analysis::modules::Package;
 use janet_check::analysis::types::infer::Finding;
 use janet_check::janet::{self, Check, Problem, Report};
@@ -51,11 +50,13 @@ pub struct Checker {
 }
 
 impl Checker {
-    /// Starts the checking thread; results arrive on the returned receiver.
-    pub fn spawn(janet: String) -> (Self, Receiver<Checked>) {
+    /// Starts the checking thread; results arrive on the returned receiver. Without `janet`
+    /// nothing is compiled: each check comes back empty, and only what the server reads itself is
+    /// reported.
+    pub fn spawn(janet: Option<String>) -> (Self, Receiver<Checked>) {
         let (jobs, queue) = crossbeam_channel::unbounded();
         let (done, results) = crossbeam_channel::unbounded();
-        thread::spawn(move || check_queued(&janet, &queue, &done));
+        thread::spawn(move || check_queued(janet.as_deref(), &queue, &done));
         (Self { jobs }, results)
     }
 
@@ -65,19 +66,24 @@ impl Checker {
     }
 }
 
-fn check_queued(janet: &str, queue: &Receiver<Job>, done: &Sender<Checked>) {
-    let mut worker = janet::Worker::new(janet);
+fn check_queued(janet: Option<&str>, queue: &Receiver<Job>, done: &Sender<Checked>) {
+    let mut worker = janet.map(janet::Worker::new);
     while let Ok(first) = queue.recv() {
         for job in coalesce(first, queue).into_values() {
             let started = Instant::now();
-            let report = worker.check(&Check {
-                path: &job.path,
-                text: &job.text,
-                cwd: &job.cwd,
-                packages: &job.packages,
-                natives: &job.natives,
-                declared: &job.declared,
-            });
+            let report = worker.as_mut().map_or_else(
+                || Ok(Report::default()),
+                |worker| {
+                    worker.check(&Check {
+                        path: &job.path,
+                        text: &job.text,
+                        cwd: &job.cwd,
+                        packages: &job.packages,
+                        natives: &job.natives,
+                        declared: &job.declared,
+                    })
+                },
+            );
             tracing::debug!(
                 uri = job.uri.as_str(),
                 version = job.version,
@@ -109,31 +115,30 @@ fn coalesce(first: Job, queue: &Receiver<Job>) -> HashMap<Uri, Job> {
 
 pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
     let directives = ignores(&doc.text);
-    problems
-        .iter()
-        .map(|problem| (problem, problem_range(doc, problem)))
-        .filter(|(problem, range)| {
-            let name = problem.message.strip_prefix("unknown symbol ");
-            name.is_none_or(|name| {
-                !Ignore::silences(
-                    &directives,
-                    ignores::UNKNOWN_SYMBOL,
-                    Some(name),
-                    doc.position(range.start).line as usize,
-                )
-            })
-        })
-        .map(|(problem, range)| Diagnostic {
-            range: doc.range(range),
-            severity: Some(if problem.severity == 1 {
-                DiagnosticSeverity::ERROR
-            } else {
-                DiagnosticSeverity::WARNING
-            }),
-            source: Some("janet".to_string()),
-            message: problem.message.clone(),
-            ..Diagnostic::default()
-        })
+    let too_deep = doc.too_deep.then(|| Diagnostic {
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("janet-zed".to_string()),
+        message: syntax::TOO_DEEP.to_string(),
+        ..Diagnostic::default()
+    });
+    too_deep
+        .into_iter()
+        .chain(
+            problems
+                .iter()
+                .filter(|problem| !problem.is_ignored(doc, &directives))
+                .map(|problem| Diagnostic {
+                    range: doc.range(problem.range(doc)),
+                    severity: Some(if problem.severity == 1 {
+                        DiagnosticSeverity::ERROR
+                    } else {
+                        DiagnosticSeverity::WARNING
+                    }),
+                    source: Some("janet".to_string()),
+                    message: problem.message.clone(),
+                    ..Diagnostic::default()
+                }),
+        )
         .collect()
 }
 
@@ -153,31 +158,6 @@ pub fn inferred(doc: &Document, findings: &[Finding], reporting: Reporting) -> V
             ..Diagnostic::default()
         })
         .collect()
-}
-
-/// Janet points at a form by 1-based line and byte column. Highlight the unknown symbol the
-/// message names, or else the form, within its first line.
-fn problem_range(doc: &Document, problem: &Problem) -> Range<usize> {
-    let offset = doc.byte_offset(
-        problem.line.unwrap_or(1).saturating_sub(1),
-        problem.col.unwrap_or(1).saturating_sub(1),
-    );
-    let Some(form) = syntax::path_at(doc.root(), offset).pop() else {
-        return offset..offset;
-    };
-    let node = problem
-        .message
-        .strip_prefix("unknown symbol ")
-        .and_then(|name| {
-            syntax::descendants(form)
-                .find(|node| node.kind() == syntax::SYMBOL && doc.text_of(*node) == name)
-        })
-        .unwrap_or(form);
-    let range = node.byte_range();
-    let line_end = doc.text[range.start..]
-        .find('\n')
-        .map_or(doc.text.len(), |index| range.start + index);
-    range.start..range.end.min(line_end)
 }
 
 #[cfg(test)]

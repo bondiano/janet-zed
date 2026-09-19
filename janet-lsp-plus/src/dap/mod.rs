@@ -6,6 +6,7 @@
 //! lifecycle, threads and breakpoint bookkeeping stay here.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -76,16 +77,14 @@ struct LaunchArguments {
 struct AttachArguments {
     #[serde(default = "default_host")]
     host: String,
-    #[serde(default = "default_port")]
-    port: u16,
+    /// The port the REPL kernel recorded for the project of `cwd` when not given.
+    port: Option<u16>,
+    /// The extension sets it to the worktree root.
+    cwd: Option<PathBuf>,
 }
 
 fn default_host() -> String {
     netrepl::HOST.to_string()
-}
-
-const fn default_port() -> u16 {
-    netrepl::PORT
 }
 
 enum Target {
@@ -357,12 +356,20 @@ impl Session {
 
     /// Runs the driver inside the REPL's netrepl process, next to the kernel's evaluations.
     async fn attach(&mut self, attach: AttachArguments) -> Result<()> {
-        let address = format!("{}:{}", attach.host, attach.port);
-        let mut repl = Netrepl::attach(&address, "zed-dap")
-            .await
-            .with_context(|| {
-                format!("no netrepl at {address}: start the Janet REPL kernel first")
-            })?;
+        let mut repl = if let Some(port) = attach.port {
+            let address = format!("{}:{port}", attach.host);
+            Netrepl::attach(&address, "zed-dap")
+                .await
+                .with_context(|| format!("no netrepl at {address}"))?
+        } else {
+            let cwd = match attach.cwd {
+                Some(cwd) => cwd,
+                None => std::env::current_dir()?,
+            };
+            Netrepl::attach_recorded(&netrepl::project_of(&cwd), "zed-dap")
+                .await
+                .context("no REPL for this project: start the Janet REPL kernel first")?
+        };
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         // ponytail: the driver connects back to 127.0.0.1, so only a REPL on this machine attaches.
         let script = format!(

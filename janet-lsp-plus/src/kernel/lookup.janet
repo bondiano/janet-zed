@@ -3,7 +3,7 @@
 # as the shared REPL env does (names defined interactively). Returns strings, "" for unknown:
 # [cwd source line column doc type macro types], or [] when no candidate is bound. `cwd` is there
 # because `source` may be relative to it; `types` is what `types/declared` reads of the binding.
-# janet-zed: include ../janet/types.janet
+# janet-zed: include ../../../janet-check/src/janet/types.janet
 (fn [candidates]
   (def repl (or (table/getproto (curenv)) (curenv)))
   (defn real [file] (try (os/realpath file) ([_] nil)))

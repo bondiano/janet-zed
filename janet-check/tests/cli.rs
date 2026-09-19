@@ -101,7 +101,11 @@ fn a_workspace_with_the_syspath_is_checked_in_seconds() {
         return;
     };
     let started = std::time::Instant::now();
-    let output = run(&["fixtures/project", &syspath.to_string_lossy()]);
+    let output = run(&[
+        "--types-only",
+        "fixtures/project",
+        &syspath.to_string_lossy(),
+    ]);
     let elapsed = started.elapsed();
     assert_eq!(stdout(&output), "");
     assert!(output.status.success());
@@ -142,7 +146,7 @@ fn a_subdirectory_of_a_project_keeps_the_project_context() {
     );
     let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
         .current_dir(&root)
-        .arg("test")
+        .args(["--types-only", "test"])
         .output()
         .expect("janet-check runs");
     std::fs::remove_dir_all(&root).expect("cleanup");
@@ -152,5 +156,47 @@ fn a_subdirectory_of_a_project_keeps_the_project_context() {
             "test/lib.janet:2:12: lib/twice takes :number here, given :string",
             "test/lib.janet:3:13: host/fetch takes :number here, given :string",
         ]
+    );
+}
+
+/// Janet compiles each file: an unknown symbol, a wrong arity and a missing module fail the check,
+/// and so does a file that cannot be read. `--types-only` compiles nothing.
+#[test]
+fn what_janet_reports_fails_the_check() {
+    let root = std::env::temp_dir().join(format!("janet-check-compile-{}", std::process::id()));
+    std::fs::create_dir_all(&root).expect("mkdir");
+    std::fs::write(
+        root.join("main.janet"),
+        "(defn g [x] x)\n(undefined-fn 3)\n(g 1 2 3)\n(import ./nope)\n",
+    )
+    .expect("write");
+    std::fs::write(root.join("latin1.janet"), b"(def x \"\xff\")\n").expect("write");
+    let check = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_janet-check"))
+            .current_dir(&root)
+            .args(args)
+            .output()
+            .expect("janet-check runs")
+    };
+    let compiled = check(&["."]);
+    let types_only = check(&["--types-only", "."]);
+    std::fs::remove_dir_all(&root).expect("cleanup");
+
+    let reported = stdout(&compiled);
+    let lines: Vec<&str> = reported.lines().collect();
+    assert_eq!(lines[0], "latin1.janet: stream did not contain valid UTF-8");
+    assert_eq!(lines[1], "main.janet:2:2: unknown symbol undefined-fn");
+    assert_eq!(
+        lines[2],
+        "main.janet:3:1: <function g> expects at most 1 argument, got 3"
+    );
+    assert!(
+        lines[3].starts_with("main.janet:4:1: could not find module ./nope"),
+        "{reported}"
+    );
+    assert!(!compiled.status.success());
+    assert_eq!(
+        stdout(&types_only),
+        "latin1.janet: stream did not contain valid UTF-8\n"
     );
 }

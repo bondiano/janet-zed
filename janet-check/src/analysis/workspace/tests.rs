@@ -335,6 +335,22 @@ fn a_hover_through_three_imports_reads_as_through_one() {
 }
 
 /// Every file of `workspace` inferred at once, the way `janet-check` does.
+/// Stopped, inference starts nothing more; carried on, it infers only what is left.
+#[test]
+fn stopped_inference_carries_on_where_it_stopped() {
+    let workspace = chain();
+    let paths = ["/ws/a.janet", "/ws/b.janet", "/ws/c.janet", "/ws/d.janet"].map(Path::new);
+    assert!(!workspace.infer_until(paths, &|| true));
+    assert_eq!(workspace.inferences(), 0);
+    let first = AtomicUsize::new(0);
+    // Lets one component through: the chain is one file per layer.
+    let stop_after_one = || first.fetch_add(1, Ordering::Relaxed) > 0;
+    assert!(!workspace.infer_until(paths, &stop_after_one));
+    assert_eq!(workspace.inferences(), 1);
+    assert!(workspace.infer_until(paths, &|| false));
+    assert_eq!(workspace.inferences(), 4);
+}
+
 #[test]
 fn inferring_the_workspace_at_once_reads_each_file_once() {
     let workspace = chain();

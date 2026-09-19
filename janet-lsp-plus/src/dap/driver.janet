@@ -4,7 +4,7 @@
 #
 # Launch mode runs a program like `janet program args`. Attach mode (`driver/attach`) runs inside
 # the REPL's netrepl process and puts `driver/run` into the shared env for the kernel's eval.
-# janet-zed: include ../janet/json.janet
+# janet-zed: include ../../../janet-check/src/janet/json.janet
 
 (var- driver/conn nil)
 (var- driver/mode :launch)

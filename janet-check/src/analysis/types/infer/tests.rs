@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::path::PathBuf;
 
 use super::*;
@@ -1309,4 +1310,82 @@ fn a_named_parameter_is_one_value_in_the_body() {
         ),
         ["n takes :number here, given :keyword"]
     );
+}
+
+#[test]
+fn nesting_up_to_the_limit_is_inferred_and_past_it_is_skipped() {
+    let nested =
+        |depth: usize| format!("(defn f [] {}1{})", "(do ".repeat(depth), ")".repeat(depth));
+    let (doc, _, _) = alone(&nested(crate::syntax::MAX_DEPTH - 4));
+    assert!(!doc.too_deep);
+    let (doc, _, facts) = alone(&nested(2000));
+    assert!(doc.too_deep);
+    assert!(facts.findings.is_empty());
+}
+
+#[test]
+fn a_table_under_a_name_holds_what_is_put_in_it_later() {
+    let serve = "(defn serve {:params [{:port :number}] :ret :nil} [cfg] nil)\n";
+    assert_eq!(
+        messages(&format!(
+            "{serve}(def cfg @{{:port nil}})\n(put cfg :port 8080)\n(serve cfg)\n"
+        )),
+        Vec::<String>::new()
+    );
+    assert_eq!(
+        messages(&format!(
+            "{serve}(def cfg @{{:port nil}})\n(put cfg :host \"h\")\n(put cfg :port 1)\n(serve cfg)\n"
+        )),
+        Vec::<String>::new()
+    );
+    // Still a table: it is no number, whatever it holds.
+    let number = "(defn n {:params [:number] :ret :nil} [x] nil)\n";
+    assert_eq!(
+        messages(&format!(
+            "{number}(def t @{{:a 1}})\n(n t)\n(def xs @[1])\n(n xs)\n"
+        ))
+        .len(),
+        2
+    );
+    let total = "(defn total {:params [@[:number]] :ret :number} [xs] 0)\n";
+    assert_eq!(
+        messages(&format!(
+            "{total}(def xs @[])\n(array/push xs 1)\n(total xs)\n"
+        )),
+        Vec::<String>::new()
+    );
+}
+
+/// What the core declares a call returns is what Janet returns: each call is handed to a function
+/// that takes the type Janet reports for its value, and no finding says it does not fit.
+#[test]
+fn core_results_are_what_janet_returns() {
+    let calls = [
+        r#"(slurp "Cargo.toml")"#,
+        "(thaw {:a 1})",
+        "(thaw [1])",
+        r#"(thaw "s")"#,
+        "(thaw-keep-keys {:a 1})",
+        r#"(with [f (file/open "Cargo.toml")] (file/lines f))"#,
+        "(postwalk (fn [x] 1) [1 2])",
+        "(prewalk (fn [x] 1) [1 2])",
+        "(walk (fn [x] 1) [1 2])",
+        "(walk (fn [x] 1) 5)",
+    ];
+    let script = calls.iter().fold(String::new(), |mut script, call| {
+        writeln!(script, "(print (type {call}))").expect("writing to a string");
+        script
+    });
+    let output = std::process::Command::new("janet")
+        .args(["-e", &script])
+        .current_dir(env!("CARGO_MANIFEST_DIR"))
+        .output()
+        .expect("janet runs");
+    let types = String::from_utf8(output.stdout).unwrap();
+    assert_eq!(types.lines().count(), calls.len(), "{types}");
+    for (call, ty) in calls.iter().zip(types.lines()) {
+        let source =
+            format!("(defn wants {{:params [:{ty}] :ret :nil}} [x] nil)\n(wants {call})\n");
+        assert_eq!(messages(&source), Vec::<String>::new(), "{call} is a {ty}");
+    }
 }

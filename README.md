@@ -47,7 +47,10 @@ All settings are optional. Put them in `settings.json`:
         // Report what the types rule out: "off" (default), "hint" or "warning".
         // `strict` also reports a union a member of which does not fit, and a type inference
         // guessed that cannot fit at all.
-        "types": { "diagnostics": "hint", "strict": false }
+        "types": { "diagnostics": "hint", "strict": false },
+        // Compile open files with `janet` for unknown symbols and wrong arities (default true).
+        // This runs the project's code: see "Trust" below.
+        "compile": true
       },
       "binary": {
         // Server log verbosity: error, warn, info (default), debug or trace.
@@ -63,6 +66,15 @@ All settings are optional. Put them in `settings.json`:
   }
 }
 ```
+
+### Trust
+
+Opening a project runs its code. To report unknown symbols and wrong arities, the server compiles
+each open file with `janet`: the file's macros run, and the modules it imports load in full, their
+top-level code included. `janet` itself is the one on the worktree's `PATH`, which tools like
+direnv can set per project. Open only projects you would run, or set `"compile": false`: the
+server then runs nothing of the project's, and reports only what the types rule out.
+Changing it takes a server restart (`editor: restart language server`).
 
 Project-level analysis — [`:lint-as`](janet-check/README.md#library-macros-that-define-names)
 for library macros and [comment directives](janet-check/README.md#comment-directives) — is

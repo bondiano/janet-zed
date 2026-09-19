@@ -45,8 +45,7 @@
     },
     "port": {
       "type": "integer",
-      "description": "attach: the netrepl port (the REPL kernel's is 9365)",
-      "default": 9365
+      "description": "attach: the netrepl port (default: the one the REPL kernel recorded for this worktree)"
     }
   }
 }

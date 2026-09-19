@@ -321,20 +321,36 @@ impl Workspace {
     /// Infers every file `paths` reach, a layer of the import graph at a time: the components of
     /// one layer import nothing of each other, so they are inferred side by side.
     pub fn infer<'p>(&self, paths: impl IntoIterator<Item = &'p Path>) {
+        self.infer_until(paths, &|| false);
+    }
+
+    /// [`Self::infer`], stopped once `stop` says so: no component is started after that. What was
+    /// inferred stays cached, so a later call carries on where this one stopped. Whether it
+    /// finished.
+    pub fn infer_until<'p>(
+        &self,
+        paths: impl IntoIterator<Item = &'p Path>,
+        stop: &(dyn Fn() -> bool + Sync),
+    ) -> bool {
         let threads = std::thread::available_parallelism().map_or(1, NonZeroUsize::get);
         for layer in self.layers(self.components(paths)) {
             let next = AtomicUsize::new(0);
             std::thread::scope(|scope| {
                 for _ in 0..threads.min(layer.len()) {
                     scope.spawn(|| {
-                        while let Some(component) = layer.get(next.fetch_add(1, Ordering::Relaxed))
+                        while !stop()
+                            && let Some(component) = layer.get(next.fetch_add(1, Ordering::Relaxed))
                         {
                             self.infer_component(component);
                         }
                     });
                 }
             });
+            if stop() {
+                return false;
+            }
         }
+        true
     }
 
     /// What a named type applied to `args` stands for where `file` reads it: a `:typedef` of the
@@ -522,6 +538,40 @@ impl Workspace {
 
     pub fn natives(&self) -> &[Package] {
         &self.natives
+    }
+
+    /// Where Janet resolves `/x` imports and `jpm_tree` for the file at `path`: the nearest
+    /// `project.janet`, else the workspace root holding it, else its directory.
+    pub fn project_root(&self, path: &Path) -> Option<PathBuf> {
+        path.ancestors()
+            .skip(1)
+            .find(|dir| dir.join("project.janet").is_file())
+            .map(Path::to_path_buf)
+            .or_else(|| {
+                self.roots()
+                    .iter()
+                    .map(|root| canonical(root))
+                    .find(|root| path.starts_with(root))
+            })
+            .or_else(|| path.parent().map(Path::to_path_buf))
+    }
+
+    /// Names the file at `path` sees declared that Janet itself never binds: ambient declarations
+    /// and its `(comment :declare …)` blocks.
+    pub fn unbound(&self, path: &Path) -> Vec<String> {
+        let Some(file) = self.file(path) else {
+            return Vec::new();
+        };
+        self.declarations(&file.imports)
+            .into_iter()
+            .map(|declared| declared.label)
+            .chain(
+                file.definitions
+                    .iter()
+                    .filter(|(_, info)| info.declared)
+                    .map(|(name, _)| name.clone()),
+            )
+            .collect()
     }
 
     /// Whether `path` is a workspace file (as opposed to a dependency or unknown).

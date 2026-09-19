@@ -42,14 +42,42 @@ mod ffi {
 #[allow(unsafe_code)]
 const LANGUAGE: LanguageFn = unsafe { LanguageFn::from_raw(ffi::tree_sitter_janet_simple) };
 
-pub fn parse(text: &str) -> Tree {
+/// Deeper trees are not analysed: every pass over the tree recurses, and a file nested this deep
+/// (generated data, most likely) would overflow the stack of whichever pass reaches it first.
+pub const MAX_DEPTH: usize = 256;
+pub const TOO_DEEP: &str = "nested deeper than 256 levels: the file is not analysed";
+
+/// The tree of `text`, unless it nests deeper than [`MAX_DEPTH`].
+pub fn parse(text: &str) -> Option<Tree> {
     let mut parser = Parser::new();
     parser
         .set_language(&Language::new(LANGUAGE))
         .expect("tree-sitter supports the vendored grammar's ABI");
-    parser
+    let tree = parser
         .parse(text, None)
-        .expect("parsing without a timeout or cancellation always yields a tree")
+        .expect("parsing without a timeout or cancellation always yields a tree");
+    (!too_deep(&tree)).then_some(tree)
+}
+
+/// Whether any node lies deeper than [`MAX_DEPTH`]; walked with a cursor, without recursion.
+fn too_deep(tree: &Tree) -> bool {
+    let mut cursor = tree.walk();
+    let mut depth = 0;
+    loop {
+        if cursor.goto_first_child() {
+            depth += 1;
+            if depth > MAX_DEPTH {
+                return true;
+            }
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                return false;
+            }
+            depth -= 1;
+        }
+    }
 }
 
 pub fn is_collection(node: Node) -> bool {

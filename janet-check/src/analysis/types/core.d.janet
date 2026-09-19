@@ -1490,7 +1490,7 @@
   [f])
 
 (defn file/lines
-  {:params [:abstract] :ret :function}
+  {:params [:abstract] :ret :fiber}
   "(file/lines file)\n\nReturn an iterator over the lines of a file."
   [file])
 
@@ -2835,7 +2835,7 @@
   [x])
 
 (defn postwalk
-  {:params [(fn [:any] :any) a] :ret a}
+  {:params [(fn [:any] :any) :any] :ret :any}
   "(postwalk f form)\n\nDo a post-order traversal of a data structure and call `(f x)`\non every visitation."
   [f form])
 
@@ -2845,7 +2845,7 @@
   [x])
 
 (defn prewalk
-  {:params [(fn [:any] :any) a] :ret a}
+  {:params [(fn [:any] :any) :any] :ret :any}
   "(prewalk f form)\n\nSimilar to `postwalk`, but do pre-order traversal."
   [f form])
 
@@ -3000,7 +3000,7 @@
   [x &opt start end])
 
 (defn slurp
-  {:params [:string] :ret :string}
+  {:params [:string] :ret :buffer}
   "(slurp path)\n\nRead all data from a file with name `path` and then close the file."
   [path])
 
@@ -3300,12 +3300,12 @@
   [pred ind])
 
 (defn thaw
-  {:params [:any] :ret :table}
+  {:params [:any] :ret :any}
   "(thaw ds)\n\nThaw an object (make it mutable) and do a deep copy, making\nchild values also mutable. Closures, fibers, and abstract\ntypes will not be recursively thawed, but all other types will."
   [ds])
 
 (defn thaw-keep-keys
-  {:params [:any] :ret :table}
+  {:params [:any] :ret :any}
   "(thaw-keep-keys ds)\n\nSimilar to `thaw`, but do not modify table or struct keys."
   [ds])
 
@@ -3435,7 +3435,7 @@
   [name init])
 
 (defn walk
-  {:params [(fn [:any] :any) a] :ret a}
+  {:params [(fn [:any] :any) :any] :ret :any}
   "(walk f form)\n\nIterate over the values in ast and apply `f`\nto them. Collect the results in a data structure. If ast is not a\ntable, struct, array, or tuple,\nreturns form."
   [f form])
 

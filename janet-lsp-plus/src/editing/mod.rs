@@ -87,7 +87,9 @@ pub fn actions(doc: &Document, selection: Range<usize>) -> Vec<Action> {
 }
 
 fn is_valid(text: &str) -> bool {
-    let tree = syntax::parse(text);
+    let Some(tree) = syntax::parse(text) else {
+        return false;
+    };
     let root = tree.root_node();
     // Tree-sitter accepts `{:a}`; Janet rejects struct and table literals with an odd form count.
     !root.has_error()

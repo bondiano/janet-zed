@@ -1,5 +1,7 @@
 //! `janet-lsp-plus kernel <connection_file> <janet>`: a Jupyter kernel for Zed's REPL.
-//! Code runs in a shared netrepl process, so terminal clients (`netrepl/client`) see the same state.
+//! Code runs in a netrepl process of the kernel's own, so terminal clients (`netrepl/client`) see
+//! the same state. Its port is recorded per worktree, where the language server, the debugger and
+//! the terminal task look it up.
 
 pub mod lookup;
 pub mod netrepl;
@@ -20,7 +22,7 @@ use jupyter_zmq_client::{
 };
 use serde_json::json;
 
-use netrepl::{Evaluation, HOST, Netrepl, PORT};
+use netrepl::{Evaluation, Netrepl};
 
 use anyhow::Result;
 
@@ -114,7 +116,7 @@ async fn evaluate(repl: &mut Option<Netrepl>, janet: &str, code: &str) -> Evalua
     };
     let result = match repl {
         Some(connection) => connection.eval(code, position.as_ref()).await,
-        None => match Netrepl::connect(janet, PORT).await {
+        None => match start(janet).await {
             Ok(connection) => repl.insert(connection).eval(code, position.as_ref()).await,
             Err(err) => Err(err),
         },
@@ -122,10 +124,23 @@ async fn evaluate(repl: &mut Option<Netrepl>, janet: &str, code: &str) -> Evalua
     result.unwrap_or_else(|err| {
         *repl = None;
         Evaluation {
-            errors: format!("netrepl at {HOST}:{PORT}: {err}"),
+            errors: format!("netrepl: {err}"),
             ..Evaluation::default()
         }
     })
+}
+
+/// The REPL of the project the kernel runs in: the one another kernel started for it, while that
+/// one runs, else a netrepl server of its own on a free port, recorded for the project.
+async fn start(janet: &str) -> std::io::Result<Netrepl> {
+    let project = netrepl::project_of(&std::env::current_dir()?);
+    if let Ok(connection) = Netrepl::attach_recorded(&project, "zed").await {
+        return Ok(connection);
+    }
+    let port = netrepl::free_port()?;
+    let connection = Netrepl::start(janet, port, &project).await?;
+    netrepl::record_port(&project, port)?;
+    Ok(connection)
 }
 
 async fn publish(
@@ -211,7 +226,7 @@ fn kernel_info() -> KernelInfoReply {
             codemirror_mode: None,
             nbconvert_exporter: None,
         },
-        banner: format!("Janet via netrepl at {HOST}:{PORT}"),
+        banner: "Janet via netrepl".to_string(),
         help_links: vec![],
         debugger: false,
         error: None,

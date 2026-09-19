@@ -9,26 +9,29 @@ use anyhow::Result;
 use crossbeam_channel::{Receiver, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
-    DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles, DidCloseTextDocument,
-    DidOpenTextDocument, Notification as LspNotification, PublishDiagnostics,
+    Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles,
+    DidCloseTextDocument, DidOpenTextDocument, Exit, Notification as LspNotification,
+    PublishDiagnostics,
 };
 use lsp_types::request::Formatting;
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
     PrepareRenameRequest, References, RegisterCapability, Rename, Request as LspRequest,
-    ResolveCompletionItem, SignatureHelpRequest,
+    ResolveCompletionItem, Shutdown, SignatureHelpRequest,
 };
 use lsp_types::{
-    CodeActionKind, CodeActionOptions, CodeActionProviderCapability, CompletionOptions, Diagnostic,
-    DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher, GlobPattern,
-    HoverProviderCapability, InitializeParams, OneOf, PublishDiagnosticsParams, Registration,
+    CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
+    CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions,
+    DocumentFormattingParams, FileSystemWatcher, GlobPattern, HoverProviderCapability,
+    InitializeParams, NumberOrString, OneOf, PublishDiagnosticsParams, Registration,
     RegistrationParams, RenameOptions, ServerCapabilities, SignatureHelpOptions,
     TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
 };
 use serde::Deserialize;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
-use std::time::Instant;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::kernel;
 use diagnostics::{Checked, Checker};
@@ -44,8 +47,12 @@ struct Options {
     janet_path: Option<String>,
     /// A Janet checkout matching the installed `janet`; enables stdlib go-to-definition.
     janet_source: Option<PathBuf>,
-    /// The netrepl port hover and go-to-definition ask, the REPL kernel's by default.
+    /// The netrepl port hover and go-to-definition ask, the one the REPL kernel recorded by
+    /// default.
     repl_port: Option<u16>,
+    /// Whether open files are compiled by `janet`, for unknown symbols and wrong arities. On by
+    /// default. Compiling runs the project's code: imported modules load, macros expand.
+    compile: Option<bool>,
     /// What the client can change later with `didChangeConfiguration`. Null where the client
     /// sends the key with nothing configured under it, as the Zed extension does.
     #[serde(default)]
@@ -63,7 +70,7 @@ struct Types {
 }
 
 /// What `didChangeConfiguration` carries. Everything is optional: a client that sends settings
-/// of its own, or none, leaves the defaults standing rather than failing the notification.
+/// of its own, or none, leaves the current ones standing rather than failing the notification.
 #[derive(Debug, Default, Deserialize)]
 struct Settings {
     #[serde(default)]
@@ -135,9 +142,13 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let types = options.types.unwrap_or_default();
     let mut workspace = Workspace::new(roots, syspath);
     workspace.set_strict(types.strict);
-    let (checker, results) = Checker::spawn(janet.to_string());
+    let compile = options.compile.unwrap_or(true);
+    if !compile {
+        tracing::info!("compile is off: open files are not compiled by janet");
+    }
+    let (checker, results) = Checker::spawn(compile.then(|| janet.to_string()));
     let started = Instant::now();
-    let repl_port = options.repl_port.unwrap_or(kernel::netrepl::PORT);
+    let repl_port = options.repl_port;
     let state = State::new(
         workspace,
         stdlib,
@@ -231,48 +242,137 @@ fn watch_files(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+/// One message at a time, in order. What does not answer anybody waits for a quiet moment:
+/// type findings across the project are read when no message and no check is pending, once for
+/// however many changes asked for them.
 fn serve(
     connection: &Connection,
     mut state: State,
     checker: &Checker,
     results: &Receiver<Checked>,
 ) -> Result<()> {
-    publish_project(connection, &mut state)?;
+    let mut queue = VecDeque::new();
+    let mut project_stale = true;
     loop {
+        // Everything that has arrived, so a request cancelled while it waited is not served.
+        queue.extend(connection.receiver.try_iter());
+        if let Some(message) = queue.pop_front() {
+            let cancelled =
+                matches!(&message, Message::Request(request) if is_cancelled(&queue, &request.id));
+            match message {
+                Message::Request(request) if cancelled => {
+                    tracing::debug!(id = %request.id, method = request.method, "cancelled");
+                    let response = Response::new_err(
+                        request.id,
+                        ErrorCode::RequestCanceled as i32,
+                        "cancelled".to_string(),
+                    );
+                    connection.sender.send(response.into())?;
+                }
+                Message::Request(request) => {
+                    if request.method == Shutdown::METHOD {
+                        connection
+                            .sender
+                            .send(Response::new_ok(request.id, ()).into())?;
+                        // `exit` may already wait in the queue, which `handle_shutdown` would not see.
+                        let is_exit = |message: &Message| matches!(message, Message::Notification(notification) if notification.method == Exit::METHOD);
+                        if !queue.iter().any(is_exit) {
+                            connection
+                                .receiver
+                                .recv_timeout(Duration::from_secs(30))
+                                .ok();
+                        }
+                        tracing::info!("shut down");
+                        return Ok(());
+                    }
+                    if request.method == Formatting::METHOD {
+                        format_in_background(connection, &state, request);
+                    } else {
+                        connection.sender.send(dispatch(&state, request).into())?;
+                    }
+                }
+                Message::Notification(notification) => {
+                    let method = notification.method.clone();
+                    match sync(connection, &mut state, checker, notification) {
+                        Ok(project_changed) => project_stale |= project_changed,
+                        Err(err) => tracing::warn!(method, "notification failed: {err:#}"),
+                    }
+                }
+                Message::Response(response) => {
+                    if let Err(err) = response.response_result {
+                        tracing::warn!(id = %response.id, "client rejected request: {}", err.message);
+                    }
+                }
+            }
+            continue;
+        }
+        if let Ok(result) = results.try_recv() {
+            // An edit here can contradict a signature over there.
+            project_stale |= publish(connection, &mut state, result)?;
+            continue;
+        }
+        if project_stale {
+            // Stopped by a message, it carries on from where it was once that one is served.
+            project_stale = !publish_project(connection, &mut state)?;
+            continue;
+        }
         select! {
             recv(connection.receiver) -> message => {
                 let Ok(message) = message else {
                     tracing::info!("client disconnected");
                     return Ok(());
                 };
-                match message {
-                    Message::Request(request) => {
-                        if connection.handle_shutdown(&request)? {
-                            tracing::info!("shut down");
-                            return Ok(());
-                        }
-                        connection.sender.send(dispatch(&state, request).into())?;
-                    }
-                    Message::Notification(notification) => {
-                        let method = notification.method.clone();
-                        if let Err(err) = sync(connection, &mut state, checker, notification) {
-                            tracing::warn!(method, "notification failed: {err:#}");
-                        }
-                    }
-                    Message::Response(response) => {
-                        if let Err(err) = response.response_result {
-                            tracing::warn!(id = %response.id, "client rejected request: {}", err.message);
-                        }
-                    }
-                }
+                queue.push_back(message);
             }
             recv(results) -> result => {
                 if let Ok(result) = result {
-                    publish(connection, &mut state, result)?;
+                    project_stale |= publish(connection, &mut state, result)?;
                 }
             }
         }
     }
+}
+
+/// Whether a `$/cancelRequest` for `id` waits in `queue`.
+fn is_cancelled(queue: &VecDeque<Message>, id: &RequestId) -> bool {
+    queue.iter().any(|message| {
+        matches!(message, Message::Notification(notification)
+        if notification.method == Cancel::METHOD
+            && serde_json::from_value::<CancelParams>(notification.params.clone())
+                .is_ok_and(|params| match params.id {
+                    NumberOrString::Number(number) => RequestId::from(number) == *id,
+                    NumberOrString::String(string) => RequestId::from(string) == *id,
+                }))
+    })
+}
+
+/// Formatting runs `janet`, for up to seconds: answered from a thread of its own, so the requests
+/// behind it are not kept waiting.
+fn format_in_background(connection: &Connection, state: &State, request: Request) {
+    let id = request.id.clone();
+    let failed =
+        |code: ErrorCode, message: String| Response::new_err(id.clone(), code as i32, message);
+    let format = match request.extract::<DocumentFormattingParams>(Formatting::METHOD) {
+        Err(err) => Err(failed(ErrorCode::InvalidParams, err.to_string())),
+        Ok((_, params)) => handlers::formatting(state, &params)
+            .map_err(|err| failed(ErrorCode::RequestFailed, format!("{err:#}"))),
+    };
+    let sender = connection.sender.clone();
+    let format = match format {
+        Ok(format) => format,
+        Err(response) => {
+            sender.send(response.into()).ok();
+            return;
+        }
+    };
+    thread::spawn(move || {
+        let response = match format() {
+            Ok(result) => Response::new_ok(id, result),
+            Err(err) => Response::new_err(id, ErrorCode::RequestFailed as i32, format!("{err:#}")),
+        };
+        // The client may be gone by now; there is nobody to tell.
+        sender.send(response.into()).ok();
+    });
 }
 
 fn dispatch(state: &State, request: Request) -> Response {
@@ -293,7 +393,6 @@ fn dispatch(state: &State, request: Request) -> Response {
             handle::<CodeActionRequest>(state, request, handlers::code_action)
         }
         References::METHOD => handle::<References>(state, request, handlers::references),
-        Formatting::METHOD => handle::<Formatting>(state, request, handlers::formatting),
         PrepareRenameRequest::METHOD => {
             handle::<PrepareRenameRequest>(state, request, handlers::prepare_rename)
         }
@@ -336,12 +435,14 @@ fn handle<R: LspRequest>(state: &State, request: Request, handler: Handler<R>) -
     response
 }
 
+/// Keeps the state in step with the client. Whether the project's type findings are to be read
+/// again.
 fn sync(
     connection: &Connection,
     state: &mut State,
     checker: &Checker,
     notification: Notification,
-) -> Result<()> {
+) -> Result<bool> {
     match notification.method.as_str() {
         DidOpenTextDocument::METHOD => {
             let document = extract::<DidOpenTextDocument>(notification)?.text_document;
@@ -375,23 +476,27 @@ fn sync(
             state.close(&uri);
             send_diagnostics(connection, uri, Vec::new(), None)?;
             // Back to what the file says on disk, as any other project file.
-            publish_project(connection, state)?;
+            return Ok(true);
         }
         DidChangeWatchedFiles::METHOD => {
             let changes = extract::<DidChangeWatchedFiles>(notification)?.changes;
             tracing::debug!(files = changes.len(), "changed on disk");
             state.changed(changes);
-            publish_project(connection, state)?;
+            return Ok(true);
         }
         DidChangeConfiguration::METHOD => {
             let settings = extract::<DidChangeConfiguration>(notification)?.settings;
-            let Types {
+            // No `types` key is no change: `{}` or `null` must not turn configured checks off.
+            let Some(Types {
                 diagnostics: reporting,
                 strict,
-            } = serde_json::from_value::<Settings>(settings)
+            }) = serde_json::from_value::<Settings>(settings)
                 .unwrap_or_default()
                 .types
-                .unwrap_or_default();
+            else {
+                tracing::debug!("configuration without types, kept");
+                return Ok(false);
+            };
             tracing::debug!(?reporting, strict, "configured");
             if state.reporting != reporting || state.workspace.strict() != strict {
                 state.reporting = reporting;
@@ -400,12 +505,12 @@ fn sync(
                 for uri in state.open_buffers() {
                     check(state, checker, &uri);
                 }
-                publish_project(connection, state)?;
+                return Ok(true);
             }
         }
         method => tracing::trace!(method, "ignored notification"),
     }
-    Ok(())
+    Ok(false)
 }
 
 fn extract<N: LspNotification>(notification: Notification) -> Result<N::Params> {
@@ -418,12 +523,13 @@ fn check(state: &State, checker: &Checker, uri: &Uri) {
     }
 }
 
-fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Result<()> {
+/// Publishes a check's diagnostics. Whether the project's type findings are to be read again.
+fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Result<bool> {
     let report = match checked.report {
         Ok(report) => report,
         Err(err) => {
             tracing::warn!("checking {} failed: {err:#}", checked.uri.as_str());
-            return Ok(());
+            return Ok(false);
         }
     };
     // Even from a stale check: a module's bindings come once per load, and names are looked up
@@ -436,7 +542,7 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
             version = checked.version,
             "stale check"
         );
-        return Ok(());
+        return Ok(false);
     }
     // Off, nothing is inferred for this: the types are only read when someone asks to see them.
     let path = (state.reporting != Reporting::Off)
@@ -456,18 +562,26 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
     send_diagnostics(connection, checked.uri, diagnostics, Some(checked.version))?;
     // An edit here can contradict a signature over there: the rest of the project is read again
     // once typing pauses, which is when a check comes back.
-    publish_project(connection, state)
+    Ok(true)
 }
 
 /// Type findings for every workspace file nobody has open. The checker only ever sees open
 /// buffers, so without this a type error stays invisible until someone opens the file it is in.
 // ponytail: every file is walked on each pass; inference itself is cached, so only the files the
 // edit invalidated are read again. Worth narrowing to those if a large workspace feels it.
-fn publish_project(connection: &Connection, state: &mut State) -> Result<()> {
+/// Inference stops as soon as the client sends anything, so a request waits for the files being
+/// inferred at that moment rather than the whole project. Whether it finished.
+fn publish_project(connection: &Connection, state: &mut State) -> Result<bool> {
     let mut found: Vec<(Uri, Vec<Diagnostic>)> = Vec::new();
     if state.reporting != Reporting::Off {
         let paths: Vec<PathBuf> = state.workspace.paths().cloned().collect();
-        state.workspace.infer(paths.iter().map(PathBuf::as_path));
+        let waiting = || !connection.receiver.is_empty();
+        if !state
+            .workspace
+            .infer_until(paths.iter().map(PathBuf::as_path), &waiting)
+        {
+            return Ok(false);
+        }
         for path in paths {
             let Some(file) = state.workspace.file(&path) else {
                 continue;
@@ -500,7 +614,7 @@ fn publish_project(connection: &Connection, state: &mut State) -> Result<()> {
         send_diagnostics(connection, uri, diagnostics, None)?;
     }
     state.published = fresh;
-    Ok(())
+    Ok(true)
 }
 
 fn send_diagnostics(
@@ -517,4 +631,24 @@ fn send_diagnostics(
     let notification = Notification::new(PublishDiagnostics::METHOD.to_string(), params);
     connection.sender.send(notification.into())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_request_is_cancelled_by_a_cancel_behind_it() {
+        let cancel = |id: serde_json::Value| {
+            Message::Notification(Notification::new(
+                Cancel::METHOD.to_string(),
+                serde_json::json!({ "id": id }),
+            ))
+        };
+        let queue = VecDeque::from([cancel(serde_json::json!(7)), cancel(serde_json::json!("x"))]);
+        assert!(is_cancelled(&queue, &RequestId::from(7)));
+        assert!(is_cancelled(&queue, &RequestId::from("x".to_string())));
+        assert!(!is_cancelled(&queue, &RequestId::from(8)));
+        assert!(!is_cancelled(&VecDeque::new(), &RequestId::from(7)));
+    }
 }

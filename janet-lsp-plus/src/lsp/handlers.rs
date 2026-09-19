@@ -444,19 +444,25 @@ fn code_action_of(
     }
 }
 
+/// What formatting the buffer takes, read now; the returned call runs `janet`, which may take
+/// seconds, anywhere.
 pub fn formatting(
     state: &State,
-    params: DocumentFormattingParams,
-) -> Result<Option<Vec<TextEdit>>> {
+    params: &DocumentFormattingParams,
+) -> Result<impl FnOnce() -> Result<Option<Vec<TextEdit>>> + Send + use<>> {
     let doc = state.document(&params.text_document.uri)?;
     // The formatter would mangle unbalanced code rather than refuse it.
     ensure!(
         !doc.root().has_error(),
         "fix the syntax errors before formatting"
     );
-    let formatted = janet::format_source(&state.janet, &doc.text)?;
-    Ok((formatted != doc.text)
-        .then(|| vec![TextEdit::new(doc.range(0..doc.text.len()), formatted)]))
+    let janet = state.janet.clone();
+    let text = doc.text.clone();
+    let whole = doc.range(0..text.len());
+    Ok(move || {
+        let formatted = janet::format_source(&janet, &text)?;
+        Ok((formatted != text).then(|| vec![TextEdit::new(whole, formatted)]))
+    })
 }
 
 pub fn references(state: &State, params: ReferenceParams) -> Result<Option<Vec<Location>>> {

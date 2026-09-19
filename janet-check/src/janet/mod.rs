@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
@@ -12,8 +13,10 @@ use anyhow::{Context, Result, bail, ensure};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use serde::Deserialize;
 
+use crate::analysis::ignores::{self, Ignore};
 use crate::analysis::modules::{self, Package, Search};
 use crate::analysis::project;
+use crate::syntax::{self, Document};
 
 /// The JSON encoder every script prints its results with.
 pub const JSON: &str = include_str!("json.janet");
@@ -48,8 +51,47 @@ pub struct Problem {
     pub col: Option<usize>,
 }
 
+impl Problem {
+    /// Janet points at a form by 1-based line and byte column. The unknown symbol the message
+    /// names, or else the form, within its first line.
+    pub fn range(&self, doc: &Document) -> Range<usize> {
+        let offset = doc.byte_offset(
+            self.line.unwrap_or(1).saturating_sub(1),
+            self.col.unwrap_or(1).saturating_sub(1),
+        );
+        let Some(form) = syntax::path_at(doc.root(), offset).pop() else {
+            return offset..offset;
+        };
+        let node = self
+            .unknown_symbol()
+            .and_then(|name| {
+                syntax::descendants(form)
+                    .find(|node| node.kind() == syntax::SYMBOL && doc.text_of(*node) == name)
+            })
+            .unwrap_or(form);
+        let range = node.byte_range();
+        let line_end = doc.text[range.start..]
+            .find('\n')
+            .map_or(doc.text.len(), |index| range.start + index);
+        range.start..range.end.min(line_end)
+    }
+
+    /// The name of an unknown symbol problem.
+    pub fn unknown_symbol(&self) -> Option<&str> {
+        self.message.strip_prefix("unknown symbol ")
+    }
+
+    /// Whether an `ignore unknown-symbol` directive of `doc` silences it.
+    pub fn is_ignored(&self, doc: &Document, directives: &[Ignore]) -> bool {
+        self.unknown_symbol().is_some_and(|name| {
+            let line = doc.position(self.range(doc).start).line as usize;
+            Ignore::silences(directives, ignores::UNKNOWN_SYMBOL, Some(name), line)
+        })
+    }
+}
+
 /// What a check found.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Report {
     pub problems: Vec<Problem>,
     /// Names macros bound, by file: in the checked one, and in modules loaded for this check.
@@ -94,9 +136,10 @@ impl Worker {
         }
     }
 
-    /// Flychecks `text` as the file at `path`: compiled and macro-expanded, not run. `janet`
-    /// works in `cwd`, the project root, and finds `packages` and `natives` besides its own
-    /// module paths.
+    /// Flychecks `text` as the file at `path`: compiled, not run, but that runs code all the same.
+    /// Its macros expand, and the modules it imports load fully, top-level code included, as
+    /// Janet loads them. `janet` works in `cwd`, the project root, and finds `packages` and
+    /// `natives` besides its own module paths.
     pub fn check(&mut self, request: &Check) -> Result<Report> {
         let request = line(request)?;
         let reply = self

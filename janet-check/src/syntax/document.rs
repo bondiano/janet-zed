@@ -8,18 +8,24 @@ use tree_sitter::{Node, Tree};
 pub struct Document {
     pub text: String,
     tree: Tree,
+    /// Nested deeper than [`super::MAX_DEPTH`]: the tree is empty, nothing in the text is analysed.
+    pub too_deep: bool,
     line_starts: Vec<usize>,
 }
 
 impl Document {
     pub fn new(text: String) -> Self {
-        let tree = super::parse(&text);
+        let (tree, too_deep) = match super::parse(&text) {
+            Some(tree) => (tree, false),
+            None => (super::parse("").expect("an empty text nests nowhere"), true),
+        };
         let line_starts = std::iter::once(0)
             .chain(text.match_indices('\n').map(|(index, _)| index + 1))
             .collect();
         Self {
             text,
             tree,
+            too_deep,
             line_starts,
         }
     }

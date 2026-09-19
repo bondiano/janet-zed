@@ -1039,7 +1039,9 @@ fn hover_and_definition_from_a_running_repl() {
         .build()
         .unwrap();
     let port = repl_port(1);
-    let mut repl = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut repl = runtime
+        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .unwrap();
     let mut session = Session::start_with_repl(port);
     // Sent as the REPL kernel sends code it finds in a file: from line 2 of `src/shapes.janet`.
     let found_at = Position {
@@ -1077,7 +1079,9 @@ fn hover_types_a_running_repl_declares() {
         .build()
         .unwrap();
     let port = repl_port(2);
-    let mut repl = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut repl = runtime
+        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .unwrap();
     let mut session = Session::start_with_repl(port);
     // The REPL knows both names; only one of them is written down in the buffer.
     let code = concat!(
@@ -1287,6 +1291,25 @@ fn types_report_as_hints_beside_what_the_checker_found() {
     session.finish();
 }
 
+/// `"compile": false` runs nothing of the project's: the unknown symbol Janet would report is not
+/// reported, what the types rule out still is.
+#[test]
+fn compile_off_reports_only_the_types() {
+    let settings = json!({"compile": false, "types": {"diagnostics": "hint"}});
+    let mut session = Session::start_with(Session::root(), "src/report.janet", &settings);
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    let reported = published(&mut session, &scratch);
+    assert!(!reported.contains("no-such-function"), "{reported}");
+    assert!(
+        reported.lines().all(|line| line.starts_with("janet-zed ")),
+        "{reported}"
+    );
+    assert!(!reported.is_empty());
+    session.finish();
+}
+
 #[test]
 fn changing_the_setting_turns_the_types_on() {
     let mut session = Session::start();
@@ -1300,6 +1323,29 @@ fn changing_the_setting_turns_the_types_on() {
     );
     let on = published(&mut session, &scratch);
     insta::assert_snapshot!(format!("----- OFF\n{off}\n\n----- WARNING\n{on}\n"));
+    session.finish();
+}
+
+#[test]
+fn settings_without_types_keep_the_ones_in_force() {
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(Session::root(), "src/report.janet", &settings);
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    let before = session.diagnostics(&scratch, 1);
+    for settings in [json!({}), Value::Null, json!({"types": null})] {
+        session.notify(
+            "workspace/didChangeConfiguration",
+            json!({"settings": settings}),
+        );
+    }
+    session.notify(
+        "textDocument/didChange",
+        json!({"textDocument": {"uri": scratch, "version": 2}, "contentChanges": [{"text": source}]}),
+    );
+    assert!(before.to_string().contains("janet-zed"));
+    assert_eq!(session.diagnostics(&scratch, 2), before);
     session.finish();
 }
 

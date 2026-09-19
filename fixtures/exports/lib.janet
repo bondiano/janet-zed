@@ -3,9 +3,9 @@
 # defines, and only the expansion the checker compiles carries the types.
 
 (defmacro defthing
-  "Define `name` as the thing `label` stands for."
-  [name label]
-  ~(def ,name {:type Thing} {:id 0 :label ,label}))
+  "Define `name` as the thing `title` stands for."
+  [name title]
+  ~(def ,name {:type Thing} {:id 0 :label ,title}))
 
 (defmacro shared
   "Define `name` as a function every module of the workspace shares."

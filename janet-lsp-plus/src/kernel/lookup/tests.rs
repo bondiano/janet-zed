@@ -21,7 +21,9 @@ fn looks_up_loaded_modules_then_the_repl() {
         .enable_all()
         .build()
         .unwrap();
-    let mut shared = runtime.block_on(Netrepl::connect("janet", port)).unwrap();
+    let mut shared = runtime
+        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .unwrap();
     // Relative to the REPL's directory, as `module/cache` then keys it.
     let code = format!(
         "(os/cd {:?})\n(import ./made)\n(def answer 42)\n         (defn asked {{:params [:number] :ret :string}} [id] (string id))",

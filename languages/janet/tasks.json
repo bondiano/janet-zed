@@ -7,7 +7,7 @@
   },
   {
     "label": "Janet: attach to REPL kernel",
-    "command": "janet -e '(import spork/netrepl) (netrepl/client)'",
+    "command": "janet -e '(import spork/netrepl) (defn project [d] (cond (or (os/stat (string d \"/.git\")) (os/stat (string d \"/project.janet\"))) d (if-let [i (last (string/find-all \"/\" d))] (if (> i 0) (project (string/slice d 0 i)))))) (def here (os/realpath \".\")) (def root (string/triml (string/replace-all \":\" \"\" (or (project here) here)) \"/\\\\\")) (def file (string (or (os/getenv \"HOME\") (os/getenv \"USERPROFILE\")) \"/.cache/janet-zed/repl/\" root \"/port\")) (netrepl/client \"127.0.0.1\" (string/trim (slurp file)))'",
     "cwd": "$ZED_WORKTREE_ROOT",
     "use_new_terminal": true
   },
