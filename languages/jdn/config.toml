@@ -1,7 +1,8 @@
-name = "Janet"
+# Janet data: parsed with the Janet grammar, but no language server, so data files get no
+# diagnostics meant for code.
+name = "JDN"
 grammar = "janet_simple"
-path_suffixes = ["janet"]
-first_line_pattern = '^#!.*\bjanet\b'
+path_suffixes = ["jdn"]
 line_comments = ["# "]
 autoclose_before = ";:.,=}])> \n\t\""
 brackets = [

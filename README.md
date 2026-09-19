@@ -5,6 +5,7 @@ a REPL wired into the editor, and structural editing.
 
 - **Syntax:** highlighting, indentation, outline, bracket matching, text objects, and
   injections, all built on [tree-sitter-janet-simple](https://github.com/sogaiu/tree-sitter-janet-simple).
+  `.jdn` files open as **JDN**: highlighting, indentation and brackets, without the language server.
 - **Language server:** diagnostics as you type, completion, hover, signature help,
   go-to-definition into the stdlib, references, document highlight, rename, document and
   workspace symbols, formatting, and `project.janet` support — see
