@@ -1,0 +1,2 @@
+# LF everywhere, Windows checkouts included: rustfmt, the snapshots and the fixtures expect it.
+* text=auto eol=lf
