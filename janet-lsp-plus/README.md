@@ -121,7 +121,9 @@ and all but the task check that the server answering is the project's.
 - netrepl has no authentication: another user of the same machine who finds the port can
   evaluate code in your REPL. The port is random and the file naming it is private, but on a
   shared machine run the kernel only while you use it.
-- Interrupting is not supported: to stop a runaway evaluation, restart the kernel.
+- `repl: interrupt` cancels the evaluation in progress, whether it computes or waits, with an
+  `interrupted` error; the REPL keeps its state. Not on Windows, where a runaway evaluation
+  needs a kernel restart.
 - A name the analysis cannot find is asked of the running REPL: hover shows what it is bound
   to there, with its docstring and the types its metadata declares, and go-to-definition jumps
   to the file the REPL recorded. Types written in the source win over the REPL's.
@@ -138,9 +140,10 @@ is the port the kernel recorded for the project on `127.0.0.1`. Both give breakp
   unverified, and so does a line in a file that is not loaded yet.
 - Step Into enters Janet functions called directly. It does not enter C functions or code that
   runs in a new fiber (`try`, `defer`, `protect`), though breakpoints there still stop.
-- There is no pause, no conditional breakpoints or logpoints, and no setting variables. An
-  evaluation sees the frame's locals, but assigning to one does not change the frame.
-- Breakpoints do not stop code running in `ev` tasks (`ev/spawn`, `ev/go`).
+- Pause stops the code that runs, the program or one of its `ev` tasks. A program waiting on
+  the event loop stops once it runs again. Not on Windows.
+- There are no conditional breakpoints or logpoints, and no setting variables. An evaluation
+  sees the frame's locals, but assigning to one does not change the frame.
 - When attached, only code evaluated from the editor stops. Code from a terminal client prints
   a `debug:` trace at a breakpoint and runs on. Errors do not stop unless you turn on
   **Uncaught errors**.

@@ -373,6 +373,25 @@ fn attaches_to_the_repl() {
         .unwrap();
     assert!(failed.errors.contains("oops"), "{failed:?}");
 
+    // A busy evaluation pauses for the debugger, and the kernel's interrupt cancels it.
+    #[cfg(unix)]
+    let (runtime, mut repl) = {
+        let pid = runtime.block_on(repl.pid()).unwrap();
+        let busy = thread::spawn(move || {
+            let evaluation = runtime.block_on(repl.eval("(while true)", None)).unwrap();
+            (runtime, repl, evaluation)
+        });
+        thread::sleep(Duration::from_millis(500));
+        adapter.request("pause", json!({"threadId": 1}));
+        assert_eq!(adapter.stopped("pause"), ["thunk:1"]);
+        adapter.step("continue");
+        thread::sleep(Duration::from_millis(200));
+        janet_lsp_plus::kernel::netrepl::signal(pid, "INT").unwrap();
+        let (runtime, repl, evaluation) = busy.join().unwrap();
+        assert!(evaluation.errors.contains("interrupted"), "{evaluation:?}");
+        (runtime, repl)
+    };
+
     adapter.finish();
     // The driver removes its hook once the adapter is gone.
     let hook = "(get (table/getproto (curenv)) :janet-zed/debugger)";
@@ -383,4 +402,22 @@ fn attaches_to_the_repl() {
     assert!(detached);
     let again = runtime.block_on(repl.eval("(add 1 2)", None)).unwrap();
     assert_eq!(again.value, "6");
+}
+
+#[cfg(unix)]
+#[test]
+fn pauses_a_busy_program() {
+    let mut adapter = Adapter::debugging("spin.janet");
+    adapter.launch(&[], &[], false);
+    thread::sleep(Duration::from_millis(500));
+    adapter.request("pause", json!({"threadId": 1}));
+    assert_eq!(adapter.stopped("pause"), ["spin:5", "thunk:7"]);
+    let counted = adapter.request("evaluate", json!({"expression": "i", "frameId": 0}));
+    assert_ne!(counted["result"], "0");
+
+    // It runs on, and pauses again.
+    adapter.step("continue");
+    adapter.request("pause", json!({"threadId": 1}));
+    assert_eq!(adapter.stopped("pause"), ["spin:5", "thunk:7"]);
+    adapter.finish();
 }

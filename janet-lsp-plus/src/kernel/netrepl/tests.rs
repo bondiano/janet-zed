@@ -105,3 +105,34 @@ fn a_server_is_its_own_and_serves_its_token() {
     assert_eq!(second, "(true 3)");
     assert!(stranger.is_err(), "{stranger:?}");
 }
+
+/// SIGINT cancels the kernel's evaluation, spinning or waiting, and the REPL goes on.
+#[cfg(unix)]
+#[test]
+fn an_interrupt_cancels_the_evaluation() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let project = Path::new("/work/app");
+    let mut repl = runtime
+        .block_on(Netrepl::start(
+            "janet",
+            free_port().unwrap(),
+            project,
+            "secret",
+        ))
+        .unwrap();
+    let pid = runtime.block_on(repl.pid()).unwrap();
+    for code in ["(while true)", "(ev/sleep 100)"] {
+        let interrupter = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(500));
+            signal(pid, "INT").unwrap();
+        });
+        let evaluation = runtime.block_on(repl.eval(code, None)).unwrap();
+        interrupter.join().unwrap();
+        assert!(evaluation.errors.contains("interrupted"), "{evaluation:?}");
+    }
+    let after = runtime.block_on(repl.eval("(+ 1 2)", None)).unwrap();
+    assert_eq!(after.value, "3");
+}

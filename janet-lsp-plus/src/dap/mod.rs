@@ -185,6 +185,8 @@ struct Session {
     kill: Option<oneshot::Sender<()>>,
     /// The netrepl connection an attach session keeps open.
     repl: Option<Netrepl>,
+    /// The process the driver runs in, to pause.
+    pid: Option<u32>,
 }
 
 impl Session {
@@ -203,6 +205,7 @@ impl Session {
             threads: BTreeMap::from([(1, "main".to_string())]),
             kill: None,
             repl: None,
+            pid: None,
         }
     }
 
@@ -239,6 +242,7 @@ impl Session {
                     .map(|(id, name)| json!({"id": id, "name": name}))
                     .collect::<Vec<_>>(),
             })),
+            "pause" => self.pause().map(|()| json!({})),
             "disconnect" | "terminate" => {
                 if let Some(kill) = self.kill.take() {
                     kill.send(()).ok();
@@ -309,6 +313,16 @@ impl Session {
         Ok(json!({}))
     }
 
+    /// Pauses the program: the driver reports the stop. A program waiting on the event loop
+    /// stops once it runs again.
+    fn pause(&self) -> Result<()> {
+        if self.stopped {
+            return Ok(());
+        }
+        let pid = self.pid.context("the program is not running")?;
+        netrepl::signal(pid, "USR1").context("pausing the program")
+    }
+
     /// Starts the session the launch or attach request configured.
     async fn start(&mut self) -> Result<()> {
         match self.target.take().context("no launch or attach request")? {
@@ -349,6 +363,7 @@ impl Session {
             () = tokio::time::sleep(CONNECT_TIMEOUT) => bail!("`{janet}` did not connect in {CONNECT_TIMEOUT:?}"),
         };
 
+        self.pid = child.id();
         let (kill, killed) = oneshot::channel();
         tokio::spawn(watch(child, killed, outputs, self.inputs.clone()));
         self.kill = Some(kill);
@@ -383,6 +398,7 @@ impl Session {
                 .await
                 .context("no REPL for this project: start the Janet REPL kernel first")?
         };
+        self.pid = Some(repl.pid().await?);
         let listener = TcpListener::bind("127.0.0.1:0").await?;
         // ponytail: the driver connects back to 127.0.0.1, so only a REPL on this machine attaches.
         let script = format!(
@@ -504,6 +520,7 @@ impl Session {
         self.stopped = false;
         self.driver = None;
         self.kill = None;
+        self.pid = None;
         self.event("exited", json!({"exitCode": code.unwrap_or(-1)}))
             .await?;
         self.event("terminated", json!({})).await
@@ -512,6 +529,7 @@ impl Session {
     /// A launched program reports its exit on its own; a REPL that goes away ends the session.
     async fn driver_closed(&mut self) -> Result<()> {
         self.driver = None;
+        self.pid = None;
         if self.repl.take().is_some() {
             self.stopped = false;
             self.event("terminated", json!({})).await?;

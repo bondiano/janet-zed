@@ -15,6 +15,9 @@
 (var- driver/uncaught true)
 # Stop at the start of the next thunk, with this reason ("entry" or "step").
 (var- driver/at-start nil)
+# The adapter pauses with SIGUSR1, whose handler sets this and interrupts the VM: debug fibers
+# catch the interrupt and stop. SIGINT interrupts too, for the REPL kernel to cancel an evaluation.
+(var- driver/pausing false)
 
 # Breakpoints. Paths are real paths; `debug/break` gets the source string funcdefs carry.
 (def- driver/wanted @{}) # path -> line -> breakpoint id
@@ -219,6 +222,26 @@
 
 ### Running and stepping
 
+(defn- driver/catch-pauses []
+  # ponytail: no signals on Windows, so no pause there.
+  (unless (= :windows (os/which))
+    (os/sigaction :usr1 (fn [] (set driver/pausing true)) true)))
+
+(defn- driver/halted?
+  "Whether `f` stopped at a breakpoint or for a pause."
+  [f]
+  (index-of (fiber/status f) [:debug :interrupted]))
+
+(defn- driver/resume
+  "Resumes `f` until it ends, hits a breakpoint or is paused. An interrupt the adapter did not ask
+  for, one that came while nothing ran, is passed over."
+  [f]
+  (var value (resume f))
+  (while (and (= :interrupted (fiber/status f)) (not driver/pausing))
+    (set value (resume f)))
+  (set driver/pausing false)
+  value)
+
 (defn- driver/exit [code]
   (file/flush stdout)
   (file/flush stderr)
@@ -235,9 +258,9 @@
   (def [line column] (get (disasm fun :sourcemap) pc))
   (debug/fbreak fun pc)
   (def value (defer (do (debug/unfbreak fun pc) (driver/rebreak line column))
-               (resume f)))
+               (driver/resume f)))
   (def top (first (driver/frames f)))
-  [value (or (not= :debug (fiber/status f))
+  [value (or (not (driver/halted? f))
              (and (= pc (top :pc)) (= line (top :source-line)) (= column (top :source-column))))])
 
 (defn- driver/step-instruction
@@ -252,10 +275,10 @@
   (def [op a b] (or (get (disasm (top :function) :bytecode) (top :pc)) []))
   (defn stepped [target]
     (def value (debug/step target))
-    [value (or (not= :debug (fiber/status f)) (<= (length (driver/frames f)) depth))])
+    [value (or (not (driver/halted? f)) (<= (length (driver/frames f)) depth))])
   (defn finished []
-    (def value (resume f))
-    [value (not= :debug (fiber/status f))])
+    (def value (driver/resume f))
+    [value (not (driver/halted? f))])
   (def callee (case op 'call (get-in top [:slots b]) 'tcall (get-in top [:slots a])))
   (cond
     (and (= kind :stepIn) (function? callee)) (driver/resume-to f callee 0)
@@ -275,9 +298,10 @@
   (var result nil)
   (while (nil? result)
     (def [value arrived] (driver/step-instruction f kind))
-    (def [d l] (if (= :debug (fiber/status f)) (driver/position f) [0 nil]))
+    (def [d l] (if (driver/halted? f) (driver/position f) [0 nil]))
     (cond
-      (not= :debug (fiber/status f))
+      (= :interrupted (fiber/status f)) (set result [value "pause"])
+      (not (driver/halted? f))
       (do
         # A launched program goes on to its next top-level form; stop there.
         (when (and (= driver/mode :launch) (= :dead (fiber/status f)) (= f driver/main))
@@ -295,7 +319,7 @@
   "The adapter went away: a launched program ends, a REPL evaluation goes on without breakpoints."
   [f]
   (when (= driver/mode :launch) (os/exit 0))
-  (if (= :debug (fiber/status f)) [(resume f) "breakpoint"] [nil nil]))
+  (if (driver/halted? f) [(driver/resume f) "breakpoint"] [nil nil]))
 
 (defn- driver/thread
   "The thread id of `f`, given on its first stop."
@@ -342,11 +366,12 @@
   resume."
   [f reason text]
   (ev/acquire-lock driver/serving)
+  (def reason (if (= :interrupted (fiber/status f)) "pause" reason))
   (def command (defer (ev/release-lock driver/serving) (driver/stopped f reason text)))
   (cond
     (= command :disconnected) (driver/disconnected f)
-    (not= :debug (fiber/status f)) [nil nil]
-    (= command :continue) [(resume f) "breakpoint"]
+    (not (driver/halted? f)) [nil nil]
+    (= command :continue) [(driver/resume f) "breakpoint"]
     (driver/step f command)))
 
 (defn- driver/trace [f err]
@@ -359,7 +384,7 @@
   `entry` is the function a pending stop at the start breaks in. Errors propagate after the stop."
   [thunk &opt entry]
   (def launch (= driver/mode :launch))
-  (def f (fiber/new thunk (if (or driver/uncaught launch) :dei :di)))
+  (def f (fiber/new thunk (if (or driver/uncaught launch) :deir :dir)))
   (set driver/main f)
   (var outcome
     (if-let [reason driver/at-start]
@@ -367,8 +392,8 @@
         (set driver/at-start nil)
         (def [value arrived] (driver/resume-to f (or entry thunk) 0))
         [value (if arrived reason "breakpoint")])
-      [(resume f) "breakpoint"]))
-  (while (= :debug (fiber/status f))
+      [(driver/resume f) "breakpoint"]))
+  (while (driver/halted? f)
     (set outcome (driver/serve f (outcome 1) nil)))
   (def value (outcome 0))
   (when (= :error (fiber/status f))
@@ -392,9 +417,9 @@
   instead of ending it, and so does an error while `uncaught` is on. Errors propagate after the
   stop, to the loop or the task's supervisor."
   [thunk]
-  (def f (fiber/new thunk (if driver/uncaught :dei :di)))
-  (var outcome [(resume f) "breakpoint"])
-  (while (= :debug (fiber/status f))
+  (def f (fiber/new thunk (if driver/uncaught :deir :dir)))
+  (var outcome [(driver/resume f) "breakpoint"])
+  (while (driver/halted? f)
     (set outcome (driver/serve f (outcome 1) nil)))
   (when (and (= :error (fiber/status f)) driver/uncaught)
     (driver/serve f "exception" (driver/trace f (outcome 0))))
@@ -473,6 +498,7 @@
   (put env :source path)
   (set driver/env env)
   (driver/wrap-tasks)
+  (driver/catch-pauses)
   (when stop-on-entry (set driver/at-start "entry"))
   (def file (file/open path :rb))
   (unless file
@@ -523,6 +549,7 @@
   # Functions defined before attaching get breakpoints too.
   (driver/scan-env env @{})
   (driver/wrap-tasks)
+  (driver/catch-pauses)
   (put env :janet-zed/debugger
        {:compiled driver/compiled :forget driver/forget :run driver/run})
   (ev/spawn

@@ -9,11 +9,13 @@ mod snippet;
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use jupyter_protocol::{
     ConnectionInfo, ErrorOutput, ExecuteInput, ExecuteReply, ExecuteResult, ExecutionCount,
-    JupyterMessage, JupyterMessageContent, KernelInfoReply, LanguageInfo, MediaType, ReplyError,
-    ReplyStatus, ShutdownReply, Status, StreamContent,
+    InterruptReply, JupyterMessage, JupyterMessageContent, KernelInfoReply, LanguageInfo,
+    MediaType, ReplyError, ReplyStatus, ShutdownReply, Status, StreamContent,
 };
 use jupyter_zmq_client::{
     KernelIoPubConnection, KernelShellConnection, create_kernel_control_connection,
@@ -66,6 +68,8 @@ fn install(dir: &Path, exe: &Path, janet: &str) -> Result<()> {
         "argv": [kernel, "kernel", "{connection_file}", janet],
         "display_name": "Janet",
         "language": "janet",
+        // Interrupts come as control messages: a SIGINT would end the kernel.
+        "interrupt_mode": "message",
     });
     fs::write(
         dir.join("kernel.json"),
@@ -101,9 +105,29 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
     let _stdin = create_kernel_stdin_connection(&info, &session).await?;
 
     tokio::spawn(async move { while heartbeat.single_heartbeat().await.is_ok() {} });
-    // ponytail: interrupts are ignored; a runaway eval needs a kernel restart.
+    // The process of the netrepl server evaluations go to, once connected; 0 before.
+    let server = Arc::new(AtomicU32::new(0));
+    let interrupted = Arc::clone(&server);
     tokio::spawn(async move {
         while let Ok(request) = control.read().await {
+            if let JupyterMessageContent::InterruptRequest(_) = &request.content {
+                let error = interrupt(interrupted.load(Ordering::Relaxed)).err();
+                let reply = InterruptReply {
+                    status: if error.is_some() {
+                        ReplyStatus::Error
+                    } else {
+                        ReplyStatus::Ok
+                    },
+                    error: error.map(|err| {
+                        Box::new(ReplyError {
+                            ename: "interrupt".to_string(),
+                            evalue: err.to_string(),
+                            traceback: vec![],
+                        })
+                    }),
+                };
+                control.send(reply.as_child_of(&request)).await.ok();
+            }
             if let JupyterMessageContent::ShutdownRequest(shutdown) = &request.content {
                 let reply = ShutdownReply {
                     restart: shutdown.restart,
@@ -128,7 +152,7 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
             }
             JupyterMessageContent::ExecuteRequest(execute) => {
                 count.increment();
-                let evaluation = evaluate(&mut repl, janet, &execute.code).await;
+                let evaluation = evaluate(&mut repl, &server, janet, &execute.code).await;
                 publish(
                     &mut iopub,
                     &mut shell,
@@ -145,8 +169,22 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
     }
 }
 
-/// Evaluates over the cached connection; a broken connection is dropped so the next request reconnects.
-async fn evaluate(repl: &mut Option<Netrepl>, janet: &str, code: &str) -> Evaluation {
+/// Cancels the evaluation in progress in the server with process id `pid`, if any.
+fn interrupt(pid: u32) -> std::io::Result<()> {
+    if pid == 0 {
+        return Ok(());
+    }
+    netrepl::signal(pid, "INT")
+}
+
+/// Evaluates over the cached connection; a broken connection is dropped so the next request
+/// reconnects. The process of a new connection's server goes to `server`.
+async fn evaluate(
+    repl: &mut Option<Netrepl>,
+    server: &AtomicU32,
+    janet: &str,
+    code: &str,
+) -> Evaluation {
     // Zed starts kernels in the worktree root.
     let position = std::env::current_dir()
         .ok()
@@ -159,7 +197,10 @@ async fn evaluate(repl: &mut Option<Netrepl>, janet: &str, code: &str) -> Evalua
     let result = match repl {
         Some(connection) => connection.eval(code, position.as_ref()).await,
         None => match start(janet).await {
-            Ok(connection) => repl.insert(connection).eval(code, position.as_ref()).await,
+            Ok(mut connection) => {
+                server.store(connection.pid().await.unwrap_or(0), Ordering::Relaxed);
+                repl.insert(connection).eval(code, position.as_ref()).await
+            }
             Err(err) => Err(err),
         },
     };

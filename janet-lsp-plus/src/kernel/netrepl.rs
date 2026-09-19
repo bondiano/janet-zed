@@ -102,6 +102,16 @@ impl Netrepl {
         Ok(parse_reply(&reply))
     }
 
+    /// The process id of the server, to interrupt it by.
+    pub async fn pid(&mut self) -> io::Result<u32> {
+        let reply = self.call("(os/getpid)").await?;
+        reply
+            .strip_prefix("(true ")
+            .and_then(|rest| rest.strip_suffix(')'))
+            .and_then(|pid| pid.parse().ok())
+            .ok_or_else(|| io::Error::other(format!("unexpected netrepl reply: {reply}")))
+    }
+
     /// Evaluates `form` through netrepl's 0xFF channel and returns the JDN reply.
     pub async fn call(&mut self, form: &str) -> io::Result<String> {
         self.send(&[&[0xFF], form.as_bytes()].concat()).await?;
@@ -122,6 +132,30 @@ impl Netrepl {
         self.stream.read_exact(&mut payload).await?;
         Ok(payload)
     }
+}
+
+/// Sends signal `name` (`INT`, `USR1`) to process `pid`: the servers take SIGINT to cancel the
+/// kernel's evaluation and SIGUSR1 to pause for the debugger.
+#[cfg(unix)]
+pub fn signal(pid: u32, name: &str) -> io::Result<()> {
+    let status = std::process::Command::new("kill")
+        .args([format!("-{name}"), pid.to_string()])
+        .status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("kill -{name} {pid}: {status}")))
+    }
+}
+
+// ponytail: no signals on Windows, so no interrupt or pause there; a console control event
+// (`GenerateConsoleCtrlEvent`) could stand in for SIGINT.
+#[cfg(not(unix))]
+pub fn signal(_: u32, name: &str) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!("SIG{name} on Windows"),
+    ))
 }
 
 /// A port nobody listens on. Another process may take it before the server binds it, which
@@ -242,6 +276,7 @@ fn ports_dir() -> Option<PathBuf> {
 /// A client whose name does not start with `token` is disconnected before its first form
 /// (netrepl makes a taken name unique by appending to it). The token comes first on stdin, not
 /// on the command line other users can list; stderr, where netrepl logs every name, is dropped.
+/// SIGINT cancels the kernel's evaluation in progress, running or waiting.
 async fn start_server(
     janet: &str,
     port: u16,
@@ -257,6 +292,10 @@ async fn start_server(
 (ev/thread (fn [] (file/read stdin :all) (os/exit 0)) nil :n)
 (def env (make-env))
 (put env :pretty-format \"%.20Q\")
+(unless (= :windows (os/which))
+  (os/sigaction :int
+                (fn [] (when-let [task (in env :janet-zed/evaluating)] (ev/cancel task \"interrupted\")))
+                true))
 (defn env-of [name stream]
   (if (and (bytes? name) (string/has-prefix? token name))
     env
