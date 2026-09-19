@@ -1,0 +1,13 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- PREPARE\\n{prepared}\\n\\n----- ERROR\\n{refused}\\n\",\nsession.cursor(\"($ :kind\", 1))"
+---
+----- CURSOR
+  (def by-kind (group-by |($ :kind) items))
+                           ↑
+
+----- PREPARE
+`$` is bound by nothing the workspace knows of
+
+----- ERROR
+`$` is bound by nothing the workspace knows of

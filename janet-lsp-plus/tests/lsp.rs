@@ -824,6 +824,22 @@ fn rename_a_core_binding() {
 }
 
 #[test]
+fn rename_a_name_nothing_binds() {
+    let mut session = Session::start();
+    let prepared = session
+        .request("textDocument/prepareRename", session.at("($ :kind", 1))
+        .unwrap_err();
+    let mut params = session.at("($ :kind", 1);
+    params["newName"] = json!("x");
+    let refused = session.request("textDocument/rename", params).unwrap_err();
+    insta::assert_snapshot!(format!(
+        "----- CURSOR\n{}\n\n----- PREPARE\n{prepared}\n\n----- ERROR\n{refused}\n",
+        session.cursor("($ :kind", 1)
+    ));
+    session.finish();
+}
+
+#[test]
 fn document_symbols() {
     let mut session = Session::start();
     let symbols = session

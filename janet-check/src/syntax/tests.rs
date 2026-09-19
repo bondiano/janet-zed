@@ -43,3 +43,23 @@ fn delimiters_of_a_list() {
     let (open, close) = delimiters(doc.root().child(0).unwrap()).unwrap();
     assert_eq!((open.kind(), close.kind()), ("(", ")"));
 }
+
+/// Whether the symbol at the `|` in `source` is quoted data.
+fn quoted(source: &str) -> bool {
+    let (offset, text) = cursor(source);
+    let doc = Document::new(text);
+    is_quoted(&doc, &path_at(doc.root(), offset))
+}
+
+#[test]
+fn quoted_symbols_are_data() {
+    assert!(quoted("'|a") && quoted("'(f |a)") && quoted("(quote |a)") && quoted("~(f |a)"));
+    assert!(quoted("(quasiquote (f |a))") && quoted("~(f ~(g ,|a))") && quoted("'(f ,|a)"));
+}
+
+#[test]
+fn unquoted_symbols_are_code() {
+    assert!(!quoted("(f |a)") && !quoted("~(f ,|a)") && !quoted("~(f ,(g |a))"));
+    assert!(!quoted("(|quote a)") && !quoted("(quasiquote (f (unquote |a)))"));
+    assert!(!quoted("~(f ~(g ,,|a))"));
+}

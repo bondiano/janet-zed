@@ -525,7 +525,10 @@ fn resolve<'s>(
     ))
 }
 
-/// [`resolve`], refusing core bindings and definitions that live in dependencies.
+/// [`resolve`], refusing core bindings, definitions that live in dependencies, names nothing binds
+/// and quoted symbols: renaming them would rewrite whatever is spelled the same.
+// ponytail: no check that the new name collides with or is captured by another binding; add one
+// when a rename is seen to change what a name refers to.
 fn renamable<'s>(
     state: &'s State,
     params: &TextDocumentPositionParams,
@@ -541,7 +544,17 @@ fn renamable<'s>(
         Some((_, Target::Peg { name })) => bail!("`{name}` is a PEG special"),
         Some((_, Target::Type { name })) => bail!("`{name}` is a type form"),
         Some((_, Target::Project { name })) => bail!("`{name}` comes from jpm or janet-pm"),
+        Some((_, Target::Form { name, .. })) => {
+            bail!("`{name}` is bound by nothing the workspace knows of")
+        }
         _ => {}
+    }
+    if let Some((occurrence, _)) = &resolved {
+        let doc = &occurrence.file.document;
+        ensure!(
+            !syntax::is_quoted(doc, &syntax::path_at(doc.root(), occurrence.range.start)),
+            "a quoted symbol is data, not a name to rename"
+        );
     }
     Ok(resolved)
 }
@@ -550,7 +563,12 @@ fn range_of(occurrence: &Occurrence) -> Range {
     occurrence.file.document.range(occurrence.range.clone())
 }
 
+/// Whether `text` is a symbol a definition can be renamed to. Not a qualified one: importers write
+/// it after their own prefix, so `mod/` in it would read as another module.
 fn is_symbol(text: &str) -> bool {
+    if text.contains('/') {
+        return false;
+    }
     let doc = Document::new(text.to_string());
     matches!(
         syntax::forms(doc.root()).as_slice(),

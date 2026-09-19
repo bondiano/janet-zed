@@ -153,6 +153,28 @@ pub fn outer(node: Node<'_>) -> Node<'_> {
     outer
 }
 
+/// Whether the form ending `path` (from [`path_at`]) is quoted data rather than code: under `'`
+/// or `quote`, or under `~` or `quasiquote` with no unquote of its own in between.
+pub fn is_quoted(doc: &Document, path: &[Node]) -> bool {
+    let mut unquotes = 0usize;
+    for pair in path.windows(2).rev() {
+        let [node, child] = pair else { continue };
+        let head = (node.kind() == LIST)
+            .then(|| forms(*node).first().copied())
+            .flatten()
+            .filter(|head| head != child && head.kind() == SYMBOL)
+            .map(|head| doc.text_of(head));
+        match (node.kind(), head) {
+            ("quote_lit", _) | (_, Some("quote")) => return true,
+            ("unquote_lit", _) | (_, Some("unquote")) => unquotes += 1,
+            ("qq_lit", _) | (_, Some("quasiquote")) if unquotes == 0 => return true,
+            ("qq_lit", _) | (_, Some("quasiquote")) => unquotes -= 1,
+            _ => {}
+        }
+    }
+    false
+}
+
 pub fn symbol_at(root: Node<'_>, offset: usize) -> Option<Node<'_>> {
     path_at(root, offset)
         .pop()
