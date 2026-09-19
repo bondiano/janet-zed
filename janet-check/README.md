@@ -181,8 +181,9 @@ a library exports as `janet-zed.exports/<lib>/*.d.janet` beside its config.
 `shapes.d.janet` beside `shapes.janet` is read as the types of that module: a module whose own
 source carries no annotations is typed by the file next to it, in every file that imports it.
 
-Types for spork's `json`, `http`, `path`, `sh` and `misc` are built in, reachable through an
-import of the module — `(import spork/json)` types `(json/decode text)` as `{:string :any}`.
+Types for seventeen of spork's modules (`json`, `http`, `path`, `sh`, `misc`, `argparse`, `test`,
+`schema`, `rpc`, `fmt`, `regex`, `temple`, `netrepl`, `ev-utils`, `stream`, `base64`, `crc`) are
+built in, reachable through an import of the module — `(import spork/json)` types `(json/decode text)` as `{:string :any}`.
 
 ### What is reported
 

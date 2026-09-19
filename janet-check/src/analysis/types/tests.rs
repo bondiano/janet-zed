@@ -1,4 +1,5 @@
 use std::collections::BTreeSet;
+use std::fmt::Write as _;
 
 use super::*;
 use crate::analysis::symbols::Parameters;
@@ -249,7 +250,7 @@ struct Entry {
 
 /// The positions nobody has written a type for yet. A wrong type made `:any` raises it: a result
 /// Janet does not return is a false finding, which is worse than none.
-const ANY_POSITIONS: usize = 460;
+const ANY_POSITIONS: usize = 452;
 
 fn core_entries() -> Vec<Entry> {
     let doc = Document::new(CORE.to_string());
@@ -491,8 +492,11 @@ fn every_predicate_declares_what_it_narrows() {
     insta::assert_snapshot!(marked.join("\n"));
 }
 
-/// The five spork modules `spork.d.janet` carries. Their names are how the file writes them.
-const SPORK_MODULES: [&str; 5] = ["json", "http", "path", "sh", "misc"];
+/// The spork modules `spork.d.janet` carries. Their names are how the file writes them.
+const SPORK_MODULES: [&str; 17] = [
+    "json", "http", "path", "sh", "misc", "argparse", "test", "schema", "rpc", "fmt", "regex",
+    "temple", "netrepl", "ev-utils", "stream", "base64", "crc",
+];
 
 /// Every entry of `spork.d.janet` is written in full, documented and typed, and an entry that
 /// leaves a position `:any` says beside it why it is still open.
@@ -548,7 +552,7 @@ fn every_spork_predicate_declares_what_it_narrows() {
 /// means the file has to be brought up to the version in the syspath; without spork there is
 /// nothing to compare against and the test says so rather than failing.
 #[test]
-fn spork_declares_every_binding_of_the_five_modules() {
+fn spork_declares_every_binding_of_its_modules() {
     let doc = Document::new(SPORK.to_string());
     let declared: BTreeSet<String> = definitions::definitions(&doc, doc.root(), &|_| None)
         .iter()
@@ -581,6 +585,86 @@ fn spork_declares_every_binding_of_the_five_modules() {
             missing.is_empty() && gone.is_empty(),
             "spork.d.janet is out of date with this spork: {module} missing {missing:?}, \
              declared but gone {gone:?}"
+        );
+    }
+}
+
+/// What the core declares a call answers against what the installed Janet answers: each sample is
+/// run, and the type Janet reports for its value has to fit the declared `:ret`. A result declared
+/// narrower than Janet's is a false finding at every call. Without Janet there is nothing to
+/// compare against and the test says so rather than failing.
+#[test]
+fn core_results_fit_what_the_installed_janet_answers() {
+    const CALLS: [&str; 27] = [
+        "(disasm (fn [] 1))",
+        "(disasm (fn [] 1) :bytecode)",
+        "(disasm (fn [] 1) :name)",
+        "(disasm (fn [x] x) :vararg)",
+        "(disasm (fn [x] x) :arity)",
+        "(disasm (fn f [x] x) :name)",
+        r#"(os/stat "Cargo.toml")"#,
+        r#"(os/stat "no-such-file")"#,
+        r#"(os/stat "Cargo.toml" :mode)"#,
+        r#"(os/stat "Cargo.toml" :permissions)"#,
+        r#"(os/stat "Cargo.toml" :size)"#,
+        r#"(os/lstat "Cargo.toml" :mode)"#,
+        "(parser/state (parser/new))",
+        "(parser/state (parser/new) :delimiters)",
+        "(parser/state (parser/new) :frames)",
+        "(ev/do-thread 1)",
+        r#"(slurp "Cargo.toml")"#,
+        r#"(string/split "," "a,b")"#,
+        r#"(string/format "%d" 1)"#,
+        "(describe 1)",
+        "(keys {:a 1})",
+        "(frequencies [1 1])",
+        "(range 3)",
+        "(math/floor 1.5)",
+        "(os/time)",
+        r#"(peg/match "a" "a")"#,
+        "(fiber/status (fiber/new (fn [] 1)))",
+    ];
+    let installed = std::process::Command::new("janet").arg("-v").output();
+    if installed.is_err() {
+        eprintln!("janet is not installed: nothing to compare against");
+        return;
+    }
+    let script = CALLS.iter().fold(String::new(), |mut script, call| {
+        writeln!(script, "(print (type {call}))").expect("writing to a string");
+        script
+    });
+    let answered = crate::janet::run(
+        "janet",
+        &script,
+        "",
+        Some(std::path::Path::new(env!("CARGO_MANIFEST_DIR"))),
+        std::time::Duration::from_secs(10),
+    )
+    .expect("every sample runs");
+    assert_eq!(answered.lines().count(), CALLS.len(), "{answered}");
+    let expand = |name: &str, _: &[Type]| match core().binding(name) {
+        Some(Annotation::Typedef(ty, _)) => Some(ty.clone()),
+        _ => None,
+    };
+    for (call, answer) in CALLS.iter().zip(answered.lines()) {
+        let name = call[1..].split([' ', ')']).next().unwrap_or_default();
+        let Some(Annotation::Function(signature)) = core().binding(name) else {
+            panic!("{name} is not a call")
+        };
+        // An abstract type answers with its own name, `core/process`; the type language calls
+        // every one of them `:abstract`.
+        let atom = if is_atom(answer) { answer } else { "abstract" };
+        assert_ne!(
+            fit::fit(
+                &Type::Keyword(atom.into()),
+                &signature.ret,
+                &infer::Subst::default(),
+                &expand,
+                false,
+            ),
+            fit::Fit::No,
+            "{call} answers :{answer}, but {name} is declared to answer {}",
+            signature.ret
         );
     }
 }

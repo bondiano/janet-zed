@@ -115,10 +115,10 @@ For a name a file uses, the most local source wins:
 1. The file's own metadata (`declared` in `Infer`).
 2. `x.d.janet` beside `x.janet`: read as the types of that module, over what its body says.
 3. `*.d.janet` anywhere under the workspace roots: ambient, visible to every file.
-4. `janet-zed.exports/<lib>/*.d.janet` a library installs beside its config; spork's five modules
-   ship with the checker as one of these.
-5. `core.d.janet`: every root-env binding and special form, `:any` where nobody has typed a
-   position, `# TODO` where nobody has worked one out yet. Its `(comment :peg …)` block types
+4. `janet-zed.exports/<lib>/*.d.janet` a library installs beside its config; spork's most used
+   modules ship with the checker as one of these.
+5. `core.d.janet`: every root-env binding and special form, `:any` where any value belongs
+   there, with a comment beside a result saying why. Its `(comment :peg …)` block types
    PEG specials separately, since they share names with bindings.
 6. Under all of these, what inference reads out of the file that defines the name.
 

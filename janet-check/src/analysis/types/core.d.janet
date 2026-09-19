@@ -1,4 +1,4 @@
-# Types of Janet's core, from Janet 1.41.2.
+# Types of Janet's core, checked against Janet 1.42.1.
 #
 # `scripts/core-skeleton.janet` writes the skeleton — every name with its arity and its docs —
 # and `scripts/core-ctypes.janet` fills in what Janet's C sources answer for. The rest is written
@@ -6,8 +6,9 @@
 # the test `core_declares_every_binding_of_the_installed_janet` names what changed.
 #
 # An `:any` left standing is a position where any value belongs: the argument of a predicate, the
-# values `print` and `array/push` take, the form a macro is handed. A `# TODO` marks the other
-# kind — a position whose type nobody has worked out yet.
+# values `print` and `array/push` take, the form a macro is handed, what a macro's body or `eval`
+# answers. A result that is `:any` for another reason says why beside it. A `# TODO` would mark a
+# position whose type nobody has worked out yet; none is left.
 
 (defn %
   {:params [:number] :ret :number}
@@ -855,7 +856,7 @@
   [fiber &opt err prefix])
 
 (defn debug/step
-  {:params [:fiber :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:fiber :any] :ret :any} # the signal value: whatever the fiber yields or raises
   "(debug/step fiber &opt x)\n\nRun a fiber for one virtual instruction of the Janet machine. Can optionally pass in a value that will be passed as the resuming value. Returns the signal value, which will usually be nil, as breakpoints raise nil signals."
   [fiber &opt x])
 
@@ -965,7 +966,7 @@
   [x])
 
 (defn disasm
-  {:params [:function :keyword?] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:function :keyword?] :ret (or :struct :number :boolean :string :array :nil)}
   "(disasm func &opt field)\n\nReturns assembly that could be used to compile the given function. func must be a function, not a c function. Will throw on error on a badly typed argument. If given a field name, will only return that part of the function assembly. Possible fields are:\n\n* :arity - number of required and optional arguments.\n* :min-arity - minimum number of arguments function can be called with.\n* :max-arity - maximum number of arguments function can be called with.\n* :vararg - true if function can take a variable number of arguments.\n* :structarg - true if function can take a variable number of arguments using the &keys option.\n* :namedargs - if function can take a variable number of arguments using the &named option, this will be the number of named arguments.\n* :bytecode - array of parsed bytecode instructions. Each instruction is a tuple.\n* :source - name of source file that this function was compiled from.\n* :name - name of function.\n* :slotcount - how many virtual registers, or slots, this function uses. Corresponds to stack space used by function.\n* :symbolmap - all symbols and their slots.\n* :constants - an array of constants referenced by this function.\n* :sourcemap - a mapping of each bytecode instruction to a line and column in the source file.\n* :environments - an internal mapping of which enclosing functions are referenced for bindings.\n* :defs - other function definitions that this function may instantiate.\n"
   [func &opt field])
 
@@ -1000,7 +1001,7 @@
   [x])
 
 (defn dofile
-  {:params [:any :any :any :any :any :any :any :any] :ret :any}
+  {:params [:any :any :any :any :any :any :any :any] :ret :table}
   "(dofile path &named exit env source expander evaluator read parser)\n\nEvaluate a file, file path, or stream and return the resulting environment. :env, :expander,\n:source, :evaluator, :read, and :parser are passed through to the underlying\n`run-context` call. If `exit` is true, any top level errors will trigger a\ncall to `(os/exit 1)` after printing the error."
   [path &named exit env source expander evaluator read parser])
 
@@ -1020,7 +1021,7 @@
   [pred ind])
 
 (defn dyn
-  {:params [:keyword :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:keyword :any] :ret :any} # whatever was bound, or the default
   "(dyn key &opt default)\n\nGet a dynamic binding. Returns the default value (or nil) if no binding found."
   [key &opt default])
 
@@ -1155,7 +1156,7 @@
   [sec &opt tocancel tocheck intr?])
 
 (defmacro ev/do-thread
-  {:params [:any] :ret :any}
+  {:params [:any] :ret :nil}
   "(ev/do-thread & body)\n\nRun some code in a new thread. Suspends the current fiber until the thread is complete, and\nevaluates to nil."
   [& body])
 
@@ -1245,7 +1246,7 @@
   [& body])
 
 (defn ev/take
-  {:params [:abstract] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:abstract] :ret :any} # whatever was given to the channel
   "(ev/take channel)\n\nRead from a channel, suspending the current fiber if no value is available."
   [channel])
 
@@ -1325,7 +1326,7 @@
   [type])
 
 (defn ffi/call
-  {:params [:pointer :abstract :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:pointer :abstract :any] :ret :any} # what the signature's return type reads as
   "(ffi/call pointer signature & args)\n\nCall a raw pointer as a function pointer. The function signature specifies how Janet values in `args` are converted to native machine types."
   [pointer signature & args])
 
@@ -1390,7 +1391,7 @@
   [pointer &opt name source-file source-line])
 
 (defn ffi/read
-  {:params [CType (or :string :buffer :symbol :keyword) :number?] :ret :any} # TODO: the C source does not say what it returns
+  {:params [CType (or :string :buffer :symbol :keyword) :number?] :ret :any} # what the C type reads as
   "(ffi/read ffi-type bytes &opt offset)\n\nParse a native struct out of a buffer and convert it to normal Janet data structures. This function is the inverse of `ffi/write`. `bytes` can also be a raw pointer, although this is unsafe."
   [ffi-type bytes &opt offset])
 
@@ -1440,7 +1441,7 @@
   [fiber])
 
 (defn fiber/last-value
-  {:params [:fiber] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:fiber] :ret :any} # whatever the fiber last yielded, returned or raised
   "(fiber/last-value fiber)\n\nGet the last value returned or signaled from the fiber."
   [fiber])
 
@@ -2405,7 +2406,7 @@
   [host port &opt handler type no-reuse])
 
 (defn net/setsockopt
-  {:params [:abstract :keyword :any] :ret :nil} # TODO: the C source does not say what value is
+  {:params [:abstract :keyword (or :boolean :number :string)] :ret :nil}
   "(net/setsockopt stream option value)\n\nset socket options.\n\nsupported options and associated value types:\n- :so-broadcast boolean\n- :so-reuseaddr boolean\n- :so-keepalive boolean\n- :ip-multicast-ttl number\n- :ip-add-membership string\n- :ip-drop-membership string\n- :ipv6-join-group string\n- :ipv6-leave-group string\n- :ipv6-multicast-hops number\n- :ipv6-unicast-hops number\n"
   [stream option value])
 
@@ -2550,7 +2551,7 @@
   [oldpath newpath &opt symlink])
 
 (defn os/lstat
-  {:params [:string (or :table :keyword :nil) :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:string (or :table :keyword :nil) :any] :ret (or :table :keyword :number :string :nil)}
   "(os/lstat path &opt tab|key)\n\nLike os/stat, but don't follow symlinks.\n"
   [path &opt tab|key])
 
@@ -2605,7 +2606,7 @@
   [proc])
 
 (defn os/proc-kill
-  {:params [:abstract :boolean? (or :keyword :number :nil)] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:abstract :boolean? (or :keyword :number :nil)] :ret (or :number :abstract)}
   "(os/proc-kill proc &opt wait signal)\n\nKill the subprocess `proc` by sending SIGKILL to it on POSIX systems, or by closing the process handle on Windows. If `proc` has already completed, raise an error. If `wait` is truthy, will wait for `proc` to complete and return the exit code (this will raise an error if `proc` is being waited for). Otherwise, return `proc`. If `signal` is provided, send it instead of SIGKILL. Signal keywords are named after their C counterparts but in lowercase with the leading SIG stripped. `signal` is ignored on Windows."
   [proc &opt wait signal])
 
@@ -2670,7 +2671,7 @@
   [args &opt flags env])
 
 (defn os/stat
-  {:params [:string (or :table :keyword :nil) :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:string (or :table :keyword :nil) :any] :ret (or :table :keyword :number :string :nil)}
   "(os/stat path &opt tab|key)\n\nGets information about a file or directory. Returns a table if the second argument is a keyword, returns only that information from stat. If the file or directory does not exist, returns nil. The keys are:\n\n* :dev - the device that the file is on\n\n* :mode - the type of file, one of :file, :directory, :block, :character, :fifo, :socket, :link, or :other\n\n* :int-permissions - A Unix permission integer like 8r744\n\n* :permissions - A Unix permission string like \"rwxr--r--\"\n\n* :uid - File uid\n\n* :gid - File gid\n\n* :nlink - number of links to file\n\n* :rdev - Real device of file. 0 on Windows\n\n* :size - size of file in bytes\n\n* :blocks - number of blocks in file. 0 on Windows\n\n* :blocksize - size of blocks in file. 0 on Windows\n\n* :accessed - timestamp when file last accessed\n\n* :changed - timestamp when file last changed (permissions changed)\n\n* :modified - timestamp when file last modified (content changed)\n"
   [path &opt tab|key])
 
@@ -2765,12 +2766,12 @@
   [])
 
 (defn parser/produce
-  {:params [:abstract :boolean?] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:abstract :boolean?] :ret :any} # the value parsed
   "(parser/produce parser &opt wrap)\n\nDequeue the next value in the parse queue. Will return nil if no parsed values are in the queue, otherwise will dequeue the next value. If `wrap` is truthy, will return a 1-element tuple that wraps the result. This tuple can be used for source-mapping purposes."
   [parser &opt wrap])
 
 (defn parser/state
-  {:params [:abstract :keyword?] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:abstract :keyword?] :ret (or :table :string :array)}
   "(parser/state parser &opt key)\n\nReturns a representation of the internal state of the parser. If a key is passed, only that information about the state is returned. Allowed keys are:\n\n* :delimiters - Each byte in the string represents a nested data structure. For example, if the parser state is '([\"', then the parser is in the middle of parsing a string inside of square brackets inside parentheses. Can be used to augment a REPL prompt.\n\n* :frames - Each table in the array represents a 'frame' in the parser state. Frames contain information about the start of the expression being parsed as well as the type of that expression and some type-specific information."
   [parser &opt key])
 
@@ -2990,7 +2991,7 @@
   [arg &opt name])
 
 (defn signal
-  {:params [(or :keyword :number) :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [(or :keyword :number) :any] :ret :any} # whatever the fiber is resumed with
   "(signal what x)\n\nRaise a signal with payload x. `what` can be an integer\nfrom 0 through 7 indicating user(0-7), or one of:\n\n* :ok\n* :error\n* :debug\n* :yield\n* :user(0-7)\n* :interrupt\n* :await"
   [what x])
 
@@ -3175,7 +3176,7 @@
   [st])
 
 (defn struct/rawget
-  {:params [:struct :any] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:struct :any] :ret :any} # the value stored under the key
   "(struct/rawget st key)\n\nGets a value from a struct `st` without looking at the prototype struct. If `st` does not contain the key directly, the function will return nil without checking the prototype. Returns the value in the struct."
   [st key])
 
@@ -3245,7 +3246,7 @@
   [tab])
 
 (defn table/rawget
-  {:params [:table a] :ret :any} # TODO: the C source does not say what it returns
+  {:params [:table a] :ret :any} # the value stored under the key
   "(table/rawget tab key)\n\nGets a value from a table `tab` without looking at the prototype table. If `tab` does not contain the key directly, the function will return nil without checking the prototype. Returns the value in the table."
   [tab key])
 
@@ -3390,7 +3391,7 @@
   [condition & body])
 
 (defn unmarshal
-  {:params [(or :string :buffer :symbol :keyword) :table] :ret :any} # TODO: the C source does not say what it returns
+  {:params [(or :string :buffer :symbol :keyword) :table] :ret :any} # whatever was marshalled
   "(unmarshal buffer &opt lookup)\n\nUnmarshal a value from a buffer. An optional lookup table can be provided to allow for aliases to be resolved. Returns the value unmarshalled from the buffer."
   [buffer &opt lookup])
 

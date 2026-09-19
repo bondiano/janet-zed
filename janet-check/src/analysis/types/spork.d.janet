@@ -1,4 +1,6 @@
-# Types of spork's `json`, `http`, `path`, `sh` and `misc`, from spork 1.10.0.
+# Types of spork's most used modules, checked against spork 1.2.0 (3918802) on Janet 1.42.1:
+# `json`, `http`, `path`, `sh`, `misc`, `argparse`, `test`, `schema`, `rpc`, `fmt`, `regex`,
+# `temple`, `netrepl`, `ev-utils`, `stream`, `base64` and `crc`.
 #
 # The server writes this file out beside its own `janet-zed.exports/spork/`, so it is read like
 # any other declaration a library exports and can be handed to spork upstream unchanged. Names
@@ -492,3 +494,290 @@
   {:params [a] :ret :nil}
   "Define variables as `let` binds them, without opening a scope."
   [& bindings])
+
+# -- spork/argparse ----------------------------------------------------------------------------
+
+(defn spork/argparse/argparse
+  {:params [:string (or :string :keyword :struct :table :tuple :array)] :ret :table?}
+  "Parse `(dyn :args)` by the options given, or answer nil and print usage when they do not fit."
+  [description &keys options])
+
+# -- spork/test --------------------------------------------------------------------------------
+
+(def spork/test/num-tests-passed {:type :number} "How many asserts of the suite held." nil)
+(def spork/test/num-tests-run {:type :number} "How many asserts the suite ran." nil)
+(def spork/test/skip-count {:type :number} "How many asserts were skipped." nil)
+(def spork/test/skip-n {:type :number} "How many asserts are still to be skipped." nil)
+(def spork/test/start-time {:type :number} "When the suite started, by `os/clock`." nil)
+(def spork/test/suite-num
+  {:type :any} # TODO: whatever `start-suite` was last handed, the current file by default
+  "The name of the running suite."
+  nil)
+
+(defmacro spork/test/assert
+  {:params [a b] :ret a}
+  "Assert that `x` holds, reporting where it does not, and answer `x`."
+  [x &opt e])
+(defmacro spork/test/assert-not
+  {:params [a b] :ret :boolean}
+  "Assert that `x` does not hold."
+  [x &opt e])
+(defmacro spork/test/assert-error
+  {:params [a b] :ret :boolean}
+  "Assert that the forms raise an error."
+  [msg & forms])
+(defmacro spork/test/assert-no-error
+  {:params [a b] :ret :boolean}
+  "Assert that the forms raise no error."
+  [msg & forms])
+(defn spork/test/assert-docs
+  {:params [:string] :ret :nil}
+  "Assert that every public binding of the module at `path` has a proper docstring."
+  [path])
+(defmacro spork/test/capture-stdout
+  {:params [a] :ret [a :string]}
+  "Run the body, answering its value and what it printed to standard output."
+  [& body])
+(defmacro spork/test/capture-stderr
+  {:params [a] :ret [a :string]}
+  "Run the body, answering its value and what it printed to standard error."
+  [& body])
+(defmacro spork/test/suppress-stdout
+  {:params [a] :ret a}
+  "Run the body with its standard output discarded."
+  [& body])
+(defmacro spork/test/suppress-stderr
+  {:params [a] :ret a}
+  "Run the body with its standard error discarded."
+  [& body])
+(defn spork/test/start-suite {:params [a] :ret :number} "Start a test suite." [&opt name])
+(defn spork/test/end-suite
+  {:params [] :ret :nil}
+  "End the suite, print a summary and exit when an assert failed."
+  [])
+(defn spork/test/skip-asserts {:params [:number] :ret :nil} "Skip the next `n` asserts." [n])
+(defmacro spork/test/timeit
+  {:params [a b] :ret a}
+  "Evaluate `form`, print how long it took, and answer its value."
+  [form &opt tag])
+(defmacro spork/test/timeit-loop
+  {:params [a b] :ret :nil}
+  "Like `loop`, printing how long it took; a `:timeout` verb iterates for so many seconds."
+  [head & body])
+
+# -- spork/schema ------------------------------------------------------------------------------
+
+(defmacro spork/schema/validator
+  {:params [a] :ret (fn [b] b)}
+  "A function of one argument raising where it does not fit `pattern`, and answering it where it does."
+  [pattern])
+(defmacro spork/schema/predicate
+  {:params [a] :ret (fn [b] :boolean)}
+  "A function of one argument answering whether it fits `pattern`."
+  [pattern])
+(defn spork/schema/make-validator
+  {:params [a] :ret (fn [& b] (fn [c] c))}
+  "The function form of `validator`: a thunk answering the validator, as `compile` does."
+  [schema])
+(defn spork/schema/make-predicate
+  {:params [a] :ret (fn [& b] (fn [c] :boolean))}
+  "The function form of `predicate`: a thunk answering the predicate, as `compile` does."
+  [schema])
+
+# -- spork/rpc ---------------------------------------------------------------------------------
+
+(def spork/rpc/default-host {:type :string} "Default host to run the server on and connect to." nil)
+(def spork/rpc/default-port {:type :string} "Default port to run the server on and connect to." nil)
+
+(defn spork/rpc/server
+  {:params [(or :table :struct) :string? (or :string :number :nil) :number?] :ret :abstract}
+  "An RPC server calling the functions of a dictionary for its clients."
+  [functions &opt host port workers-per-connection])
+(defn spork/rpc/client
+  {:params [:string? (or :string :number :nil) a] :ret :table}
+  "An RPC client: a table of a function per remote call, and `:close`."
+  [&opt host port name])
+
+# -- spork/fmt ---------------------------------------------------------------------------------
+
+(def spork/fmt/*user-indent-2-forms*
+  {:type :keyword}
+  "Dynamic binding of more forms to indent two spaces, as control forms are."
+  nil)
+
+(defn spork/fmt/format
+  {:params [(or :string :buffer)] :ret :buffer}
+  "Format a string of source code to a buffer."
+  [source])
+(defn spork/fmt/format-print
+  {:params [(or :string :buffer)] :ret :nil}
+  "Format a string of source code and print the result."
+  [source])
+(defn spork/fmt/format-file {:params [:string] :ret :nil} "Format a file in place." [file])
+
+# -- spork/regex -------------------------------------------------------------------------------
+
+(def spork/regex/peg {:type :abstract} "PEG turning a regular expression into PEG source." nil)
+
+(defn spork/regex/source
+  {:params [(or :string :buffer)] :ret Pattern}
+  "Compile a subset of regex to PEG source code."
+  [pattern])
+(defn spork/regex/compile
+  {:params [Pattern] :ret Pattern}
+  "Compile a regex string to a PEG; a PEG is answered as it is."
+  [pattern])
+(defn spork/regex/match
+  {:params [Pattern (or :string :buffer) :number?] :ret (or @[:any] :nil)} # TODO: what the captures hold
+  "Like `peg/match`, for regexes."
+  [reg text &opt start])
+(defn spork/regex/find
+  {:params [Pattern (or :string :buffer) :number?] :ret :number?}
+  "Like `peg/find`, for regexes."
+  [reg text &opt start])
+(defn spork/regex/find-all
+  {:params [Pattern (or :string :buffer) :number?] :ret @[:number]}
+  "Like `peg/find-all`, for regexes."
+  [reg text &opt start])
+(defn spork/regex/replace
+  {:params [Pattern a (or :string :buffer) :number?] :ret :buffer}
+  "Like `peg/replace`, for regexes."
+  [reg rep text &opt start])
+(defn spork/regex/replace-all
+  {:params [Pattern a (or :string :buffer) :number?] :ret :buffer}
+  "Like `peg/replace-all`, for regexes."
+  [reg rep text &opt start])
+
+# -- spork/temple ------------------------------------------------------------------------------
+
+(def spork/temple/base-env {:type :table} "Base environment templates are rendered in." nil)
+
+(defn spork/temple/add-loader
+  {:params [] :ret :array}
+  "Add the template loader to `module/loaders` and `module/paths`."
+  [])
+(defn spork/temple/create
+  {:params [(or :string :buffer) a] :ret :function}
+  "Compile a template string into a function printing it, `where` naming its source."
+  [source &opt where])
+(defn spork/temple/compile
+  {:params [(or :string :buffer)] :ret (fn [& a] :buffer)}
+  "Compile a template into a function of `&keys` arguments answering the rendered buffer."
+  [str])
+
+# -- spork/netrepl -----------------------------------------------------------------------------
+
+(def spork/netrepl/default-host
+  {:type :string}
+  "Default host to run the server on and connect to."
+  nil)
+(def spork/netrepl/default-port
+  {:type :string}
+  "Default port to run the server on and connect to."
+  nil)
+
+(defn spork/netrepl/server
+  {:params [:string?
+            (or :string :number :nil)
+            (or :table :function :nil)
+            :function?
+            (or :string :function :nil)]
+   :ret :abstract}
+  "Start a repl server; `env` is a table, or a function making one per connection."
+  [&opt host port env cleanup welcome-msg])
+(defn spork/netrepl/server-single
+  {:params [:string? (or :string :number :nil) :table? :function? (or :string :function :nil)]
+   :ret :abstract}
+  "Start a repl server of one environment shared by every connection."
+  [&opt host port env cleanup welcome-msg])
+(defn spork/netrepl/run-server
+  {:params [:string?
+            (or :string :number :nil)
+            (or :table :function :nil)
+            :function?
+            (or :string :function :nil)]
+   :ret :nil}
+  "Run `server` and wait until it closes."
+  [&opt host port env cleanup welcome-msg])
+(defn spork/netrepl/run-server-single
+  {:params [:string? (or :string :number :nil) :table? :function? (or :string :function :nil)]
+   :ret :nil}
+  "Run `server-single` and wait until it closes."
+  [&opt host port env cleanup welcome-msg])
+(defn spork/netrepl/client
+  {:params [:string? (or :string :number :nil) a :function?] :ret :nil}
+  "Connect to a repl server and run a repl over it until it disconnects."
+  [&opt host port name connect])
+
+# -- spork/ev-utils ----------------------------------------------------------------------------
+
+(defn spork/ev-utils/nursery
+  {:params [] :ret :table}
+  "A group of fibers, for structured concurrency."
+  [])
+(defn spork/ev-utils/go-nursery
+  {:params [:table (or :function :fiber) a] :ret :fiber}
+  "Spawn a fiber into a nursery, as `ev/go` does."
+  [nurse f &opt value])
+(defmacro spork/ev-utils/spawn-nursery
+  {:params [:table a] :ret :fiber}
+  "Like `ev/spawn`, with the fiber in a nursery."
+  [nurse & body])
+(defn spork/ev-utils/join-nursery
+  {:params [:table] :ret :nil}
+  "Suspend the current fiber until the nursery is empty."
+  [nurse])
+(defn spork/ev-utils/pcall
+  {:params [(fn [:number] a) :number] :ret :nil}
+  "Call `f` `n` times in parallel, each with its fiber's index."
+  [f n])
+(defn spork/ev-utils/pmap
+  {:params [(fn [a] b) c :number?] :ret (or @[b] @{:any b})}
+  "Map `f` over `data` in parallel, `n-workers` at a time when given."
+  [f data &opt n-workers])
+(defn spork/ev-utils/pmap-full
+  {:params [(fn [a] b) c] :ret (or @[b] @{:any b})}
+  "Function form of `ev/gather`: every sibling is canceled when one raises."
+  [f data])
+(defn spork/ev-utils/pmap-limited
+  {:params [(fn [a] b) c :number] :ret (or @[b] @{:any b})}
+  "Like `pmap-full`, `n-workers` at a time."
+  [f data n-workers])
+(defn spork/ev-utils/pdag
+  {:params [(fn [a] b) (or :table :struct) :number?] :ret @{:any b}}
+  "Call `f` on every node of a graph, each after its children, answering the results by node."
+  [f dag &opt n-workers])
+(defn spork/ev-utils/multithread-service
+  {:params [(or :function :fiber) :number] :ret :abstract}
+  "Run `thread-main` on `n-threads` threads, restarting a thread that fails."
+  [thread-main n-threads])
+(defmacro spork/ev-utils/wait-cancel
+  {:params [a] :ret :never}
+  "Wait until the current fiber is canceled, then run the body."
+  [& body])
+
+# -- spork/stream ------------------------------------------------------------------------------
+
+(defn spork/stream/lines
+  {:params [:abstract (or :string :buffer)] :ret :fiber} # TODO: a `&named` value is taken as `:any`
+  "A fiber yielding each line of a stream, split by `separator`, `\\n` by default."
+  [stream &named separator])
+(defn spork/stream/make-stdin {:params [] :ret :abstract} "A readable stream on /dev/stdin." [])
+(defn spork/stream/make-stdout {:params [] :ret :abstract} "A writable stream on /dev/stdout." [])
+(defn spork/stream/make-stderr {:params [] :ret :abstract} "A writable stream on /dev/stderr." [])
+
+# -- spork/base64 ------------------------------------------------------------------------------
+
+(defn spork/base64/encode {:params [:string] :ret :string} "Encode a string in Base64." [x])
+(defn spork/base64/decode {:params [:string] :ret :string} "Decode a string from Base64." [x])
+
+# -- spork/crc ---------------------------------------------------------------------------------
+
+(defn spork/crc/make-variant
+  {:params [:number :number :number? a :number?] :ret :abstract}
+  "A CRC function of a polynomial, an initial value, whether bytes are flipped and an output xor."
+  [size polynomial &opt init byte-flip xorout])
+(defn spork/crc/named-variant
+  {:params [:keyword] :ret :abstract}
+  "A named CRC variant, as `:crc32`."
+  [name])
