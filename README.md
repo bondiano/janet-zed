@@ -24,7 +24,7 @@ a REPL wired into the editor, and structural editing.
 | --- | --- |
 | `janet` on `PATH` | diagnostics, formatting, core docs, stdlib go-to-definition |
 | [spork](https://github.com/janet-lang/spork) (`jpm install spork`) | the REPL, attaching the debugger to it |
-| `jpm` | the `jpm test` / `jpm build` tasks |
+| `jpm` or `janet-pm`, [judge](https://github.com/ianthehenry/judge) | the project and test tasks |
 
 ## Installation
 
@@ -178,16 +178,19 @@ Structural editing actions are under `cmd-.` (`ctrl-.` on Linux and Windows). Ze
 
 ## Tasks
 
-Run them with `task: spawn`, or from the gutter icon next to `(defn main …)` and
+Run them with `task: spawn`, or from the gutter icon next to `(defn main …)`, a spork/test
+`(start-suite …)`, a [judge](https://github.com/ianthehenry/judge) `(deftest …)` and
 `(declare-project …)`.
 
 | Task | Command |
 | --- | --- |
 | Janet: REPL | `janet` |
-| Janet: attach to REPL kernel | `netrepl/client` on the kernel's process |
+| Janet: attach to REPL kernel | `netrepl/client` on the kernel's process, at the port it recorded for the project |
 | Janet: run *file* | `janet <file>` |
-| jpm test | `jpm test` |
-| jpm build | `jpm build` |
+| jpm test, build, deps, install, clean | `jpm <command>` |
+| janet-pm test, build, deps, install, clean | `janet-pm <command>` |
+| judge: test at *file:line* | `judge <file>:<line>:1`: the test next to the gutter icon |
+| judge *file*, judge | `judge <file>`, `judge` |
 
 ## Snippets
 

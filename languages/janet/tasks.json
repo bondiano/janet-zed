@@ -31,5 +31,80 @@
     "args": ["build"],
     "cwd": "$ZED_WORKTREE_ROOT",
     "tags": ["janet-project"]
+  },
+  {
+    "label": "jpm deps",
+    "command": "jpm",
+    "args": ["deps"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "jpm install",
+    "command": "jpm",
+    "args": ["install"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "jpm clean",
+    "command": "jpm",
+    "args": ["clean"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "janet-pm test",
+    "command": "janet-pm",
+    "args": ["test"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "janet-pm build",
+    "command": "janet-pm",
+    "args": ["build"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "janet-pm deps",
+    "command": "janet-pm",
+    "args": ["deps"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "janet-pm install",
+    "command": "janet-pm",
+    "args": ["install"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "janet-pm clean",
+    "command": "janet-pm",
+    "args": ["clean"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-project"]
+  },
+  {
+    "label": "judge: test at $ZED_RELATIVE_FILE:$ZED_ROW",
+    "command": "judge",
+    "args": ["$ZED_FILE:$ZED_ROW:1"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-judge"]
+  },
+  {
+    "label": "judge $ZED_RELATIVE_FILE",
+    "command": "judge",
+    "args": ["$ZED_FILE"],
+    "cwd": "$ZED_WORKTREE_ROOT",
+    "tags": ["janet-judge"]
+  },
+  {
+    "label": "judge",
+    "command": "judge",
+    "cwd": "$ZED_WORKTREE_ROOT"
   }
 ]
