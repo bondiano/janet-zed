@@ -7,8 +7,6 @@
 
 // ponytail: a test is read by the name it is written with, so a predicate held in a variable
 // narrows nothing, nor does a name bound to `(x :k)` by a `let`.
-// ponytail: a tagged union is found by `discriminant` only over structs; a tuple tagged at element
-// 0, `(or [:ok a] [:err b])`, is no tagged union yet.
 // ponytail: a predicate of a value rather than a type — `int?`, `odd?`, `empty?` — narrows
 // `:any`, which says nothing either way; telling `(int? x)` from `(number? x)` needs a type
 // language that can hold the difference.
@@ -223,34 +221,54 @@ pub fn tags(ty: &Type, expand: Expand) -> Option<Vec<SmolStr>> {
 }
 
 /// The key every member of a closed union of forms holds a keyword of its own at, and those
-/// keywords: `:kind`, `circle` and `rect` of `(or {:kind :circle …} {:kind :rect …})`.
+/// keywords: `:kind`, `circle` and `rect` of `(or {:kind :circle …} {:kind :rect …})`. A union of
+/// tuples is told apart at element 0, the key `0`: `(or [:ok :number] [:err :string])`.
 pub fn discriminant(ty: &Type, expand: Expand) -> Option<(SmolStr, Vec<SmolStr>)> {
     if is_open(ty, expand, EXPANSIONS) {
         return None;
     }
-    let shapes = spread(ty, expand, EXPANSIONS)
-        .iter()
-        .map(|member| shape_of(member, expand, EXPANSIONS))
-        .collect::<Option<Vec<_>>>()?;
-    let [first, _, ..] = shapes.as_slice() else {
+    let members = spread(ty, expand, EXPANSIONS);
+    let [first, _, ..] = members.as_slice() else {
         return None;
     };
-    first.fields.iter().find_map(|(key, _)| {
-        let tags = shapes
+    let keys: Vec<SmolStr> = match first {
+        member if tuple_of(member, expand, EXPANSIONS) => vec!["0".into()],
+        member => shape_of(member, expand, EXPANSIONS)?
+            .fields
             .iter()
-            .map(
-                |shape| match shape.fields.iter().find(|(name, _)| name == key) {
-                    Some((_, Type::Keyword(tag))) if !is_atom(tag) => Some(tag.clone()),
-                    _ => None,
-                },
-            )
+            .map(|(key, _)| key.clone())
+            .collect(),
+    };
+    let formed = members.iter().all(|member| {
+        tuple_of(member, expand, EXPANSIONS) || shape_of(member, expand, EXPANSIONS).is_some()
+    });
+    if !formed {
+        return None;
+    }
+    keys.into_iter().find_map(|key| {
+        let tags = members
+            .iter()
+            .map(|member| match at(member, &key, expand, EXPANSIONS)? {
+                Type::Keyword(tag) if !is_atom(&tag) => Some(tag),
+                _ => None,
+            })
             .collect::<Option<Vec<_>>>()?;
         let distinct = tags
             .iter()
             .enumerate()
             .all(|(at, tag)| !tags[..at].contains(tag));
-        distinct.then(|| (key.clone(), tags))
+        distinct.then_some((key, tags))
     })
+}
+
+fn tuple_of(member: &Type, expand: Expand, depth: usize) -> bool {
+    match member {
+        Type::Tuple(_) => true,
+        Type::Named { name, args } if depth > 0 => {
+            expand(name, args).is_some_and(|ty| tuple_of(&ty, expand, depth - 1))
+        }
+        _ => false,
+    }
 }
 
 fn keywords(member: &Type, expand: Expand, depth: usize) -> Option<Vec<SmolStr>> {
@@ -346,9 +364,19 @@ fn at(member: &Type, key: &str, expand: Expand, depth: usize) -> Option<Type> {
             None => None,
         },
         Type::Dict { value, .. } => Some((**value).clone()),
+        Type::Tuple(items) => nth(items, key.parse().ok()?),
         Type::Named { name, args } if depth > 0 => at(&expand(name, args)?, key, expand, depth - 1),
         Type::Keyword(name) if name == "nil" => Some(nil()),
         _ => None,
+    }
+}
+
+/// The element of a tuple at `position`: one element stands for every element, and a position a
+/// fixed shape does not have is past what its type says.
+pub fn nth(items: &[Type], position: usize) -> Option<Type> {
+    match items {
+        [every] => Some(every.clone()),
+        items => items.get(position).cloned(),
     }
 }
 

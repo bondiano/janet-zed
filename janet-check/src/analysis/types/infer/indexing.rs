@@ -6,7 +6,7 @@ use tree_sitter::Node;
 
 use super::Infer;
 use super::unions::{any, atom, dynamic, is_nil, nil, unions, unwrap};
-use crate::analysis::types::{Fields, Type, is_atom};
+use crate::analysis::types::{Fields, Type, is_atom, narrow};
 
 impl<'d> Infer<'d> {
     /// `(get d key default?)`, `(in d key default?)`
@@ -62,8 +62,14 @@ impl<'d> Infer<'d> {
     /// so; a `put` passes none, since it is what adds the key.
     pub(super) fn index(&mut self, at: Option<Node<'d>>, target: &Type, key: &Type) -> Type {
         let resolved = self.unwrapped(target);
+        let position = at
+            .filter(|key| key.kind() == "num_lit")
+            .and_then(|key| self.text(key).parse::<usize>().ok());
         let found = match key {
-            Type::Keyword(name) if name == "number" => self.element(target),
+            Type::Keyword(name) if name == "number" => match position {
+                Some(position) => self.nth(target, position),
+                None => self.element(target),
+            },
             Type::Keyword(name) if !is_atom(name) => {
                 let key = format!(":{name}");
                 // Only a type someone named and wrote the keys of is closed for certain: a form
@@ -170,6 +176,31 @@ impl<'d> Infer<'d> {
                 unions(held)
             }
             _ => any(),
+        };
+        self.as_dynamic_as(target, found)
+    }
+
+    /// What a collection holds at a literal position: a tuple's element there, and of a closed
+    /// union each member's, so `(r 0)` of `(or [:ok :number] [:err :string])` is `(or :ok :err)`.
+    /// A named type is read as the shape it names; anything else holds there what it holds
+    /// anywhere.
+    pub(super) fn nth(&mut self, target: &Type, position: usize) -> Type {
+        let whole = self.unnamed(target);
+        let found = match &whole {
+            Type::Tuple(items) => {
+                narrow::nth(items, position).unwrap_or_else(|| unions(items.to_vec()))
+            }
+            Type::Or(items) => {
+                let held = items
+                    .iter()
+                    .map(|item| match self.resolve(item) {
+                        member if is_nil(&member) => nil(),
+                        _ => self.nth(item, position),
+                    })
+                    .collect();
+                unions(held)
+            }
+            _ => return self.element(&self.as_dynamic_as(target, whole)),
         };
         self.as_dynamic_as(target, found)
     }

@@ -1688,3 +1688,195 @@ fn a_wide_union_of_tags_stays_the_tags() {
         "folded before the width is held to, and still unwritten"
     );
 }
+
+/// `and` chains of tests, each read where the ones before it held.
+const ANDED: &str = r#"(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+(def Box :typedef {:k :number})
+
+(defn keyed {:params [Box?]} [x]
+  (def and-key (and x (x :k))))
+
+(defn found {:params [(or :string :number)]} [s]
+  (def and-found (and (string? s) (string/find "a" s))))
+
+(defn both {:params [Shape?]} [x]
+  (if (and x (= (x :kind) :circle)) (def and-then x) (def and-else x))
+  (when (and (not (nil? x)) (= (x :kind) :rect)) (def when-and x))
+  (cond
+    (and x (= (x :kind) :circle)) (def cond-and x)
+    nil))
+
+(defn either {:params [Shape?]} [x]
+  (if (or (nil? x) (= (x :kind) :rect)) nil (def or-else x)))
+"#;
+
+#[test]
+fn an_and_narrows_each_test_by_the_ones_before_it() {
+    let (_, scopes, facts) = alone(ANDED);
+    let ty = |name: &str| local(&scopes, &facts, name);
+    assert_eq!(ty("and-key"), ":number?", "a key read where `x` is there");
+    assert_eq!(
+        ty("and-found"),
+        "(or :boolean :number :nil)",
+        "the false part of the test and the last value, not the string tested"
+    );
+    assert_eq!(ty("and-then"), "Circle", "the then branch holds every test");
+    assert_eq!(ty("and-else"), "Shape?", "the else branch knows nothing");
+    assert_eq!(ty("when-and"), "Rect");
+    assert_eq!(ty("cond-and"), "Circle");
+    assert_eq!(
+        ty("or-else"),
+        "Circle",
+        "the else of an `or` is where every test failed, each after the ones before"
+    );
+}
+
+/// A call an `and` guards is not held to what the guard ruled out, even in strict mode; the
+/// unguarded call is.
+#[test]
+fn a_call_an_and_guards_is_not_complained_about() {
+    let source = r"(defn twice {:params [:string] :ret :string} [s] (string s s))
+(defn guarded {:params [(or :string :number)]} [s]
+  (and (string? s) (twice s))
+  (if (and (not (number? s)) (twice s)) 1 2))
+(defn unguarded {:params [(or :string :number)]} [s]
+  (and s (twice s)))
+";
+    let lines = |mode| {
+        let (doc, _, facts) = infer_in(source, &HashMap::new(), mode);
+        facts
+            .findings
+            .iter()
+            .map(|finding| doc.position(finding.range.start).line + 1)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        lines(STRICT),
+        [6],
+        "only the call nothing ruled the number out of"
+    );
+    assert!(
+        lines(Mode::default()).is_empty(),
+        "a union given is no finding"
+    );
+}
+
+/// Tuples tagged at element 0: a result a `match`, a `case` or an equality takes apart.
+const RESULTS: &str = r#"(def Result :typedef (or [:ok :number] [:err :string]))
+
+(defn matched {:params [Result]} [r]
+  (match r
+    [:ok v] (def ok-v v)
+    [:err e] (def err-e e))
+  (match r
+    [tag x] (def any-tag tag)))
+
+(defn cased {:params [Result]} [r]
+  (case (r 0)
+    :ok (def case-ok r)
+    :err (def case-err r)))
+
+(defn equal {:params [Result]} [r]
+  (if (= (r 0) :ok) (def eq-ok r) (def eq-err r))
+  (when (= (get r 0) :err) (def get-err r))
+  (when (= :ok (in r 0)) (def in-value (r 1)))
+  (def tags (r 0)))
+
+(defn called [f]
+  (match (f) [:ok v] (def called-v v)))
+
+(defn built [flag]
+  (def r (if flag [:ok 1] [:err "no"]))
+  (match r
+    [:ok v] (def built-v v)
+    [:err e] (def built-e e)))
+
+(defn destructured {:params [Result]} [r]
+  (let [[tag value] r] (def let-tag tag)))
+"#;
+
+#[test]
+fn a_tagged_tuple_is_a_discriminated_union() {
+    let (_, scopes, facts) = alone(RESULTS);
+    let ty = |name: &str| local(&scopes, &facts, name);
+    assert_eq!(
+        ty("ok-v"),
+        ":number",
+        "each clause binds its variant's element"
+    );
+    assert_eq!(ty("err-e"), ":string");
+    assert_eq!(
+        ty("any-tag"),
+        "(or :ok :err)",
+        "a symbol is every variant's tag"
+    );
+    assert_eq!(ty("case-ok"), "[:ok :number]");
+    assert_eq!(ty("case-err"), "[:err :string]");
+    assert_eq!(ty("eq-ok"), "[:ok :number]");
+    assert_eq!(
+        ty("eq-err"),
+        "[:err :string]",
+        "the else is the other variant"
+    );
+    assert_eq!(ty("get-err"), "[:err :string]");
+    assert_eq!(
+        ty("in-value"),
+        ":number",
+        "a literal position reads that element"
+    );
+    assert_eq!(ty("tags"), "(or :ok :err)");
+    assert_eq!(
+        ty("called-v"),
+        ":any",
+        "nothing is known of what `f` returns"
+    );
+    assert_eq!(
+        ty("built-v"),
+        ":number",
+        "a value that is no local is picked too"
+    );
+    assert_eq!(ty("built-e"), ":string");
+    assert_eq!(ty("let-tag"), "(or :ok :err)");
+}
+
+/// A `case` or `match` over a result is held to both tags when exhaustiveness is asked for, and
+/// to nothing otherwise.
+#[test]
+fn a_tagged_tuple_is_held_to_every_tag_when_asked() {
+    let source = r"(def Result :typedef (or [:ok :number] [:err :string]))
+(def Pair :typedef (or [:number :number] [:string :string]))
+(defn f {:params [Result Pair]} [r p]
+  (match r [:ok v] v)
+  (case (r 0) :ok 1)
+  (case (get r 0) :err 1)
+  (match r [:ok v] v [:err e] e)
+  (case (r 0) :ok 1 :err 2)
+  (match r [tag v] v)
+  (match p [a b] a))
+";
+    let findings = |mode| {
+        let (doc, _, facts) = infer_in(source, &HashMap::new(), mode);
+        facts
+            .findings
+            .iter()
+            .map(|finding| {
+                let line = doc.position(finding.range.start).line + 1;
+                format!("{line}: {}", finding.message)
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        findings(EXHAUSTIVE),
+        [
+            "4: match over Result misses :err",
+            "5: case over Result misses :err",
+            "6: case over Result misses :ok",
+        ]
+    );
+    assert!(
+        findings(Mode::default()).is_empty(),
+        "the default mode lets it pass"
+    );
+}

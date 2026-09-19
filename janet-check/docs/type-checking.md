@@ -253,7 +253,8 @@ call of its head.
 | `(cond t b … d)` | The union of the bodies; `nil` when there is no default | Each body narrowed by its test; each later clause by the tests before it failing |
 | `(case v k b …)` | The union of the bodies | Each body narrowed as `(= v k)` would, each later clause by the keys before it failing |
 | `(match v p b …)` | The union of the bodies | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
-| `(and …)`, `(or …)` | The union of the arguments | Each argument narrowed by the ones before it |
+| `(and …)` | The last argument, and what each one before it can stop at: its `nil` and `:boolean` members, nothing for one always true | Each argument narrowed by the ones before it holding |
+| `(or …)` | Each argument but the last without `nil`, and the last | Each argument narrowed by the ones before it failing |
 | `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any` |
 | `(seq …)`, `(catseq …)` | An array of the body's type | |
 | `(generate …)` | `:fiber` | |
@@ -295,7 +296,7 @@ clause that does not match, not a shape the value must have.
 | `name` | `name` to the value; `_` binds nothing | Nothing |
 | `:k`, `1`, `"s"`, `nil` | Nothing | As `(= v literal)`, where it matches and where it does not |
 | `{:k p …}` | Each `p` to what the value holds at `:k`, without `nil`: Janet matches a key only when it is there and not `nil` | The members that can hold every key, and for a literal `p` that literal |
-| `[p q & rest]` | Each `p` to the tuple's element at its position, or the element type; `rest` to `[element]` | Its tuple and array members |
+| `[p q & rest]` | Each `p` to the element at its position, of each tuple member of a union, or the element type; `rest` to `[element]` | Its tuple and array members, and for a literal `p` those whose element there can be that literal: `[:ok v]` picks `[:ok :number]` |
 | `(p pred…)` | As `p`; the predicates are inferred | As `p`, where it matches only |
 | `(@ name)` | Nothing | Nothing |
 
@@ -321,7 +322,9 @@ than `:function`) given a literal key.
   `(or {:kind :circle :r :number} {:kind :rect :w :number})` is `:number?`. A union reads when
   every member besides `nil` does.
 - A `:number` key reads an element: the union of a tuple's or array's items, a dict's value, a
-  string's or buffer's `:number`. An unknown is unified with `[fresh]`.
+  string's or buffer's `:number`. An unknown is unified with `[fresh]`. A literal whole number
+  reads a fixed tuple's element at that position, and of a union each member's: `(r 0)` of
+  `(or [:ok :number] [:err :string])` is `(or :ok :err)`.
 - Any other key reads a dict's value or the union of a struct's values.
 
 ## Narrowing
@@ -336,10 +339,11 @@ puts them into the locals' slots and `restore` puts back what was there when the
 | `(pred x)` where `pred` declares `:narrows T` | `x` split by `T`: the members `T` covers, plus `T` itself for a member too vague to say | The members `T` does not cover |
 | `(pred x)` where `pred` declares `:narrows :any` | Nothing | Nothing |
 | `(not c)` | The outside of `c` | The inside of `c` |
-| `(and c…)` | The inside of every `c` | Nothing |
-| `(or c…)` | Nothing | The outside of every `c` |
+| `(and c…)` | The inside of every `c`, each read inside the ones before it | Nothing: nothing says which one failed |
+| `(or c…)` | Nothing | The outside of every `c`, each read outside the ones before it |
 | `(= x lit)`, `(= lit x)` | The literal's type, where a member of `x` can be it | `x` without a member that is exactly `lit`: a literal keyword or `nil` |
 | `(= (x :k) lit)`, `(= lit (x :k))` | The members of `x` whose `:k` can be `lit`; a named union is taken apart into its members | The members whose `:k` is not exactly `lit` |
+| `(= (x 0) lit)`, `(get x 0)`, `(in x 0)` | The same at a tuple's position: the members whose element 0 can be `lit` | The members whose element 0 is not exactly `lit` |
 | `(= ((x :a) :k) lit)`, any depth | The members of `x` whose path can hold `lit`, each with what it holds at `:a` narrowed the same way | The members whose path is not exactly `lit`, narrowed the same way |
 | Anything else | Nothing | Nothing |
 
@@ -366,7 +370,10 @@ and adds `v`.
 
 A tagged union is found where it is used, not declared: `narrow::discriminant` takes a closed union
 apart and answers the first key at which every member is a struct holding a literal keyword, each
-member a different one. `(or {:kind :circle …} {:kind :rect …})` is discriminated on `:kind`.
+member a different one. `(or {:kind :circle …} {:kind :rect …})` is discriminated on `:kind`. A
+union of tuples is discriminated at element 0, the key `0`: `(or [:ok :number] [:err :string])`
+is a result, and `(match r [:ok v] … [:err e] …)` binds `v` to `:number` and `e` to `:string`;
+`(case (r 0) :ok …)` and `(= (r 0) :ok)` pick `[:ok :number]`.
 
 - A test of the tag picks members by it, through the equality and pattern rows above:
   `(= (shape :kind) :circle)` and `{:kind :circle}` keep the members whose `:kind` can be
@@ -383,10 +390,10 @@ Falling through to `nil` is idiomatic Janet, so exhaustiveness is checked only w
 `types.exhaustive` in the editor settings, `--exhaustive` for `janet-check`, or strict mode, which
 implies it (`Mode::exhaustive`). A `case` or `match` without a default is exhaustive over its value when the value's type is static
 and closed and lists its tags: `narrow::tags` for a union or `enum` of keywords (what `(shape :kind)`
-reads out of a tagged union), `narrow::discriminant` for a `match` of struct patterns over the
-union itself. A `case` over `(x :k)` names the finding after `x`, over `((x :a) :k)` after
-`(x :a)`. Every clause must name a tag — a keyword literal, or a struct pattern with a keyword
-at the discriminant — or the check ends: a symbol, a predicate or a pattern without the tag may
+reads out of a tagged union, or `(r 0)` out of a tagged tuple), `narrow::discriminant` for a
+`match` of struct or tuple patterns over the union itself. A `case` over `(x :k)` names the finding after `x`, over `((x :a) :k)` after
+`(x :a)`. Every clause must name a tag — a keyword literal, a struct pattern with a keyword
+at the discriminant, or a tuple pattern with one first — or the check ends: a symbol, a predicate or a pattern without the tag may
 match what the tags do not. A clause counts for its tag whatever else its pattern asks, so only a
 tag no clause names is missing.
 
@@ -504,7 +511,6 @@ Janet's syspath (over a thousand files) through `janet-check` in 5 s, both in re
 Marked `ponytail:` in the source, each with its ceiling:
 
 - Inferred types print every row as `r`: two rows in one hover read alike though they are apart.
-- A tagged tuple, `(or [:ok a] [:err b])`, is not discriminated: only structs are.
 - A predicate in a variable, or `(= (type x) :k)`, narrows nothing.
 - `int?`, `odd?`, `empty?` narrow `:any`: the type language cannot hold the difference.
 - Library macros that bind locals leave their symbols to name matching.

@@ -38,21 +38,26 @@ impl<'d> Infer<'d> {
                         let (inside, rest) = self.equality(*left, *right);
                         (rest, inside)
                     }
-                    // Every test of an `and` holds where the whole does; where it does not,
-                    // nothing says which one failed. `or` is the same the other way around.
+                    // Every test of an `and` holds where the whole does, each read where the ones
+                    // before it held, so a later fact on a name refines an earlier one; where it
+                    // does not, nothing says which one failed. `or` is the same the other way
+                    // around.
                     (head @ ("and" | "or"), _) => {
                         let all = head == "and";
-                        let mut inside = Vec::new();
-                        let mut rest = Vec::new();
+                        let mark = self.narrowed.len();
+                        let mut facts = Vec::new();
                         for argument in args {
                             let (yes, no) = self.tested(*argument);
-                            if all {
-                                inside.extend(yes);
-                            } else {
-                                rest.extend(no);
-                            }
+                            let fact = if all { yes } else { no };
+                            self.narrow(&fact);
+                            facts.extend(fact);
                         }
-                        (inside, rest)
+                        self.restore(mark);
+                        if all {
+                            (facts, Vec::new())
+                        } else {
+                            (Vec::new(), facts)
+                        }
                     }
                     (name, [argument]) => {
                         let Some(want) = self.narrows(name) else {
@@ -159,7 +164,9 @@ impl<'d> Infer<'d> {
             [head, inner, key] if self.core_head(*head, &["get", "in"]) => (*inner, *key),
             _ => return None,
         };
-        if key.kind() != KEYWORD {
+        // A keyword reads a field, a whole number a tuple's element: `(r 0)` reads a tag.
+        let position = key.kind() == "num_lit" && self.text(key).parse::<usize>().is_ok();
+        if key.kind() != KEYWORD && !position {
             return None;
         }
         let (index, mut keys) = self.path(inner)?;

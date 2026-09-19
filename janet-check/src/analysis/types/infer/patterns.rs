@@ -95,18 +95,21 @@ impl<'d> Infer<'d> {
             }
             return;
         }
-        let element = self.element(ty);
-        let mut items = forms.iter();
-        while let Some(form) = items.next() {
+        let mut items = forms.iter().enumerate();
+        while let Some((at, form)) = items.next() {
             match self.text(*form) {
                 "&" => {
-                    if let Some(rest) = items.next() {
-                        self.pattern(*rest, Type::Tuple([element.clone()].into()));
+                    if let Some((_, rest)) = items.next() {
+                        let element = self.element(ty);
+                        self.pattern(*rest, Type::Tuple([element].into()));
                     }
                     return;
                 }
                 marker if MARKERS.contains(&marker) => {}
-                _ => self.pattern(*form, element.clone()),
+                _ => {
+                    let item = self.nth(ty, at);
+                    self.pattern(*form, item);
+                }
             }
         }
     }
@@ -142,7 +145,6 @@ impl<'d> Infer<'d> {
                 }
             }
             TUPLE | ARRAY | "par_arr_lit" => {
-                let resolved = self.unwrapped(ty);
                 let forms = self.forms(pattern);
                 let mut items = forms.iter().enumerate();
                 while let Some((at, form)) = items.next() {
@@ -153,16 +155,7 @@ impl<'d> Infer<'d> {
                         }
                         break;
                     }
-                    let item = match &resolved {
-                        Type::Tuple(items) if items.len() > 1 => items
-                            .get(at)
-                            .map(|item| self.as_dynamic_as(ty, item.clone())),
-                        _ => None,
-                    };
-                    let item = match item {
-                        Some(item) => item,
-                        None => self.element(ty),
-                    };
+                    let item = self.nth(ty, at);
                     self.destructure(*form, &item);
                 }
             }

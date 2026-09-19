@@ -132,7 +132,10 @@ impl<'d> Infer<'d> {
             let over = self
                 .path(*value)
                 .filter(|(_, keys)| !keys.is_empty())
-                .and_then(|_| self.forms(*value).first().copied())
+                .and_then(|_| match &*self.forms(*value) {
+                    [_, target, _] => Some(*target),
+                    forms => forms.first().copied(),
+                })
                 .and_then(|read| self.exprs.get(&read.start_byte()).cloned());
             dispatched = Some((*value, ty, over));
             rest = clauses;
@@ -243,6 +246,13 @@ impl<'d> Infer<'d> {
                 _ => Some(Vec::new()),
             };
         };
+        // A tuple is told apart at element 0: `[:ok v]` names `:ok`.
+        if key == "0" && matches!(clause.kind(), TUPLE | ARRAY | "par_arr_lit") {
+            return match literal(self.doc, *self.forms(clause).first()?)? {
+                Type::Keyword(tag) if !is_atom(&tag) => Some(vec![tag]),
+                _ => None,
+            };
+        }
         if !matches!(clause.kind(), STRUCT | TABLE) {
             return None;
         }
@@ -275,9 +285,11 @@ impl<'d> Infer<'d> {
                     patterns.push(*pattern);
                     let (inside, otherwise) = self.matched(*value, *pattern);
                     let clause = self.narrow(&inside);
-                    let seen = match self.local_of(*value) {
-                        Some(index) => self.locals.get(index).cloned().unwrap_or_else(any),
-                        None => matched.clone(),
+                    let seen = if let Some(index) = self.local_of(*value) {
+                        self.locals.get(index).cloned().unwrap_or_else(any)
+                    } else {
+                        let picked = self.picked(&self.resolve(&matched), *pattern);
+                        self.as_dynamic_as(&matched, picked)
                     };
                     self.destructure(*pattern, &seen);
                     let ty = self.expr(*body);
@@ -306,16 +318,28 @@ impl<'d> Infer<'d> {
     /// where it does not. Only a literal says anything about the second: a shape that is there
     /// can still fail the patterns inside it.
     fn matched(&self, value: Node<'d>, pattern: Node<'d>) -> (Narrowing, Narrowing) {
-        let within = |narrow: &dyn Fn(&Type) -> Type| {
-            let Some(index) = self.local_of(value) else {
-                return (Vec::new(), Vec::new());
-            };
-            let Some(local) = self.locals.get(index) else {
-                return (Vec::new(), Vec::new());
-            };
-            (self.fact(index, narrow(&self.resolve(local))), Vec::new())
+        if !matches!(
+            pattern.kind(),
+            STRUCT | TABLE | TUPLE | ARRAY | "par_arr_lit" | syntax::LIST
+        ) {
+            return self.equal(value, pattern);
+        }
+        let Some(index) = self.local_of(value) else {
+            return (Vec::new(), Vec::new());
         };
+        let Some(local) = self.locals.get(index) else {
+            return (Vec::new(), Vec::new());
+        };
+        (
+            self.fact(index, self.picked(&self.resolve(local), pattern)),
+            Vec::new(),
+        )
+    }
+
+    /// The members of `ty` a `match` pattern can match.
+    fn picked(&self, ty: &Type, pattern: Node<'d>) -> Type {
         let expand = |name: &str, args: &[Type]| self.expand(name, args);
+        let fits = |actual: &Type, expected: &Type| self.fits(actual, expected);
         match pattern.kind() {
             STRUCT | TABLE => {
                 let keys: Vec<(SmolStr, Option<Type>)> = self
@@ -326,23 +350,36 @@ impl<'d> Infer<'d> {
                         _ => None,
                     })
                     .collect();
-                let fits = |actual: &Type, expected: &Type| self.fits(actual, expected);
-                within(&|ty| narrow::shaped(ty, &keys, &expand, &fits))
+                narrow::shaped(ty, &keys, &expand, &fits)
             }
-            // Janet matches a bracketed pattern against an array as well as a tuple.
+            // Janet matches a bracketed pattern against an array as well as a tuple, and a
+            // literal element picks the tuples that can hold it there: `[:ok v]` a tagged one.
             TUPLE | ARRAY | "par_arr_lit" => {
+                let whole = self.unnamed(ty);
                 let indexed = Type::Or([atom("tuple"), atom("array")].into());
-                within(&|ty| narrow::split(ty, &indexed, &expand).0)
+                let sequences = narrow::split(&whole, &indexed, &expand).0;
+                let picked = self
+                    .forms(pattern)
+                    .iter()
+                    .take_while(|form| self.text(**form) != "&")
+                    .enumerate()
+                    .filter_map(|(at, form)| Some((at.to_string(), literal(self.doc, *form)?)))
+                    .fold(sequences, |ty, (at, value)| {
+                        narrow::equal(&ty, &[at.as_str()], &value, &expand, &fits).0
+                    });
+                // Nothing ruled out: the type as it was, name and all.
+                if picked == whole { ty.clone() } else { picked }
             }
             // `(pattern predicate…)` matches where the pattern does, and `(@ name)` where the
             // value equals whatever the name holds.
             syntax::LIST => match self.forms(pattern).first() {
-                Some(first) if self.text(*first) != "@" => {
-                    (self.matched(value, *first).0, Vec::new())
-                }
-                _ => (Vec::new(), Vec::new()),
+                Some(first) if self.text(*first) != "@" => self.picked(ty, *first),
+                _ => ty.clone(),
             },
-            _ => self.equal(value, pattern),
+            _ => match literal(self.doc, pattern) {
+                Some(value) => narrow::equal(ty, &[], &value, &expand, &fits).0,
+                None => ty.clone(),
+            },
         }
     }
 }
