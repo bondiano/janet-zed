@@ -240,3 +240,59 @@ fn what_janet_reports_fails_the_check() {
         "latin1.janet: stream did not contain valid UTF-8\n"
     );
 }
+
+/// Idiomatic Janet with types written throughout, where the silence of the rest of the corpus
+/// cannot reach: a complaint that only shows once someone annotates their code.
+const ANNOTATED: &str = "fixtures/types/annotated";
+
+/// Every file of the annotated corpus runs under `janet`, so each one is correct Janet, and the
+/// default mode says nothing about any of it.
+#[test]
+fn the_annotated_corpus_runs_and_is_not_complained_about() {
+    if janet_check::test_support::janet_syspath().is_none() {
+        return;
+    }
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join(ANNOTATED);
+    let mut files: Vec<PathBuf> = std::fs::read_dir(&dir)
+        .expect("the corpus is there")
+        .map(|entry| entry.expect("a corpus entry").path())
+        .filter(|path| path.extension().is_some_and(|ext| ext == "janet"))
+        .collect();
+    files.sort();
+    assert!(files.len() >= 8, "there is a corpus to run");
+    for file in &files {
+        let ran = Command::new("janet")
+            .arg(file)
+            .current_dir(&dir)
+            .output()
+            .expect("janet runs");
+        assert!(
+            ran.status.success(),
+            "{} fails under janet:\n{}",
+            file.display(),
+            String::from_utf8_lossy(&ran.stderr)
+        );
+    }
+    let output = run(&[ANNOTATED]);
+    assert_eq!(stdout(&output), "");
+    assert!(output.status.success());
+}
+
+/// What strict mode makes of the annotated corpus. It may complain — a union where one member is
+/// wanted is its business — and what it says is kept here, so a change to it is seen.
+#[test]
+fn the_annotated_corpus_strictly() {
+    let Some(syspath) = janet_check::test_support::janet_syspath() else {
+        return;
+    };
+    let output = run(&[
+        "--strict",
+        "--types-only",
+        "--syspath",
+        &syspath.to_string_lossy(),
+        ANNOTATED,
+    ]);
+    insta::assert_snapshot!(stdout(&output));
+}

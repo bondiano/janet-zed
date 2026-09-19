@@ -1,0 +1,9 @@
+---
+source: janet-check/tests/cli.rs
+expression: stdout(&output)
+---
+fixtures/types/annotated/buffers.janet:55:34: shout takes :string here, given :string?
+fixtures/types/annotated/buffers.janet:60:28: word-count takes Text here, given :buffer?
+fixtures/types/annotated/generic.janet:114:29: text-length takes (or :string :buffer :keyword :symbol) here, given :string?
+fixtures/types/annotated/shapes.janet:61:49: area takes Shape here, given :nil
+fixtures/types/annotated/tools.janet:76:34: to-json takes Settings here, given Settings?
