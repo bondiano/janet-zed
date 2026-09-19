@@ -512,10 +512,10 @@ pub fn code_action(state: &State, params: CodeActionParams) -> Result<Option<Cod
 /// The edit of an action [`code_action`] left without one: the actions at its selection are
 /// computed again, and the one of the same title and kind gives it.
 pub fn code_action_resolve(state: &State, mut action: CodeAction) -> Result<CodeAction> {
-    let data = action
-        .data
-        .take()
-        .context("the code action carries no data")?;
+    // An action sent with its edit, such as an import fix, has nothing left to resolve.
+    let Some(data) = action.data.take() else {
+        return Ok(action);
+    };
     let Unresolved { uri, range } = serde_json::from_value(data)?;
     let resolved = code_actions(state, &uri, range)?
         .into_iter()
