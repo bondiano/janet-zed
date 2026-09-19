@@ -6,7 +6,7 @@
 //! rather than a type and so tells a branch nothing.
 
 // ponytail: a test is read by the name it is written with, so a predicate held in a variable
-// narrows nothing, and `(= (type x) :number)` is not a test at all yet.
+// narrows nothing, nor does a name bound to `(x :k)` by a `let`.
 // ponytail: a tagged union is found by `discriminant` only over structs; a tuple tagged at element
 // 0, `(or [:ok a] [:err b])`, is no tagged union yet.
 // ponytail: a predicate of a value rather than a type — `int?`, `odd?`, `empty?` — narrows
@@ -57,6 +57,20 @@ pub fn split(ty: &Type, want: &Type, expand: Expand) -> (Type, Type) {
         reopened(or_all(held, ty), open),
         reopened(or_all(rest, ty), open),
     )
+}
+
+/// The members of `ty` an `and` can stop at: `nil`, `:boolean`, and what is too vague to say.
+/// `None` when every member is true; an open union may hold a false one nobody listed.
+pub fn falsy(ty: &Type, expand: Expand) -> Option<Type> {
+    if is_open(ty, expand, DEPTH) {
+        return Some(ty.clone());
+    }
+    let want = Type::Or([nil(), Type::Keyword("boolean".into())].into());
+    let kept: Vec<Type> = members(ty)
+        .into_iter()
+        .filter(|member| holds(member, &want, expand) != Some(false))
+        .collect();
+    (!kept.is_empty()).then(|| unions(kept))
 }
 
 /// `ty` where `(= x value)` holds and where it does not, `value` the type of a literal; with

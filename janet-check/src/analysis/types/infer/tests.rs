@@ -458,6 +458,143 @@ fn an_assignment_ends_a_narrowing() {
     assert_eq!(local(&scopes, &facts, "after"), "(or :string :number)");
 }
 
+/// The control flow Janet is written with: `unless`, a branch that never returns, `assert`,
+/// `default`, a key read by `get` or `in`, and a test of `(type x)`.
+const FLOWED: &str = r#"(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+
+(defn unless-form [flag]
+  (def u (if flag "s" 1))
+  (unless (string? u) (def unless-u u)))
+
+(defn raised [flag]
+  (def e (if flag "s" nil))
+  (if (nil? e) (error "missing"))
+  (def after-error e))
+
+(defn raised-else [flag]
+  (def r (if flag "s" nil))
+  (if (string? r) (def then-r r) (error "missing"))
+  (def after-else r))
+
+(defn broken [flag]
+  (def items (if flag "s" nil))
+  (while flag
+    (when (nil? items) (break))
+    (def after-break items))
+  (def after-loop items))
+
+(defn nested [flag]
+  (def n (if flag "s" nil))
+  (if flag (when (nil? n) (error "missing")) nil)
+  (def after-join n))
+
+(defn asserted [flag]
+  (def a (if flag "s" nil))
+  (assert a)
+  (def after-assert a))
+
+(defn defaulted [flag]
+  (def d (if flag "s" nil))
+  (default d 0)
+  (def after-default d))
+
+(defn typed [flag]
+  (def t (if flag "s" 1))
+  (if (= (type t) :string) (def type-t t) (def not-type-t t))
+  (when (not= :string (type t)) (def not=-t t)))
+
+(defn keyed {:params [Shape]} [shape]
+  (when (= (get shape :kind) :circle) (def get-circle shape))
+  (when (= :rect (in shape :kind)) (def in-rect shape)))
+
+(defn anded [flag]
+  (def x (if flag "s" nil))
+  (def and-nil (and x 1))
+  (def and-true (and "s" 1)))
+"#;
+
+#[test]
+fn control_flow_narrows_what_follows_it() {
+    let (_, scopes, facts) = alone(FLOWED);
+    let ty = |name: &str| local(&scopes, &facts, name);
+    assert_eq!(
+        ty("unless-u"),
+        ":number",
+        "`unless` runs where the test fails"
+    );
+    assert_eq!(
+        ty("after-error"),
+        ":string",
+        "an `error` branch ends the nil"
+    );
+    assert_eq!(ty("then-r"), ":string");
+    assert_eq!(ty("after-else"), ":string", "so does an `error` else");
+    assert_eq!(
+        ty("after-break"),
+        ":string",
+        "a `break` ends it for the loop"
+    );
+    assert_eq!(
+        ty("after-loop"),
+        ":string?",
+        "and no further: `break` leaves"
+    );
+    assert_eq!(
+        ty("after-join"),
+        ":string?",
+        "a branch that may not run says nothing"
+    );
+    assert_eq!(ty("after-assert"), ":string");
+    assert_eq!(ty("after-default"), "(or :string :number)");
+    assert_eq!(ty("type-t"), ":string");
+    assert_eq!(ty("not-type-t"), ":number");
+    assert_eq!(ty("not=-t"), ":number");
+    assert_eq!(ty("get-circle"), "Circle");
+    assert_eq!(ty("in-rect"), "Rect");
+    assert_eq!(
+        ty("and-nil"),
+        ":number?",
+        "an `and` is its last value or a false one"
+    );
+    assert_eq!(
+        ty("and-true"),
+        ":number",
+        "a value that is never false is never the answer"
+    );
+}
+
+/// What control flow rules out is not held against a written signature, even in strict mode;
+/// without the narrowing each of these calls is given `:string?`.
+#[test]
+fn strict_mode_reads_ordinary_control_flow() {
+    let source = r#"(defn twice {:params [:string] :ret :string} [s] (string s s))
+(defn raised [flag]
+  (def e (if flag "s" nil))
+  (when (nil? e) (error "missing"))
+  (twice e))
+(defn asserted [flag]
+  (def a (if flag "s" nil))
+  (assert a)
+  (twice a))
+(defn defaulted [flag]
+  (def d (if flag "s" nil))
+  (default d "")
+  (twice d))
+(defn unguarded [flag]
+  (def u (if flag "s" nil))
+  (twice u))
+"#;
+    let (doc, _, facts) = infer_in(source, &HashMap::new(), STRICT);
+    let lines: Vec<u32> = facts
+        .findings
+        .iter()
+        .map(|finding| doc.position(finding.range.start).line + 1)
+        .collect();
+    assert_eq!(lines, [16], "only the call nothing guarded");
+}
+
 /// `Entity?` is an `Entity` wherever a branch has checked for it, and reading a key out of it
 /// there falls into the open form of `Entity` rather than answering `nil`.
 #[test]

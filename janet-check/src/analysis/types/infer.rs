@@ -1188,9 +1188,14 @@ impl<'d> Infer<'d> {
         (params, rest)
     }
 
-    /// A sequence of forms: the type of the last one.
+    /// A sequence of forms: the type of the last one. A form that only goes on when a test holds
+    /// — `(assert x)`, `(when (nil? x) (break))`, `(default x 0)` — narrows the forms after it,
+    /// and that ends with the sequence.
     fn body(&mut self, forms: &[Node<'d>]) -> Type {
-        forms.iter().fold(nil(), |_, form| self.expr(*form))
+        let mark = self.narrowed.len();
+        let ty = forms.iter().fold(nil(), |_, form| self.expr(*form));
+        self.restore(mark);
+        ty
     }
 
     fn each_expr(&mut self, node: Node<'d>) -> Vec<Type> {
@@ -1405,7 +1410,7 @@ impl<'d> Infer<'d> {
             "if" => self.if_(args, false),
             "if-not" => self.if_(args, true),
             "when" => self.when_(args, false),
-            "when-not" => self.when_(args, true),
+            "when-not" | "unless" => self.when_(args, true),
             "cond" => self.cond(node, args, false),
             "case" => self.cond(node, args, true),
             "match" => self.match_(node, args),
@@ -1458,6 +1463,8 @@ impl<'d> Infer<'d> {
                 self.raise(atom("string"));
                 checked.first().map_or_else(any, |ty| self.without_nil(ty))
             }
+            "assert" => self.assert(args),
+            "default" => self.default(args),
             "get" | "in" => self.get(args),
             "get-in" | "in-in" => self.get_in(args),
             "put" => self.put(args),
@@ -1756,6 +1763,38 @@ impl<'d> Infer<'d> {
         never()
     }
 
+    /// `(assert x err?)`: `x` where it holds, and raises `err` where not; what the test says
+    /// holds for the rest of the sequence it sits in.
+    fn assert(&mut self, args: &[Node<'d>]) -> Type {
+        let Some((checked, err)) = args.split_first() else {
+            return any();
+        };
+        let ty = self.expr(*checked);
+        let raised = match err.first() {
+            Some(err) => self.expr(*err),
+            None => atom("string"),
+        };
+        self.raise(raised);
+        let (inside, _) = self.tested(*checked);
+        self.narrow(&inside);
+        self.without_nil(&ty)
+    }
+
+    /// `(default x value)`: `x` from here on is what it was besides `nil`, or `value`.
+    fn default(&mut self, args: &[Node<'d>]) -> Type {
+        let [name, value] = args else {
+            return self.body(args);
+        };
+        let was = self.expr(*name);
+        let fallback = self.expr(*value);
+        let ty = unions(vec![self.without_nil(&was), fallback]);
+        if let Some(index) = self.local_of(*name) {
+            let facts = self.fact(index, ty.clone());
+            self.narrow(&facts);
+        }
+        ty
+    }
+
     /// `(fn name? [params] body…)`
     fn lambda(&mut self, args: &[Node<'d>]) -> Type {
         let rest = match args {
@@ -1796,14 +1835,23 @@ impl<'d> Infer<'d> {
         };
         self.expr(*condition);
         let (inside, rest) = self.tested(*condition);
-        let facts = if negated { rest } else { inside };
+        let (facts, otherwise) = if negated {
+            (rest, inside)
+        } else {
+            (inside, rest)
+        };
         let mark = self.narrow(&facts);
         let ty = self.body(body);
         self.restore(mark);
+        if is_never(&ty) {
+            self.narrow(&otherwise);
+        }
         unions(vec![ty, nil()])
     }
 
-    /// The then branch and the else branch, each narrowed by its side of the condition.
+    /// The then branch and the else branch, each narrowed by its side of the condition. A branch
+    /// that never returns — an `error`, a `break` — leaves what follows the form to the other
+    /// side, so its facts stay in place until the sequence around the form ends.
     fn branches(
         &mut self,
         branches: &[Node<'d>],
@@ -1815,6 +1863,15 @@ impl<'d> Infer<'d> {
             let facts = if at == 0 { inside } else { rest };
             let ty = self.guarded(*node, facts);
             types.push(ty);
+        }
+        match types.as_slice() {
+            [then] if is_never(then) => {
+                self.narrow(rest);
+            }
+            [then, otherwise, ..] if is_never(then) != is_never(otherwise) => {
+                self.narrow(if is_never(then) { rest } else { inside });
+            }
+            _ => {}
         }
         if branches.len() < 2 {
             types.push(nil());
@@ -1829,12 +1886,15 @@ impl<'d> Infer<'d> {
         let mut types = Vec::new();
         for (at, argument) in args.iter().enumerate() {
             let ty = self.expr(*argument);
-            // `(or a b)` is `b` only where `a` is nil, so everywhere else `a` is what it is.
-            types.push(if all || at + 1 == args.len() {
-                ty
+            // `(or a b)` is `b` only where `a` is nil, so everywhere else `a` is what it is;
+            // `(and a b)` is `a` only where `a` is false or nil.
+            if at + 1 == args.len() {
+                types.push(ty);
+            } else if all {
+                types.extend(self.falsy(&ty));
             } else {
-                self.without_nil(&ty)
-            });
+                types.push(self.without_nil(&ty));
+            }
             let (inside, rest) = self.tested(*argument);
             self.narrow(if all { &inside } else { &rest });
         }
@@ -1848,6 +1908,13 @@ impl<'d> Infer<'d> {
         let resolved = self.resolve(ty);
         let (_, rest) = narrow::split(&resolved, &nil(), &|name, args| self.expand(name, args));
         self.as_dynamic_as(ty, rest)
+    }
+
+    /// What is left of a type where an `and` stops at it; nothing when it is always true.
+    fn falsy(&self, ty: &Type) -> Option<Type> {
+        let resolved = self.resolve(ty);
+        let falsy = narrow::falsy(&resolved, &|name, args| self.expand(name, args))?;
+        Some(self.as_dynamic_as(ty, falsy))
     }
 
     /// `(cond test body … default?)`, and `(case dispatch value body … default?)`, whose clause
@@ -2331,7 +2398,7 @@ impl<'d> Infer<'d> {
             return self.body(args);
         };
         self.raised.push(Vec::new());
-        let result = self.expr(*body);
+        let result = self.guarded(*body, &[]);
         let raised = self.raised.pop().unwrap_or_default();
         let clause = self.forms(*catch);
         let Some((bindings, handler)) = clause.split_first() else {
@@ -2584,10 +2651,11 @@ impl<'d> Infer<'d> {
                         let (inside, rest) = self.tested(*argument);
                         (rest, inside)
                     }
-                    ("=", [left, right]) => match self.equal(*left, *right) {
-                        (inside, _) if inside.is_empty() => self.equal(*right, *left),
-                        facts => facts,
-                    },
+                    ("=", [left, right]) => self.equality(*left, *right),
+                    ("not=", [left, right]) => {
+                        let (inside, rest) = self.equality(*left, *right);
+                        (rest, inside)
+                    }
                     // Every test of an `and` holds where the whole does; where it does not,
                     // nothing says which one failed. `or` is the same the other way around.
                     (head @ ("and" | "or"), _) => {
@@ -2608,16 +2676,8 @@ impl<'d> Infer<'d> {
                         let Some(want) = self.narrows(name) else {
                             return nothing;
                         };
-                        let Some(index) = self.local_of(*argument) else {
-                            return nothing;
-                        };
-                        let Some(local) = self.locals.get(index) else {
-                            return nothing;
-                        };
-                        let ty = self.resolve(local);
-                        let (inside, rest) =
-                            narrow::split(&ty, &want, &|name, args| self.expand(name, args));
-                        (self.fact(index, inside), self.fact(index, rest))
+                        self.local_of(*argument)
+                            .map_or(nothing, |index| self.split(index, &want))
                     }
                     _ => nothing,
                 }
@@ -2626,10 +2686,21 @@ impl<'d> Infer<'d> {
         }
     }
 
+    /// What `(= left right)` says, the literal on either side.
+    fn equality(&self, left: Node<'d>, right: Node<'d>) -> (Narrowing, Narrowing) {
+        match self.equal(left, right) {
+            (inside, _) if inside.is_empty() => self.equal(right, left),
+            facts => facts,
+        }
+    }
+
     /// What `(= path value)` says about the local of `path`, `x`, `(x :k)` or `((x :a) :b)`, when
-    /// `value` is a literal.
+    /// `value` is a literal; and what `(= (type x) :number)` says of `x`, as `(number? x)` would.
     fn equal(&self, path: Node<'d>, value: Node<'d>) -> (Narrowing, Narrowing) {
         let nothing = (Vec::new(), Vec::new());
+        if let Some(facts) = self.type_equal(path, value) {
+            return facts;
+        }
         let (Some((index, keys)), Some(literal)) = (self.path(path), literal(self.doc, value))
         else {
             return nothing;
@@ -2647,6 +2718,40 @@ impl<'d> Infer<'d> {
         (self.fact(index, inside), self.fact(index, rest))
     }
 
+    /// A local where a test for `want` holds, and where it does not.
+    fn split(&self, index: usize, want: &Type) -> (Narrowing, Narrowing) {
+        let Some(local) = self.locals.get(index) else {
+            return (Vec::new(), Vec::new());
+        };
+        let ty = self.resolve(local);
+        let (inside, rest) = narrow::split(&ty, want, &|name, args| self.expand(name, args));
+        (self.fact(index, inside), self.fact(index, rest))
+    }
+
+    /// `(= (type x) :number)`: what `x` is where its type is that atom. `None` when `path` is no
+    /// `(type x)` of a local or `value` no atom.
+    fn type_equal(&self, path: Node<'d>, value: Node<'d>) -> Option<(Narrowing, Narrowing)> {
+        if path.kind() != syntax::LIST || value.kind() != KEYWORD {
+            return None;
+        }
+        let [head, argument] = &*self.forms(path) else {
+            return None;
+        };
+        let name = self.text(value).trim_start_matches(':');
+        if !is_atom(name) || !self.core_head(*head, &["type"]) {
+            return None;
+        }
+        let index = self.local_of(*argument)?;
+        Some(self.split(index, &atom(name)))
+    }
+
+    /// Whether `head` names one of the core forms in `names`, not shadowed by a binding.
+    fn core_head(&self, head: Node<'d>, names: &[&str]) -> bool {
+        head.kind() == syntax::SYMBOL
+            && names.contains(&self.text(head))
+            && !self.scopes.calls.contains(&head.start_byte())
+    }
+
     /// A local narrowed to `ty`, as dynamic as it was. Nothing when that is what it already is: a
     /// copy in its slot would cut it off from the variable it stands for.
     fn fact(&self, index: usize, ty: Type) -> Narrowing {
@@ -2658,8 +2763,8 @@ impl<'d> Infer<'d> {
         }
     }
 
-    /// `x`, `(x :k)` or `((x :a) :b)`: the local a test reads, and the keys it reads out of it on
-    /// the way, outermost first.
+    /// `x`, `(x :k)`, `(get x :k)`, `(in x :k)` or `((x :a) :b)`: the local a test reads, and the
+    /// keys it reads out of it on the way, outermost first.
     fn path(&self, node: Node<'d>) -> Option<(usize, Vec<&'d str>)> {
         if let Some(index) = self.local_of(node) {
             return Some((index, Vec::new()));
@@ -2667,14 +2772,17 @@ impl<'d> Infer<'d> {
         if node.kind() != syntax::LIST {
             return None;
         }
-        match &*self.forms(node) {
-            [inner, key] if key.kind() == KEYWORD => {
-                let (index, mut keys) = self.path(*inner)?;
-                keys.push(self.text(*key));
-                Some((index, keys))
-            }
-            _ => None,
+        let (inner, key) = match &*self.forms(node) {
+            [inner, key] => (*inner, *key),
+            [head, inner, key] if self.core_head(*head, &["get", "in"]) => (*inner, *key),
+            _ => return None,
+        };
+        if key.kind() != KEYWORD {
+            return None;
         }
+        let (index, mut keys) = self.path(inner)?;
+        keys.push(self.text(key));
+        Some((index, keys))
     }
 
     /// The slot of the local a symbol names, when it names one.
