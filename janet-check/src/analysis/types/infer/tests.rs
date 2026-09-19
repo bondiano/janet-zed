@@ -1991,3 +1991,163 @@ fn a_macro_is_not_held_to_what_its_arguments_evaluate_to() {
     assert!(told("(def s 5)\n(m s (+ 1 2))\n").is_empty());
     assert_eq!(told("(m 1)\n"), ["m takes 2 arguments, given 1"]);
 }
+
+/// A fiber is `(fiber y r)`: what it yields, what it returns. `generate` yields its body, `coro`
+/// what a `yield` in it is given, and iterating a fiber takes what it yields.
+#[test]
+fn a_fiber_yields_and_returns_its_own_types() {
+    let (_, scopes, facts) = alone(
+        "(defn f []\n  \
+         (def gen (generate [i :range [0 3]] (* i 2)))\n  \
+         (each x gen (def g x))\n  \
+         (def co (coro (yield \"a\") (yield \"b\") 3))\n  \
+         (def resumed (resume co))\n  \
+         (def status (fiber/status co))\n  \
+         (def fib (fiber/new (fn [] 5)))\n  \
+         (def last (fiber/last-value fib))\n  \
+         (loop [y :in (coro (yield :k))] (def l y)))\n\
+         (defn h {:params [(fiber :number :nil)] :ret :nil} [f]\n  \
+         (each x f (def n x)))\n",
+    );
+    for (name, ty) in [
+        ("gen", "(fiber :number :nil)"),
+        ("g", ":number"),
+        ("co", "(fiber :string :number)"),
+        ("resumed", "(or :string :number)"),
+        ("fib", "(fiber :any :number)"),
+        ("last", ":any"),
+        ("l", ":k"),
+        ("n", ":number"),
+    ] {
+        assert_eq!(local(&scopes, &facts, name), ty, "{name}");
+    }
+    assert!(local(&scopes, &facts, "status").starts_with("(enum :dead :error"));
+    assert!(facts.findings.is_empty(), "{:?}", facts.findings);
+    let defs = "(defn wants {:params [(fiber :string :nil)] :ret :nil} [f] nil)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(
+        told("(wants (generate [i :range [0 3]] i))\n"),
+        ["wants takes (fiber :string :nil) here, given (fiber :number :nil)"]
+    );
+    assert!(told("(wants (fiber/current))\n").is_empty());
+    assert!(told("(wants (generate [i :range [0 3]] (yield 1) \"s\"))\n").is_empty());
+}
+
+/// A channel is `(channel t)`: what `ev/give` puts in is what `ev/take` and `ev/select` hand out.
+#[test]
+fn a_channel_carries_what_is_given_to_it() {
+    let (_, scopes, facts) = alone(
+        "(defn f []\n  \
+         (def ch (ev/chan 1))\n  \
+         (ev/give ch 1)\n  \
+         (def taken (ev/take ch))\n  \
+         (def selected (ev/select ch))\n  \
+         (def closed (ev/chan-close ch))\n  \
+         (def threaded (ev/thread-chan)))\n\
+         (defn g {:params [(channel :string)] :ret :nil} [c]\n  \
+         (match (ev/select c [c \"x\"])\n    \
+         [:take _ v] (def got v)\n    \
+         _ nil))\n",
+    );
+    for (name, ty) in [
+        ("ch", "(channel :number)"),
+        ("taken", ":number?"),
+        ("closed", "(channel :number)"),
+        ("threaded", "(channel :any)"),
+        ("got", ":string"),
+    ] {
+        assert_eq!(local(&scopes, &facts, name), ty, "{name}");
+    }
+    assert_eq!(
+        local(&scopes, &facts, "selected"),
+        "(or [:give (channel :number)] [:take (channel :number) :number] [:close (channel :number)])"
+    );
+    assert!(facts.findings.is_empty(), "{:?}", facts.findings);
+}
+
+/// `(:greet obj arg)` calls the function `obj` holds at `:greet` with `obj` first; a method
+/// nobody knows is `:any`, and never a complaint.
+#[test]
+fn a_method_call_is_a_call_of_what_the_object_holds() {
+    let (_, scopes, facts) = alone(
+        "(def Person :typedef {:name :string :greet (fn [Person :string] :number)})\n\
+         (def greeter {:greet (fn [self name] (string \"hi \" name))})\n\
+         (defn f {:params [Person]} [p]\n  \
+         (def said (:greet greeter \"bob\"))\n  \
+         (def typed (:greet p \"x\"))\n  \
+         (def unknown (:nope greeter 1))\n  \
+         (def file (:write stdout \"x\")))\n",
+    );
+    for (name, ty) in [
+        ("said", ":string"),
+        ("typed", ":number"),
+        ("unknown", ":any"),
+        ("file", ":any"),
+    ] {
+        assert_eq!(local(&scopes, &facts, name), ty, "{name}");
+    }
+    assert!(facts.findings.is_empty(), "{:?}", facts.findings);
+}
+
+/// A table given a prototype holds the prototype's keys it lacks itself: a key read and a method
+/// call fall back to them.
+#[test]
+fn a_prototype_answers_for_the_keys_a_table_lacks() {
+    let (_, scopes, facts) = alone(
+        "(def Base @{:kind :base :name 0 :hello (fn [self] \"hi\")})\n\
+         (defn f []\n  \
+         (def obj (table/setproto @{:name \"x\"} Base))\n  \
+         (def kind (obj :kind))\n  \
+         (def own (get obj :name))\n  \
+         (def said (:hello obj)))\n",
+    );
+    for (name, ty) in [("kind", ":base"), ("own", ":string"), ("said", ":string")] {
+        assert_eq!(local(&scopes, &facts, name), ty, "{name}");
+    }
+}
+
+/// Fibers, channels, methods and prototypes the way Janet code is written: nothing to say.
+#[test]
+fn fibers_channels_and_objects_written_the_usual_way_are_quiet() {
+    let source = r#"(defn worker [ch]
+  (forever
+    (def msg (ev/take ch))
+    (when (nil? msg) (break))
+    (print (string/format "%q" msg))))
+
+(defn main [& args]
+  (def ch (ev/chan 10))
+  (ev/spawn (worker ch))
+  (ev/give ch "x")
+  (ev/give ch 1)
+  (match (ev/select ch [ch 2])
+    [:take c v] (print v)
+    [:give c] nil
+    [:close c] nil)
+  (ev/chan-close ch))
+
+(defn numbers []
+  (each x (generate [i :range [0 3]] i) (print (+ x 1)))
+  (def f (fiber/new (fn [] (yield 1) "done") :y))
+  (while (not= :dead (fiber/status f))
+    (print (resume f)))
+  (def c (coro (yield 1) (yield "two")))
+  (string (resume c) (fiber/last-value c)))
+
+(def proto @{:area (fn [self] (* (self :w) (self :h)))
+             :describe (fn [self prefix] (string prefix (:area self)))})
+
+(defn shapes []
+  (def sq (table/setproto @{:w 1 :h 2} proto))
+  (print (:area sq))
+  (print (:describe sq "area: "))
+  (print (:missing sq))
+  (def f (file/open "x"))
+  (:write f "x")
+  (:close f)
+  (:write stdout "x"))
+"#;
+    assert_eq!(messages(source), Vec::<String>::new());
+    let (_, _, facts) = infer_in(source, &HashMap::new(), STRICT);
+    assert!(facts.findings.is_empty(), "{:?}", facts.findings);
+}

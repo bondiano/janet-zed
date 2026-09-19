@@ -1126,12 +1126,12 @@
   [channel])
 
 (defn ev/chan
-  {:params [:number?] :ret :abstract}
+  {:params [:number?] :ret (channel a)}
   "(ev/chan &opt capacity)\n\nCreate a new channel. capacity is the number of values to queue before blocking writers, defaults to 0 if not provided. Returns a new channel."
   [&opt capacity])
 
 (defn ev/chan-close
-  {:params [:abstract] :ret :abstract}
+  {:params [(channel a)] :ret (channel a)}
   "(ev/chan-close chan)\n\nClose a channel. A closed channel will cause all pending reads and writes to return nil. Returns the channel."
   [chan])
 
@@ -1171,7 +1171,7 @@
   [& bodies])
 
 (defn ev/give
-  {:params [:abstract :any] :ret :abstract}
+  {:params [(channel a) a] :ret (or (channel a) :nil)}
   "(ev/give channel value)\n\nWrite a value to a channel, suspending the current fiber if the channel is full. Returns the channel if the write succeeded, nil otherwise."
   [channel value])
 
@@ -1216,7 +1216,7 @@
   [rwlock])
 
 (defn ev/rselect
-  {:params [:any] :ret [:keyword :any]}
+  {:params [(or (channel a) [(channel a) a])] :ret (or [:give (channel a)] [:take (channel a) a] [:close (channel a)])}
   "(ev/rselect & clauses)\n\nSimilar to ev/select, but will try clauses in a random order for fairness."
   [& clauses])
 
@@ -1226,7 +1226,7 @@
   [])
 
 (defn ev/select
-  {:params [:any] :ret [:keyword :any]}
+  {:params [(or (channel a) [(channel a) a])] :ret (or [:give (channel a)] [:take (channel a) a] [:close (channel a)])}
   "(ev/select & clauses)\n\nBlock until the first of several channel operations occur. Returns a tuple of the form [:give chan], [:take chan x], or [:close chan], where a :give tuple is the result of a write and a :take tuple is the result of a read. Each clause must be either a channel (for a channel take operation) or a tuple [channel x] (for a channel give operation). Operations are tried in order such that earlier clauses take precedence over later clauses. Both give and take operations can return a [:close chan] tuple, which indicates that the specified channel was closed while waiting, or that the channel was already closed."
   [& clauses])
 
@@ -1246,7 +1246,7 @@
   [& body])
 
 (defn ev/take
-  {:params [:abstract] :ret :any} # whatever was given to the channel
+  {:params [(channel a)] :ret a?} # nil once the channel is closed
   "(ev/take channel)\n\nRead from a channel, suspending the current fiber if no value is available."
   [channel])
 
@@ -1256,7 +1256,7 @@
   [main &opt value flags supervisor])
 
 (defn ev/thread-chan
-  {:params [:number?] :ret :abstract}
+  {:params [:number?] :ret (channel a)}
   "(ev/thread-chan &opt limit)\n\nCreate a threaded channel. A threaded channel is a channel that can be shared between threads and used to communicate between any number of operating system threads."
   [&opt limit])
 
@@ -1441,7 +1441,7 @@
   [fiber])
 
 (defn fiber/last-value
-  {:params [:fiber] :ret :any} # whatever the fiber last yielded, returned or raised
+  {:params [(fiber y r)] :ret (or y r)} # what it last yielded or returned; an error it raised is not told apart
   "(fiber/last-value fiber)\n\nGet the last value returned or signaled from the fiber."
   [fiber])
 
@@ -1451,7 +1451,7 @@
   [fib])
 
 (defn fiber/new
-  {:params [:function (or :string :buffer :symbol :keyword) :table] :ret :fiber}
+  {:params [(fn [& :any] r) (or :string :buffer :symbol :keyword) :table] :ret (fiber :any r)} # what it yields is nobody's to see
   "(fiber/new func &opt sigmask env)\n\nCreate a new fiber with function body func. Can optionally take a set of signals `sigmask` to capture from child fibers, and an environment table `env`. The mask is specified as a keyword where each character is used to indicate a signal to block. If the ev module is enabled, and this fiber is used as an argument to `ev/go`, these \"blocked\" signals will result in messages being sent to the supervisor channel. The default sigmask is :y. For example,\n\n    (fiber/new myfun :e123)\n\nblocks error signals and user signals 1, 2 and 3. The signals are as follows:\n\n* :a - block all signals\n* :d - block debug signals\n* :e - block error signals\n* :t - block termination signals: error + user[0-4]\n* :u - block user signals\n* :y - block yield signals\n* :w - block await signals (user9)\n* :r - block interrupt signals (user8)\n* :0-9 - block a specific user signal\n\nThe sigmask argument also can take environment flags. If any mutually exclusive flags are present, the last flag takes precedence.\n\n* :i - inherit the environment from the current fiber\n* :p - the environment table's prototype is the current environment table"
   [func &opt sigmask env])
 
@@ -1471,7 +1471,7 @@
   [fib maxstack])
 
 (defn fiber/status
-  {:params [:fiber] :ret :keyword}
+  {:params [:fiber] :ret (enum :dead :error :debug :pending :user0 :user1 :user2 :user3 :user4 :user5 :user6 :user7 :user8 :user9 :interrupted :suspended :new :alive)}
   "(fiber/status fib)\n\nGet the status of a fiber. The status will be one of:\n\n* :dead - the fiber has finished\n* :error - the fiber has errored out\n* :debug - the fiber is suspended in debug mode\n* :pending - the fiber has been yielded\n* :user(0-7) - the fiber is suspended by a user signal\n* :interrupted - the fiber was interrupted\n* :suspended - the fiber is waiting to be resumed by the scheduler\n* :alive - the fiber is currently running and cannot be resumed\n* :new - the fiber has just been created and not yet run"
   [fib])
 
@@ -2936,7 +2936,7 @@
   [path & args])
 
 (defn resume
-  {:params [:fiber :any] :ret :any}
+  {:params [(fiber y r) :any] :ret (or y r)}
   "(resume fiber &opt x)\n\nResume a new or suspended fiber and optionally pass in a value to the fiber that will be returned to the last yield in the case of a pending fiber, or the argument to the dispatch function in the case of a new fiber. Returns either the return result of the fiber's dispatch function, or the value from the next yield call in fiber."
   [fiber &opt x])
 

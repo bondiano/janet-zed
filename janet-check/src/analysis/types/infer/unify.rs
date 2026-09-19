@@ -177,6 +177,9 @@ impl Infer<'_> {
     /// What a named type applied to `args` is defined as, here or in the declarations around the
     /// file.
     pub(super) fn expand(&self, name: &str, args: &[Type]) -> Option<Type> {
+        if let Some((atom, _)) = types::builtin(name) {
+            return Some(atom);
+        }
         let (ty, vars) = self.typedef(name)?;
         // A copy, like any written type: a variable free in a typedef is its own at every use.
         // The parameters stay as they are, for the arguments to take their place.
@@ -324,8 +327,19 @@ impl Infer<'_> {
                     .collect();
                 Type::named(name.clone(), merged.into())
             }
-            (Type::Named { name, args }, other) | (other, Type::Named { name, args }) => {
+            // A `(channel t)` against a union of what a clause may be meets the member it is: the
+            // core's own parametric types expand to their atom alone, which no union lists.
+            (union @ (Type::Or(items) | Type::Open(items)), other @ Type::Named { name, .. })
+            | (other @ Type::Named { name, .. }, union @ (Type::Or(items) | Type::Open(items)))
+                if types::builtin(name).is_some() =>
+            {
+                self.merged(union, items, other, step)
+            }
+            (named @ Type::Named { name, args }, other)
+            | (other, named @ Type::Named { name, args }) => {
                 match self.expand(name, args) {
+                    // `(fiber a b)` against the bare `:fiber` it is: the detail wins.
+                    Some(ty) if ty == *other && types::builtin(name).is_some() => named.clone(),
                     Some(ty) => self.unify_at(&ty, other, step),
                     None => unions(vec![left.clone(), right.clone()]),
                 }
@@ -340,26 +354,7 @@ impl Infer<'_> {
             }
             (union @ (Type::Or(items) | Type::Open(items)), other)
             | (other, union @ (Type::Or(items) | Type::Open(items))) => {
-                if items.contains(other) {
-                    return union.clone();
-                }
-                // A value unifies with the member it is shaped like — `[1 2 3]` against
-                // `(or [a] @[a])` is what tells `a` it is a number — and the other members stay:
-                // the union can still be any of them. Nothing alike: the union grows by one more
-                // thing it can be.
-                let alike = items
-                    .iter()
-                    .position(|item| std::mem::discriminant(item) == std::mem::discriminant(other))
-                    .or_else(|| items.iter().position(|item| shaped_alike(item, other)));
-                let Some(at) = alike else {
-                    return unions(vec![union.clone(), other.clone()]);
-                };
-                let mut members = items.to_vec();
-                members[at] = self.unify_at(&items[at], other, step);
-                match union {
-                    Type::Open(_) => unions(vec![Type::Open(members.into())]),
-                    _ => unions(members),
-                }
+                self.merged(union, items, other, step)
             }
             // An atom of `(type x)` is the shape without the detail: the detail wins. A keyword
             // literal is not the detail of `:keyword`: it is one keyword where `:keyword` is any.
@@ -430,6 +425,28 @@ impl Infer<'_> {
     }
 
     /// Binds a type variable to what it turned out to be, merging what it already stood for.
+    /// A union and one more thing it may be. A value unifies with the member it is shaped like —
+    /// `[1 2 3]` against `(or [a] @[a])` is what tells `a` it is a number — and the other members
+    /// stay: the union can still be any of them. Nothing alike: the union grows by one.
+    fn merged(&mut self, union: &Type, items: &[Type], other: &Type, depth: usize) -> Type {
+        if items.contains(other) {
+            return union.clone();
+        }
+        let alike = items
+            .iter()
+            .position(|item| std::mem::discriminant(item) == std::mem::discriminant(other))
+            .or_else(|| items.iter().position(|item| shaped_alike(item, other)));
+        let Some(at) = alike else {
+            return unions(vec![union.clone(), other.clone()]);
+        };
+        let mut members = items.to_vec();
+        members[at] = self.unify_at(&items[at], other, depth);
+        match union {
+            Type::Open(_) => unions(vec![Type::Open(members.into())]),
+            _ => unions(members),
+        }
+    }
+
     fn assign(&mut self, var: Var, ty: &Type, depth: usize) -> Type {
         if let Some(bound) = self.subst.get(var).cloned() {
             let merged = self.unify_at(&bound, ty, depth);

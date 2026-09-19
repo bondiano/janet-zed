@@ -214,6 +214,8 @@ struct Infer<'d> {
     current: Option<String>,
     /// What the form being inferred raises, innermost frame last.
     raised: Vec<Vec<Type>>,
+    /// What the `coro` or `generate` being inferred yields, innermost last.
+    yielded: Vec<Vec<Type>>,
     /// Locals a branch narrowed, with what they were before it: what [`Infer::restore`] puts
     /// back when the branch ends.
     narrowed: Vec<(usize, Type)>,
@@ -259,6 +261,7 @@ impl<'d> Infer<'d> {
             locals: vec![any(); scopes.locals.len()],
             current: None,
             raised: vec![Vec::new()],
+            yielded: Vec::new(),
             narrowed: Vec::new(),
             exprs: HashMap::new(),
             findings: Vec::new(),

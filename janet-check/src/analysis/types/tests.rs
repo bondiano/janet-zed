@@ -263,7 +263,7 @@ struct Entry {
 /// The positions nobody has written a type for yet. A wrong type made `:any` raises it: a result
 /// Janet does not return is a false finding, which is worse than none. Each `&named` option is a
 /// position of its own.
-const ANY_POSITIONS: usize = 457;
+const ANY_POSITIONS: usize = 451;
 
 fn core_entries() -> Vec<Entry> {
     let doc = Document::new(CORE.to_string());

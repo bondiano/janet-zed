@@ -7,10 +7,12 @@ use std::sync::Arc;
 
 use tree_sitter::Node;
 
-use super::unions::{any, atom, count, is_ground, is_nil, mentions, never, unions, unwrap};
+use super::unions::{
+    any, atom, count, dynamic, is_ground, is_nil, mentions, never, unions, unwrap,
+};
 use super::{Finding, INFER_DEPTH, Infer, KEYWORD, TUPLE, literal};
 use crate::analysis::types::fit::Fit;
-use crate::analysis::types::{self, Annotation, Signature, Type, Var};
+use crate::analysis::types::{self, Annotation, Fields, Signature, Type, Var};
 use crate::syntax;
 
 impl<'d> Infer<'d> {
@@ -24,6 +26,9 @@ impl<'d> Infer<'d> {
             return self.index(Some(*key), callee, &ty);
         }
         let mut types: Vec<Type> = args.iter().map(|arg| self.expr(*arg)).collect();
+        if head.kind() == KEYWORD {
+            return self.method(head, &types);
+        }
         self.as_forms(head, callee, args, &mut types);
         self.inspect(head, args, &types);
         self.apply(callee, &types)
@@ -364,6 +369,36 @@ impl<'d> Infer<'d> {
             self.raise(raised);
         }
         self.as_dynamic_as(callee, signature.ret.clone())
+    }
+
+    /// `(:greet obj arg)`: the function `obj` holds at `:greet`, called with `obj` first. Only a
+    /// struct or table that lists the key says which function that is; anything else — a file,
+    /// a guess, a union — answers `:any`, and the object learns nothing from the call.
+    fn method(&mut self, name: Node<'d>, types: &[Type]) -> Type {
+        let Some(object) = types.first() else {
+            return any();
+        };
+        let key = self.text(name);
+        let found = |shape: &Fields| {
+            shape
+                .fields
+                .iter()
+                .find(|(field, _)| field == key)
+                .map(|(_, ty)| ty.clone())
+        };
+        // What a table holds is what was put in it last, which may be anything a `put` puts.
+        let function = match self.unnamed(object) {
+            Type::Struct(shape) => found(&shape),
+            Type::Table(shape) => found(&shape).map(dynamic),
+            _ => None,
+        };
+        match function {
+            Some(function) if matches!(self.resolve(&function), Type::Fn(_)) => {
+                let function = self.as_dynamic_as(object, function);
+                self.apply(&function, types)
+            }
+            _ => any(),
+        }
     }
 
     /// Whether a call may tell `ty` what it is: a guess, or a variable nobody bound yet.

@@ -66,10 +66,19 @@ literal it came from (`Display`), so hover shows what a person would have writte
 | `(or Click Key &)` | `Open` | An open union: these members, or one nobody listed |
 | `(enum :get :post)` | `Enum` | One of these keyword values |
 | `(fn [a & as] b)` | `Fn` | A function; `& as` is the rest parameter's element type |
+| `(fiber :number :nil)` | `Named` | A fiber that yields the first type and returns the second |
+| `(channel :string)` | `Named` | A channel carrying that type: `ev/chan`, and a threaded one |
 | never written | `Dynamic` | What inference reads a value as when nobody wrote it down; printed as the type inside |
 
 The atoms are `nil boolean number string buffer keyword symbol function cfunction fiber array
 table tuple struct abstract pointer any never`. Any other keyword is a value.
+
+`fiber` and `channel` are the core's own parametric types, written like a typedef applied to its
+arguments and held in a `Named`. Nobody declares them: `types::builtin` answers what each is made
+of, and `Infer::expand` expands one to the atom `(type x)` gives for it — `:fiber`, and `:abstract`
+for a channel — never to a shape. So `(fiber :number :nil)` and the bare `:fiber` are the same kind
+and fit each other, two fibers are unified and fitted argument by argument, and a key is never read
+out of one.
 
 `Fn` carries a `Signature`: `params`, `rest` (the rest parameter's element type), `ret`,
 `throws` (error values the body raises), `narrows` (for a predicate: what its first argument
@@ -259,9 +268,13 @@ call of its head.
 | `(match v p b …)` | The union of the bodies | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
 | `(and …)` | The last argument, and what each one before it can stop at: its `nil` and `:boolean` members, nothing for one always true | Each argument narrowed by the ones before it holding |
 | `(or …)` | Each argument but the last without `nil`, and the last | Each argument narrowed by the ones before it failing |
-| `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any` |
+| `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any`. A fiber's element is what it yields, so `(each x (generate …))` takes the loop's body |
 | `(seq …)`, `(catseq …)` | An array of the body's type | |
-| `(generate …)` | `:fiber` | |
+| `(generate …)` | `(fiber body :nil)`: a fiber yielding what the loop's body is | |
+| `(coro …)` | `(fiber y body)`: `y` is what the `yield`s in it are given, `:any` for none | |
+| `(yield v)` | `:any`: nobody knows what the next `resume` passes | `v` joins what the `coro` or `generate` around it yields |
+| `(:k obj a…)` | A method call: the function `obj` holds at `:k`, applied to `obj` and the rest. `:any` where `obj` lists no such function | |
+| `(table/setproto t p)` | `t` with the keys of the prototype `p` it does not have itself | |
 | `(tabseq …)` | An open table | |
 | `(let [p v …] …)`, `(with …)` | The body | Patterns bound |
 | `(if-let …)`, `(when-let …)` | As `if` / `when` | Every bound name is non-nil in the branch it guards |
@@ -527,6 +540,10 @@ Marked `ponytail:` in the source, each with its ceiling:
 - The arguments of a macro are held to nothing but their count: typing every argument as the form
   it is would need the core's macros declared so too.
 - The steps of a threading form are applied, not inspected: a step's arguments are never told.
+- A fiber yields what a `yield` written inside its `coro` or `generate` is given, and nothing a
+  function it calls yields; `(fiber/new f)` yields `:any`.
+- A prototype's keys join the table's own, so `table/getproto` cannot hand the prototype back, and
+  a `table/setproto` written as a statement changes no local — only its value carries the keys.
 
 ## Glossary
 

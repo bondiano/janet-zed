@@ -261,11 +261,10 @@ impl<'d> Infer<'d> {
                 let element = self.loop_(args);
                 Type::Array([element].into())
             }
-            // A fiber that yields each value of the body.
-            "generate" => {
-                self.loop_(args);
-                atom("fiber")
-            }
+            "generate" => self.coroutine(args, true),
+            "coro" => self.coroutine(args, false),
+            "yield" => self.yield_(args),
+            "table/setproto" => self.setproto(args),
             "tabseq" => self.tabseq(args),
             "let" | "with-vars" => self.let_(args),
             // `(with-syms [a b] body…)` binds each name to a symbol of its own.
@@ -313,6 +312,41 @@ impl<'d> Infer<'d> {
                 self.call(*head, &callee, args)
             }
         }
+    }
+
+    /// `(yield value)`: the value joins what the `coro` or `generate` around it yields, and the
+    /// form itself is what the fiber is resumed with next, which nobody here knows.
+    fn yield_(&mut self, args: &[Node<'d>]) -> Type {
+        let yielded = args.first().map_or_else(nil, |value| self.expr(*value));
+        if let Some(frame) = self.yielded.last_mut() {
+            frame.push(yielded);
+        }
+        any()
+    }
+
+    /// `(generate head body…)` yields each value of its body and returns `nil`; `(coro body…)`
+    /// returns its last form. Both yield what a `yield` inside them is given: a guess, since a
+    /// function they call may yield too.
+    // ponytail: only a `yield` written inside the form is seen; `(fiber/new f)` yields `:any`.
+    fn coroutine(&mut self, args: &[Node<'d>], generates: bool) -> Type {
+        self.yielded.push(Vec::new());
+        let body = if generates {
+            self.loop_(args)
+        } else {
+            self.body(args)
+        };
+        let written = self.yielded.pop().unwrap_or_default();
+        let guessed = if written.is_empty() {
+            None
+        } else {
+            Some(dynamic(unions(written)))
+        };
+        let (yields, returns) = match (generates, guessed) {
+            (true, guessed) => (unions(guessed.into_iter().chain([body]).collect()), nil()),
+            (false, Some(guessed)) => (guessed, body),
+            (false, None) => (any(), body),
+        };
+        Type::named("fiber".into(), [yields, returns].into())
     }
 
     /// `(-> value (f a) …)`: the value becomes the call's first argument, `->>` its last.

@@ -94,6 +94,8 @@ a b r                           # a type variable: a lowercase symbol
 (or Click Key &)                # an open union: these, or something nobody listed
 (enum :get :post :put)          # one of these values
 (fn [a] b)                      # a function; (fn [a & as] b) takes a rest argument
+(fiber :number :nil)            # a fiber: what it yields, what it returns
+(channel :string)               # a channel of strings, threaded or not
 ```
 
 An absent key and a `nil` one read the same in Janet, so `{:age :number?}` covers both and

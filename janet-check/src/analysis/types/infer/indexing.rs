@@ -57,6 +57,34 @@ impl<'d> Infer<'d> {
         target
     }
 
+    /// `(table/setproto table proto)`: the table, holding the prototype's keys it has none of
+    /// itself, which is where a key read or a method call on it falls back to.
+    // ponytail: the inherited keys join the table's own, so `table/getproto` cannot give the
+    // prototype back, and a `table/setproto` used as a statement changes no local; keep the
+    // prototype beside the fields if either is ever wanted.
+    pub(super) fn setproto(&mut self, args: &[Node<'d>]) -> Type {
+        let types: Vec<Type> = args.iter().map(|arg| self.expr(*arg)).collect();
+        let [table, proto] = types.as_slice() else {
+            return types.first().cloned().unwrap_or_else(any);
+        };
+        let (Type::Table(own), Type::Struct(inherited) | Type::Table(inherited)) =
+            (self.unnamed(table), self.unnamed(proto))
+        else {
+            return table.clone();
+        };
+        let missing: Vec<(SmolStr, Type)> = inherited
+            .fields
+            .iter()
+            .filter(|(key, _)| own.fields.iter().all(|(name, _)| name != key))
+            .map(|(key, ty)| (key.clone(), self.as_dynamic_as(proto, ty.clone())))
+            .collect();
+        let merged = Type::Table(Fields {
+            fields: own.fields.iter().cloned().chain(missing).collect(),
+            rest: own.rest,
+        });
+        self.as_dynamic_as(table, merged)
+    }
+
     /// What a key holds, and what having the key says about the form it is read from.
     /// `at` is the key as it is written, where reading a key that is not there is worth saying
     /// so; a `put` passes none, since it is what adds the key.
@@ -217,6 +245,10 @@ impl<'d> Infer<'d> {
                 shape.fields.iter().map(|(_, ty)| ty.clone()).collect(),
             )),
             Type::Keyword(name) if name == "string" || name == "buffer" => atom("number"),
+            // `(each x fiber)` takes what the fiber yields.
+            Type::Named { name, args } if name == "fiber" => {
+                args.first().cloned().unwrap_or_else(any)
+            }
             Type::Var(_) => {
                 let fresh = self.fresh();
                 let shape = Type::Tuple([fresh.clone()].into());

@@ -895,6 +895,18 @@ fn bounds_of(doc: &Document, node: Node) -> Option<Vec<(Var, Type)>> {
         .collect()
 }
 
+/// A type the core names with parameters, as a typedef would, and how many it takes: `(fiber y r)`
+/// yields `y` and returns `r`, `(channel t)` carries `t`. It expands to the atom `(type x)`
+/// answers for it — never to a shape — so it is compared by kind and unified argument by argument.
+pub(super) fn builtin(name: &str) -> Option<(Type, usize)> {
+    match name {
+        "fiber" => Some((Type::Keyword("fiber".into()), 2)),
+        // `:core/channel` and `:core/threaded-channel`, both abstract types.
+        "channel" => Some((Type::Keyword("abstract".into()), 1)),
+        _ => None,
+    }
+}
+
 /// A typedef of `vars` over `ty`, applied to `args`: every variable its argument, all of them
 /// `:any` for a bare name. `None` for another number of arguments, which names no type.
 pub fn apply(ty: &Type, vars: &[Var], args: &[Type]) -> Option<Type> {
@@ -1012,6 +1024,10 @@ fn call(doc: &Document, node: Node) -> Option<Type> {
             }
             _ => None,
         },
+        // `(fiber :number :nil)`, `(channel :string)`: the core's parametric types.
+        name if builtin(name).is_some_and(|(_, arity)| arity == args.len()) => {
+            Some(Type::named(name.into(), types(doc, args)?.into()))
+        }
         // `(Box :number)`: a named type applied to its arguments.
         name if name.starts_with(char::is_uppercase) && !args.is_empty() => {
             Some(Type::named(name.into(), types(doc, args)?.into()))
