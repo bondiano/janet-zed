@@ -103,6 +103,33 @@ fn a_path_with_no_janet_files_is_an_error() {
     assert!(!output.status.success());
 }
 
+/// A file with no `project.janet` or `.janet-zed/` above it is checked on its own: a declaration
+/// file beside it — which would otherwise widen every file's ambient names — is never read, so a
+/// call to a name only that sibling declares is left as unbound rather than typed by it. This is
+/// what keeps `janet-check ~/x.janet` from reading the whole of `~`.
+#[test]
+fn a_standalone_file_does_not_read_its_directory() {
+    let root = std::env::temp_dir().join(format!("janet-check-standalone-{}", std::process::id()));
+    let write = |path: &str, text: &str| {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    };
+    write("lonely.janet", "(ghost/thing 1 2 3)\n");
+    write(
+        "sibling/ghost.d.janet",
+        "(defn ghost/thing {:params [:number] :ret :nil} [n])\n",
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(&root)
+        .args(["--types-only", "lonely.janet"])
+        .output()
+        .expect("janet-check runs");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(stdout(&output), "");
+    assert!(output.status.success());
+}
+
 /// The fixture project with the installed Janet's whole syspath beside it: over a thousand files,
 /// every one inferred once, a layer of the import graph at a time, and nothing to report.
 #[test]

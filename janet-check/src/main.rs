@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use janet_check::analysis::ignores::ignores;
+use janet_check::analysis::modules;
 use janet_check::analysis::types::infer::Mode;
 use janet_check::analysis::workspace::{Workspace, janet_files};
 use janet_check::analysis::{SourceFile, canonical, is_declaration, uri_of};
@@ -42,6 +43,11 @@ struct Args {
     #[arg(long, value_name = "PATH", default_value = "janet")]
     janet: String,
 
+    /// Where Janet resolves dependencies from, `dyn :syspath`; read from `janet` itself if not
+    /// given.
+    #[arg(long, value_name = "PATH")]
+    syspath: Option<PathBuf>,
+
     /// Also report a union some member of which does not fit, and a type inference guessed that
     /// cannot fit at all.
     #[arg(long)]
@@ -56,11 +62,17 @@ struct Args {
 fn main() -> ExitCode {
     let args = Args::parse();
     let janet = (!args.types_only).then_some(args.janet.as_str());
+    // Read once, the same as the LSP: a global dependency that is never `(import ./x)`-relative
+    // still resolves, instead of silently becoming `:any`.
+    let syspath = args
+        .syspath
+        .clone()
+        .or_else(|| janet.and_then(|janet| modules::syspath(janet).ok()));
     let mode = Mode {
         strict: args.strict,
         exhaustive: args.exhaustive,
     };
-    match check(&args.paths, mode, janet) {
+    match check(&args.paths, mode, janet, syspath) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
@@ -70,10 +82,16 @@ fn main() -> ExitCode {
     }
 }
 
-/// Whether every file the paths name is clean. The whole project around each path is read, so
-/// imports and ambient declarations resolve the way they do for the editor. With `janet`, each
-/// file is also compiled by it.
-fn check(paths: &[PathBuf], mode: Mode, janet: Option<&str>) -> anyhow::Result<bool> {
+/// Whether every file the paths name is clean. The project around each path is read, so imports
+/// and ambient declarations resolve the way they do for the editor; a standalone file with no
+/// enclosing project is read on its own, with whatever it imports, instead of everything nearby.
+/// With `janet`, each file is also compiled by it.
+fn check(
+    paths: &[PathBuf],
+    mode: Mode,
+    janet: Option<&str>,
+    syspath: Option<PathBuf>,
+) -> anyhow::Result<bool> {
     let files = janet_files(paths);
     anyhow::ensure!(!files.is_empty(), "no .janet files under the given paths");
     if let Some(janet) = janet {
@@ -84,13 +102,21 @@ fn check(paths: &[PathBuf], mode: Mode, janet: Option<&str>) -> anyhow::Result<b
     }
     let roots: Vec<PathBuf> = paths
         .iter()
-        .map(root_of)
+        .filter_map(root_of)
         .collect::<BTreeSet<_>>()
         .into_iter()
         .collect();
-    let mut workspace = Workspace::new(roots.clone(), None);
+    let mut workspace = Workspace::new(roots.clone(), syspath);
     workspace.set_mode(mode);
-    for path in janet_files(&roots).union(&files) {
+    // Every root that is itself a project is indexed whole, so its files resolve each other; one
+    // already walked into `files` (the path it came from) is not walked again.
+    let walked: BTreeSet<PathBuf> = paths.iter().map(|path| canonical(path)).collect();
+    let indexed: BTreeSet<PathBuf> = roots
+        .iter()
+        .filter(|root| is_project_dir(root) && !walked.contains(*root))
+        .flat_map(|root| janet_files(std::slice::from_ref(root)))
+        .collect();
+    for path in indexed.union(&files) {
         if let Some(file) =
             uri_of(path).and_then(|uri| SourceFile::read(path.clone(), uri, workspace.config()))
         {
@@ -198,17 +224,25 @@ fn first_error(root: Node<'_>) -> Option<Node<'_>> {
 }
 
 /// The workspace root a path stands for: the nearest directory holding it that is a project
-/// (`project.janet` or `.janet-zed/`), else the path itself or the directory holding it.
-fn root_of(path: impl AsRef<Path>) -> PathBuf {
+/// (`project.janet` or `.janet-zed/`). A directory with none is its own root — it is what the
+/// CLI was asked to check. A file with none has no root at all: walking the directory that
+/// happens to hold it would read everything nearby, from a whole home directory down, for one
+/// file that asked for none of it.
+fn root_of(path: impl AsRef<Path>) -> Option<PathBuf> {
     let path = canonical(path.as_ref());
-    let dir = if path.is_dir() {
+    let is_dir = path.is_dir();
+    let dir = if is_dir {
         path
     } else {
         path.parent().map(PathBuf::from).unwrap_or(path)
     };
     dir.ancestors()
-        .find(|ancestor| {
-            ancestor.join("project.janet").is_file() || ancestor.join(".janet-zed").is_dir()
-        })
-        .map_or_else(|| dir.clone(), Path::to_path_buf)
+        .find(|ancestor| is_project_dir(ancestor))
+        .map(Path::to_path_buf)
+        .or_else(|| is_dir.then_some(dir))
+}
+
+/// Whether `dir` is itself a project: it carries `project.janet` or `.janet-zed/`.
+fn is_project_dir(dir: &Path) -> bool {
+    dir.join("project.janet").is_file() || dir.join(".janet-zed").is_dir()
 }
