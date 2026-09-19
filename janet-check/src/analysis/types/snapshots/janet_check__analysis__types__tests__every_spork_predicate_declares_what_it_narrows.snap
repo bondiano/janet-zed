@@ -1,9 +1,13 @@
 ---
-source: src/analysis/types/tests.rs
-assertion_line: 482
+source: janet-check/src/analysis/types/tests.rs
 expression: "marked.join(\"\\n\")"
 ---
 spork/path/abspath?: :any
 spork/path/posix/abspath?: :any
 spork/path/win32/abspath?: :any
 spork/sh/exists?: :any
+spork/date/between?: :any
+spork/date/date?: :any
+spork/date/leap-year?: :any
+spork/math/prime?: :any
+spork/cc/msvc-setup?: :any

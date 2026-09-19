@@ -517,9 +517,38 @@ fn every_predicate_declares_what_it_narrows() {
 }
 
 /// The spork modules `spork.d.janet` carries. Their names are how the file writes them.
-const SPORK_MODULES: [&str; 17] = [
-    "json", "http", "path", "sh", "misc", "argparse", "test", "schema", "rpc", "fmt", "regex",
-    "temple", "netrepl", "ev-utils", "stream", "base64", "crc",
+const SPORK_MODULES: [&str; 31] = [
+    "json",
+    "http",
+    "path",
+    "sh",
+    "misc",
+    "argparse",
+    "test",
+    "schema",
+    "rpc",
+    "fmt",
+    "regex",
+    "temple",
+    "netrepl",
+    "ev-utils",
+    "stream",
+    "base64",
+    "crc",
+    "htmlgen",
+    "rawterm",
+    "getline",
+    "generators",
+    "data",
+    "randgen",
+    "utf8",
+    "cron",
+    "msg",
+    "channel",
+    "date",
+    "math",
+    "cc",
+    "pm",
 ];
 
 /// Every entry of `spork.d.janet` is written in full, documented and typed, and an entry that
@@ -725,7 +754,6 @@ fn sample(ty: &Type, edge: bool) -> Option<String> {
             "number" => "1".to_string(),
             // Whatever takes anything mostly takes something to look into.
             "any" if edge => "{}".to_string(),
-            "any" => "@[1 2]".to_string(),
             "string" if edge => "\"\"".to_string(),
             "array" if edge => "@[]".to_string(),
             "tuple" if edge => "[]".to_string(),
@@ -738,7 +766,7 @@ fn sample(ty: &Type, edge: bool) -> Option<String> {
             "function" => "(fn [& _] 1)".to_string(),
             "cfunction" => "length".to_string(),
             "fiber" => "(fiber/new (fn [] 1))".to_string(),
-            "array" => "@[1 2]".to_string(),
+            "any" | "array" => "@[1 2]".to_string(),
             "tuple" => "[1 2]".to_string(),
             "table" => "@{:a 1}".to_string(),
             "struct" => "{:a 1}".to_string(),

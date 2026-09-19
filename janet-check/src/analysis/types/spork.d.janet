@@ -1,6 +1,7 @@
 # Types of spork's most used modules, checked against spork 1.2.0 (3918802) on Janet 1.42.1:
 # `json`, `http`, `path`, `sh`, `misc`, `argparse`, `test`, `schema`, `rpc`, `fmt`, `regex`,
-# `temple`, `netrepl`, `ev-utils`, `stream`, `base64` and `crc`.
+# `temple`, `netrepl`, `ev-utils`, `stream`, `base64`, `crc`, `htmlgen`, `rawterm`, `getline`,
+# `generators`, `data`, `randgen`, `utf8`, `cron`, `msg`, `channel`, `date`, `math`, `cc` and `pm`.
 #
 # The server writes this file out beside its own `janet-zed.exports/spork/`, so it is read like
 # any other declaration a library exports and can be handed to spork upstream unchanged. Names
@@ -781,3 +782,959 @@
   {:params [:keyword] :ret :abstract}
   "A named CRC variant, as `:crc32`."
   [name])
+
+# -- spork/htmlgen -----------------------------------------------------------------------------
+
+(def spork/htmlgen/doctype-html
+  {:type :function}
+  "The HTML5 doctype, as `raw` splices it."
+  nil)
+
+(defn spork/htmlgen/escape
+  {:params [a] :ret :string}
+  "Escape the characters of a value, as a string, for HTML."
+  [x])
+(defn spork/htmlgen/html
+  {:params [a :buffer?] :ret :buffer}
+  "Render HTML from tuples, structs and strings, into `buf` when one is given."
+  [data &opt buf])
+(defn spork/htmlgen/raw
+  {:params [(or :string :buffer)] :ret (fn [:buffer] :buffer)}
+  "Splice `text` into the HTML unescaped."
+  [text])
+
+# -- spork/rawterm -----------------------------------------------------------------------------
+
+(defn spork/rawterm/begin
+  {:params [(or (fn [:number :number] a) :nil)] :ret :abstract}
+  "Put the terminal in raw mode, answering the stream its input is read from."
+  [&opt on-winch])
+(defn spork/rawterm/buffer-traverse
+  {:params [(or :string :buffer) :number :number :boolean?] :ret :number}
+  "The index `delta` codepoints away from `index`, zero-width ones skipped when asked."
+  [bytes index delta &opt skip-zerowidth])
+(defn spork/rawterm/ctrl-z {:params [] :ret :nil} "Suspend the process, as ctrl-z does." [])
+(defn spork/rawterm/end {:params [] :ret :nil} "Leave raw mode." [])
+(defn spork/rawterm/getch
+  {:params [:buffer?] :ret :buffer}
+  "A byte of input from standard input, into `into` when one is given."
+  [&opt into])
+(defn spork/rawterm/isatty
+  {:params [] :ret :boolean}
+  "Whether standard input is a terminal."
+  [])
+(defn spork/rawterm/monowidth
+  {:params [(or :string :buffer) :number? :number?] :ret :number}
+  "The monospace width of a string."
+  [bytes &opt start-index end-index])
+(defn spork/rawterm/rune-monowidth
+  {:params [:number] :ret :number}
+  "The monospace width of a rune: 0, 1 or 2."
+  [rune])
+(defn spork/rawterm/size
+  {:params [] :ret [:number :number]}
+  "The rows and columns the terminal shows."
+  [])
+(defn spork/rawterm/slice-monowidth
+  {:params [(or :string :buffer) :number :number? :buffer?] :ret :buffer}
+  "The bytes of a string that fit in `columns`."
+  [bytes columns &opt start-index into])
+
+# -- spork/getline -----------------------------------------------------------------------------
+
+(def spork/getline/max-history {:type :number} "How many lines the history keeps." nil)
+
+(defn spork/getline/default-autocomplete-context
+  {:params [:buffer :number] :ret (or @[:number :string] :nil)}
+  "The position and the symbol prefix before the cursor that completion works from."
+  [buf pos])
+(defn spork/getline/default-autocomplete-options
+  {:params [:string] :ret @[:symbol]}
+  "The symbols of the current environment that start with `prefix`, sorted."
+  [prefix &])
+(defn spork/getline/default-doc-fetch
+  {:params [(or :string :symbol) :number] :ret :string?}
+  "The docstring of a root binding formatted `w` columns wide, for ctrl-g."
+  [sym w &])
+(defn spork/getline/make-getline
+  {:params [(or (fn [:buffer :number] b) :nil)
+            (or (fn [:string] c) :nil)
+            (or (fn [:string :number] d) :nil)]
+   :ret :function}
+  "A `getline` that completes and looks up docs by the handlers given."
+  [&opt autocomplete-context autocomplete-options doc-fetch])
+
+# -- spork/generators --------------------------------------------------------------------------
+
+(defn spork/generators/concat
+  {:params [a] :ret :fiber}
+  "A coroutine yielding the elements of each iterable in turn."
+  [& iterables])
+(defn spork/generators/cycle
+  {:params [a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` over and over."
+  [iterable])
+(defn spork/generators/drop
+  {:params [:number a] :ret :fiber}
+  "A coroutine yielding what is left of `iterable` after its first `n` elements."
+  [n iterable])
+(defn spork/generators/drop-until
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` from the first `pred` holds for."
+  [pred iterable])
+(defn spork/generators/drop-while
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` from the first `pred` fails for."
+  [pred iterable])
+(defn spork/generators/filter
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` that `pred` holds for."
+  [pred iterable])
+(defn spork/generators/from-iterable
+  {:params [a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable`."
+  [iterable])
+(defn spork/generators/interleave
+  {:params [a b] :ret :fiber}
+  "A coroutine yielding the first element of each iterable, then the second, and so on."
+  [iterable & iterables])
+(defn spork/generators/interpose
+  {:params [b a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` with `sep` between them."
+  [sep iterable])
+(defn spork/generators/keep
+  {:params [:function a b] :ret :fiber}
+  "A coroutine yielding what `pred` answers truly for the elements of the iterables in step."
+  [pred iterable & iterables])
+(defn spork/generators/map
+  {:params [:function a b] :ret :fiber}
+  "A coroutine yielding what `f` answers for the elements of the iterables in step."
+  [f iterable & iterables])
+(defn spork/generators/mapcat
+  {:params [:function a b] :ret :fiber}
+  "A coroutine yielding the elements of what `f` answers for the elements of the iterables."
+  [f iterable & iterables])
+(defn spork/generators/partition
+  {:params [:number a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` in arrays of `n`."
+  [n iterable])
+(defn spork/generators/partition-by
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding runs of the elements of `iterable` that `f` answers the same for."
+  [f iterable])
+(defn spork/generators/range
+  {:params [:number :number :number?] :ret :fiber}
+  "A coroutine yielding the numbers from `from` up to `to`, by `step`."
+  [from to &opt step])
+(defn spork/generators/run
+  {:params [a] :ret :nil}
+  "Run through `iterable` for what it does."
+  [iterable])
+(defn spork/generators/take
+  {:params [:number a] :ret :fiber}
+  "A coroutine yielding the first `n` elements of `iterable`."
+  [n iterable])
+(defn spork/generators/take-until
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` until `pred` holds."
+  [pred iterable])
+(defn spork/generators/take-while
+  {:params [(fn [b] c) a] :ret :fiber}
+  "A coroutine yielding the elements of `iterable` while `pred` holds."
+  [pred iterable])
+(defn spork/generators/to-array
+  {:params [a] :ret @[:any]} # TODO: what the iterable yields
+  "The elements of `iterable`, in a new array."
+  [iterable])
+
+# -- spork/data --------------------------------------------------------------------------------
+
+(defn spork/data/diff
+  {:params [a b] :ret @[:any]} # TODO: the parts of `a` and `b`, in their shapes
+  "Compare two values recursively: what is only in `a`, only in `b`, and in both."
+  [a b])
+
+# -- spork/randgen -----------------------------------------------------------------------------
+
+(def spork/randgen/*rng* {:type :keyword} "The dynamic binding of the RNG draws come from." nil)
+
+(defn spork/randgen/rand-cdf
+  {:params [(or [:number] @[:number])] :ret :number}
+  "A random index, weighted by a discrete cumulative distribution."
+  [cdf])
+(defmacro spork/randgen/rand-cdf-path
+  {:params [(or [:number] @[:number]) a] :ret :any} # TODO: whatever the path taken answers
+  "Run one of the paths at random, weighted by a discrete cumulative distribution."
+  [cdf & paths])
+(defn spork/randgen/rand-gaussian
+  {:params [:number? :number?] :ret :number}
+  "A draw from the Gaussian distribution of mean `m` and standard deviation `sd`."
+  [&opt m sd])
+(defn spork/randgen/rand-index
+  {:params [(or :tuple :array :string :buffer)] :ret :number}
+  "A random index of an indexed structure."
+  [xs])
+(defn spork/randgen/rand-int
+  {:params [:number :number] :ret :number}
+  "A random integer in `[start, end)`."
+  [start end])
+(defmacro spork/randgen/rand-path
+  {:params [a] :ret :any} # TODO: whatever the path taken answers
+  "Run one of the paths at random."
+  [& paths])
+(defn spork/randgen/rand-uniform {:params [] :ret :number} "A random number in `[0, 1)`." [])
+(defn spork/randgen/rand-value
+  {:params [(or [a] @[a])] :ret a}
+  "A random element of an indexed structure."
+  [xs])
+(defn spork/randgen/rand-weights
+  {:params [(or [:number] @[:number])] :ret :number}
+  "A random index, weighted by `weights`."
+  [weights])
+(defmacro spork/randgen/rand-weights-path
+  {:params [(or [:number] @[:number]) a] :ret :any} # TODO: whatever the path taken answers
+  "Run one of the paths at random, weighted by `weights`."
+  [weights & paths])
+(defn spork/randgen/sample-n
+  {:params [(fn [] a) :number] :ret @[a]}
+  "`n` draws of the sampler `f`."
+  [f n])
+(defn spork/randgen/set-seed
+  {:params [:number] :ret :abstract}
+  "Seed the RNG draws come from, answering the new RNG."
+  [seed])
+(defn spork/randgen/weights-to-cdf
+  {:params [(or [:number] @[:number])] :ret @[:number]}
+  "The cumulative distribution of `weights`, which `rand-cdf` draws from faster."
+  [weights])
+
+# -- spork/utf8 --------------------------------------------------------------------------------
+
+(defn spork/utf8/decode-rune
+  {:params [(or :string :buffer) :number?] :ret [:number? :number]}
+  "The codepoint at `start` and how many bytes it takes, or `[nil 0]` past the end or malformed."
+  [buf &opt start])
+(defn spork/utf8/encode-rune
+  {:params [:number :buffer?] :ret :buffer}
+  "Push the UTF-8 encoding of a codepoint onto `buf`, or a new buffer."
+  [rune &opt buf])
+(defn spork/utf8/prefix->width
+  {:params [:number] :ret :number}
+  "How many bytes the codepoint a UTF-8 first byte starts takes."
+  [c])
+
+# -- spork/cron --------------------------------------------------------------------------------
+
+(defn spork/cron/check
+  {:params [(or :string :buffer :tuple) :number? :boolean?] :ret :boolean}
+  "Whether a time, now by default, matches a cron schedule."
+  [cron &opt time local])
+(defn spork/cron/next-timestamp
+  {:params [(or :string :buffer :tuple) :number? :boolean?] :ret :number}
+  "The first time after `time`, now by default, that a cron schedule matches."
+  [cron &opt time local])
+(defn spork/cron/parse-cron
+  {:params [(or :string :buffer)] :ret :tuple}
+  "Parse a cron string into the schedule `check` reads."
+  [str])
+
+# -- spork/msg ---------------------------------------------------------------------------------
+
+(defn spork/msg/make-proto
+  {:params [:abstract (or (fn [a] (or :string :buffer)) :nil) (or (fn [:buffer] b) :nil)]
+   :ret [(fn [a] :nil) (fn [] b)]}
+  "The sender and the receiver of messages over a stream, as `make-send` and `make-recv` make them."
+  [stream &opt pack unpack])
+(defn spork/msg/make-recv
+  {:params [:abstract (or (fn [:buffer] b) :nil)] :ret (fn [] b)}
+  "A function that reads the next message from a stream, nil once it is closed."
+  [stream &opt unpack])
+(defn spork/msg/make-send
+  {:params [:abstract (or (fn [a] (or :string :buffer)) :nil)] :ret (fn [a] :nil)}
+  "A function that writes a message to a stream, length first."
+  [stream &opt pack])
+
+# -- spork/channel -----------------------------------------------------------------------------
+
+(defn spork/channel/from-each
+  {:params [a :fiber?] :ret :abstract}
+  "A channel giving each element of `iterable`, fed by tasks under `supervisor`."
+  [iterable &named supervisor])
+
+# -- spork/date --------------------------------------------------------------------------------
+
+(defn spork/date/add
+  {:params [:struct :number? :number? :number? :number? :number? :number?] :ret :struct}
+  "The date moved forward by the time given."
+  [date &named years months days hours minutes seconds])
+(defn spork/date/assert-date
+  {:params [:struct] :ret :struct}
+  "The date, or an error when it is not well formed."
+  [date])
+(defn spork/date/between?
+  {:params [:struct :struct :struct] :ret :boolean :narrows :any}
+  "Whether `date` falls between `start` and `end`."
+  [date start end])
+(defn spork/date/compare-dates
+  {:params [:struct :struct] :ret :number}
+  "-1, 0 or 1 as `d1` comes before, with or after `d2`."
+  [d1 d2])
+(defn spork/date/date?
+  {:params [a] :ret :boolean :narrows :any}
+  "Whether a value is a well-formed date, as `os/date` answers one."
+  [date])
+(defn spork/date/diff
+  {:params [:struct :struct] :ret :number}
+  "The seconds from `earlier-date` to `later-date`."
+  [later-date earlier-date])
+(defn spork/date/from-string
+  {:params [:string :string] :ret :struct}
+  "A date read from a string by a format such as `yyyy-MM-dd`."
+  [date-str format-str])
+(defn spork/date/gt
+  {:params [:struct] :ret :boolean}
+  "Whether the dates are in descending order."
+  [& dates])
+(defn spork/date/leap-year?
+  {:params [:number] :ret :boolean :narrows :any}
+  "Whether a year is a leap year of the Gregorian calendar."
+  [year])
+(defn spork/date/local-now {:params [] :ret :struct} "The date now, in the local time zone." [])
+(defn spork/date/lt
+  {:params [:struct] :ret :boolean}
+  "Whether the dates are in ascending order."
+  [& dates])
+(defn spork/date/sub
+  {:params [:struct :number? :number? :number? :number? :number? :number?] :ret :struct}
+  "The date moved back by the time given."
+  [date &named years months days hours minutes seconds])
+(defn spork/date/to-string
+  {:params [:struct :string] :ret :string}
+  "A date written out by a format such as `yyyy-MM-dd`."
+  [date format-str])
+(defn spork/date/utc-now {:params [] :ret :struct} "The date now, in UTC." [])
+
+# -- spork/math --------------------------------------------------------------------------------
+
+(def spork/math/epsilon {:type :number} "Epsilon constant." nil)
+(def spork/math/chi-squared-distribution-table
+  {:type {:number {:number :number}}}
+  "Chi squared critical values, by degrees of freedom and then by probability."
+  nil)
+(def spork/math/standard-normal-table
+  {:type [:number]}
+  "The computed standard normal table."
+  nil)
+
+(defn spork/math/add
+  {:params [@[@[:number]] (or :number @[@[:number]])] :ret @[@[:number]]}
+  "Add a scalar or a matrix to the matrix `m`, in place."
+  [m a])
+(defn spork/math/add-to-mean
+  {:params [:number :number :number] :ret :number}
+  "The mean `m` of `n` values with `v` added to them."
+  [m n v])
+(defn spork/math/approx-eq
+  {:params [:number :number :number?] :ret :boolean}
+  "Whether `a` equals the expected `e` within the tolerance `t`, `epsilon` by default."
+  [a e &opt t])
+(defn spork/math/bernoulli-distribution
+  {:params [:number] :ret [:number]}
+  "The Bernoulli distribution of the probability `p`."
+  [p])
+(defn spork/math/binominal-coeficient
+  {:params [:number :number] :ret :number}
+  "The binomial coefficient of a set of size `n` and a sample of size `k`."
+  [n k])
+(defn spork/math/binominal-distribution
+  {:params [:number :number] :ret [:number]}
+  "The binomial distribution of `t` trials of the probability `p`."
+  [t p])
+(defn spork/math/check-probability
+  {:params [:number] :ret :boolean}
+  "Assert that the probability `p` is between 0 and 1."
+  [p])
+(defn spork/math/cols {:params [@[@[:number]]] :ret :number} "The columns of a matrix." [m])
+(defn spork/math/copy {:params [(or [a] @[a])] :ret @[a]} "A copy of an array or view." [xs])
+(defn spork/math/cumulative-std-normal-probability
+  {:params [:number] :ret :number}
+  "The standard normal probability of `z`."
+  [z])
+(defn spork/math/det {:params [@[@[:number]]] :ret :number} "The determinant of a matrix." [m])
+(defn spork/math/dot
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret :number}
+  "The dot product of two row vectors."
+  [v1 v2])
+(defn spork/math/dot-fast
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret :number}
+  "The dot product of two row vectors of equal size."
+  [v1 v2])
+(defn spork/math/expand-m
+  {:params [:number @[@[:number]]] :ret @[@[:number]]}
+  "The matrix `m` embedded in an identity matrix of size `n`."
+  [n m])
+(defn spork/math/extent
+  {:params [(or [:number] @[:number])] :ret [:number :number]}
+  "The least and the greatest number of `xs`."
+  [xs])
+(defn spork/math/factor {:params [:number] :ret @[:number]} "The prime factors of `n`." [n])
+(defn spork/math/factorial {:params [:number] :ret :number} "The factorial of `n`." [n])
+(defn spork/math/fliplr
+  {:params [@[@[:number]]] :ret @[@[:number]]}
+  "Flip a matrix left to right, in place."
+  [m])
+(defn spork/math/flipud
+  {:params [@[@[:number]]] :ret @[@[:number]]}
+  "Flip a matrix upside down, in place."
+  [m])
+(defn spork/math/geometric-mean
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The geometric mean of `xs`."
+  [xs])
+(defmacro spork/math/get-only-el
+  {:params [a] :ret :number}
+  "The first element of the first row of the matrix `m`."
+  [m])
+(defn spork/math/harmonic-mean
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The harmonic mean of `xs`."
+  [xs])
+(defn spork/math/ident
+  {:params [:number] :ret @[@[:number]]}
+  "An identity matrix of `c` by `c`."
+  [c])
+(defn spork/math/interquartile-range
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The interquartile range of `xs`."
+  [xs])
+(defn spork/math/invmod
+  {:params [:number :number] :ret :number}
+  "The modular multiplicative inverse of `a` mod `m`, NaN when there is none."
+  [a m])
+(defn spork/math/jacobi
+  {:params [:number :number] :ret :number}
+  "The Jacobi symbol (a|m)."
+  [a m])
+(defn spork/math/join-cols
+  {:params [@[@[:number]] @[@[:number]]] :ret @[@[:number]]}
+  "The columns of two matrices side by side."
+  [m1 m2])
+(defn spork/math/join-rows
+  {:params [@[@[:number]] @[@[:number]]] :ret @[@[:number]]}
+  "The rows of two matrices one above the other."
+  [m1 m2])
+(defn spork/math/linear-regression
+  {:params [(or [[:number]] @[@[:number]])] :ret {:m :number :b :number}}
+  "The slope `:m` and y-intercept `:b` of the line through a set of coordinates."
+  [coords])
+(defn spork/math/linear-regression-line
+  {:params [{:m :number :b :number}] :ret (fn [:number] :number)}
+  "The function of the line `linear-regression` answered."
+  [{:m m :b b}])
+(defn spork/math/m-approx=
+  {:params [@[@[:number]] @[@[:number]] :number?] :ret :boolean}
+  "Whether two matrices of equal size are equal within the tolerance."
+  [m1 m2 &opt tolerance])
+(defn spork/math/matmul
+  {:params [@[@[:number]] @[@[:number]]] :ret @[@[:number]]}
+  "The product of two matrices, neither mutated."
+  [ma mb])
+(defn spork/math/median
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The median of `xs`."
+  [xs])
+(defn spork/math/median-absolute-deviation
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The median absolute deviation of `xs`."
+  [xs])
+(defn spork/math/minor
+  {:params [@[@[:number]] :number :number] :ret @[@[:number]]}
+  "The minor of the matrix `m` at `x`, `y`."
+  [m x y])
+(defn spork/math/mode {:params [(or [a] @[a])] :ret a} "The most frequent value of `xs`." [xs])
+(defn spork/math/mop
+  {:params [@[@[:number]] (fn [:number :number] :number) @[@[:number]]] :ret @[@[:number]]}
+  "Update every cell of the matrix `m` with `op` and the cell of `a` at its place, in place."
+  [m op a])
+(defn spork/math/mul
+  {:params [@[@[:number]] (or :number @[:number] @[@[:number]])] :ret @[@[:number]]}
+  "Multiply the matrix `m` by a scalar, a column vector or a matrix, in place."
+  [m a])
+(defn spork/math/mulmod
+  {:params [:number :number :number] :ret :number}
+  "The product of `a` and `b` mod `m`."
+  [a b m])
+(defn spork/math/next-prime
+  {:params [:number] :ret :number}
+  "The next prime strictly greater than `n`."
+  [n])
+(defn spork/math/normalize-v
+  {:params [(or [:number] @[:number])] :ret @[:number]}
+  "The vector `xs` normalized by its Euclidean norm."
+  [xs])
+(defn spork/math/outer
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret @[@[:number]]}
+  "The outer product of two vectors."
+  [v1 v2])
+(defn spork/math/perm {:params [@[@[:number]]] :ret :number} "The permanent of a matrix." [m])
+(defn spork/math/permutation-test
+  {:params [(or [:number] @[:number])
+            (or [:number] @[:number])
+            (or (enum :two-side :greater :lesser) :nil)
+            :number?]
+   :ret :number}
+  "The p-value of a permutation test of whether `xs` and `ys` differ."
+  [xs ys &opt a k])
+(defn spork/math/permutations
+  {:params [@[a] :number?] :ret @[@[a]]}
+  "The permutations of length `k` of the members of `s`, which it reorders."
+  [s &opt k])
+(defn spork/math/poisson-distribution
+  {:params [:number] :ret [:number]}
+  "The Poisson distribution of `lambda`."
+  [lambda])
+(defn spork/math/powmod
+  {:params [:number :number :number] :ret :number}
+  "`a` to the power of `b` mod `m`."
+  [a b m])
+(defn spork/math/prime?
+  {:params [:number] :ret :boolean :narrows :any}
+  "Whether `n` is prime, deterministically below 2^63."
+  [n])
+(defn spork/math/primes {:params [] :ret :fiber} "A fiber yielding every prime." [])
+(defn spork/math/qr
+  {:params [@[@[:number]]] :ret {:Q @[@[:number]] :R @[@[:number]]}}
+  "The QR decomposition of a matrix, by Householder transformations."
+  [m])
+(defn spork/math/qr1
+  {:params [@[@[:number]]] :ret {:Q @[@[:number]] :m^ @[@[:number]]}}
+  "One step of Householder reflections."
+  [m])
+(defn spork/math/quantile
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "The quantile of the unsorted `xs` at `p`."
+  [xs p])
+(defn spork/math/quantile-rank
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "The quantile rank of the value `p` in the unsorted `xs`."
+  [xs p])
+(defn spork/math/quantile-rank-sorted
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "The quantile rank of the value `v` in the sorted `xs`."
+  [xs v])
+(defn spork/math/quantile-sorted
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "The quantile of the sorted `xs` at `p`."
+  [xs p])
+(defn spork/math/quickselect
+  {:params [@[:number] :number :number? :number?] :ret :nil}
+  "Rearrange `arr` in place so that the `k`-th element is in its sorted place."
+  [arr k &opt left right])
+(defn spork/math/relative-err
+  {:params [:number :number] :ret :number}
+  "The relative error of `a` against the expected `e`."
+  [a e])
+(defn spork/math/root-mean-square
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The root mean square of `xs`."
+  [xs])
+(defn spork/math/row->col
+  {:params [(or @[:number] @[@[:number]])] :ret (or @[@[:number]] :nil)}
+  "A row vector as a column vector; a matrix as it is."
+  [xs])
+(defn spork/math/rows {:params [@[@[:number]]] :ret :number} "The rows of a matrix." [m])
+(defn spork/math/sample-correlation
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret :number}
+  "The sample correlation of `xs` and `ys`."
+  [xs ys])
+(defn spork/math/sample-covariance
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret :number}
+  "The sample covariance of `xs` and `ys`."
+  [xs ys])
+(defn spork/math/sample-skewness
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The sample skewness of `xs`."
+  [xs])
+(defn spork/math/sample-standard-deviation
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The sample standard deviation of `xs`."
+  [xs])
+(defn spork/math/sample-variance
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The sample variance of `xs`."
+  [xs])
+(defn spork/math/scalar
+  {:params [:number :number] :ret @[@[:number]]}
+  "A `c` by `c` matrix with `s` on its diagonal."
+  [c s])
+(defn spork/math/scale
+  {:params [(or [:number] @[:number]) :number] :ret @[:number]}
+  "The vector `v` scaled by `k`."
+  [v k])
+(defn spork/math/shuffle-in-place
+  {:params [@[a] :abstract?] :ret @[a]}
+  "Shuffle the array `xs` in place, with an optional random number generator."
+  [xs &opt rng])
+(defn spork/math/sign {:params [:number] :ret :number} "The sign of `x`: -1, 0 or 1." [x])
+(defn spork/math/size
+  {:params [@[@[:number]]] :ret [:number :number]}
+  "The rows and columns of a matrix."
+  [m])
+(defn spork/math/slice-m
+  {:params [@[@[:number]] (or [:number] @[:number]) (or [:number] @[:number])]
+   :ret @[@[:number]]}
+  "The matrix `m` sliced by the `array/slice` arguments for its rows and its columns."
+  [m rslice cslice])
+(defn spork/math/sop
+  {:params [@[@[:number]] :function :number] :ret @[@[:number]]}
+  "Update every cell of the matrix `m` with `op` and the arguments `a`, in place."
+  [m op & a])
+(defn spork/math/squeeze
+  {:params [@[@[:number]]] :ret @[:number]}
+  "The rows of a matrix concatenated into one."
+  [m])
+(defn spork/math/standard-deviation
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The standard deviation of `xs`."
+  [xs])
+(defn spork/math/subtract
+  {:params [(or [:number] @[:number]) (or [:number] @[:number])] :ret @[:number]}
+  "The vector `v2` subtracted from `v1` element by element."
+  [v1 v2])
+(defn spork/math/sum-compensated
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The sum of `xs` by the Kahan-Babushka algorithm."
+  [xs])
+(defn spork/math/sum-nth-power-deviations
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "The sum of the deviations of `xs` to the power `n`."
+  [xs n])
+(defn spork/math/svd
+  {:params [@[@[:number]] :number?]
+   :ret {:U @[@[:number]] :S @[@[:number]] :V @[@[:number]]}}
+  "The singular value decomposition of a matrix, by repeated QR decomposition."
+  [m &opt n-iter])
+(defn spork/math/swap
+  {:params [@[a] :number :number] :ret (or @[a] :nil)}
+  "Swap the members at `i` and `j` of `arr`, in place; nil when they are the same."
+  [arr i j])
+(defn spork/math/t-test
+  {:params [(or [:number] @[:number]) :number] :ret :number}
+  "A one sample t-test of the mean of `xs` against the known `expv`."
+  [xs expv])
+(defn spork/math/t-test-2
+  {:params [(or [:number] @[:number]) (or [:number] @[:number]) :number?] :ret :number}
+  "A two sample t-test of `xs` and `ys`, with the difference `d`, 0 by default."
+  [xs ys &opt d])
+(defn spork/math/trans
+  {:params [@[@[:number]]] :ret @[@[:number]]}
+  "The transpose of a list of row vectors."
+  [m])
+(defn spork/math/unit-e
+  {:params [:number :number] :ret @[:number]}
+  "The unit vector of `n` dimensions along the dimension `k`."
+  [n k])
+(defn spork/math/variance
+  {:params [(or [:number] @[:number])] :ret :number}
+  "The variance of `xs`."
+  [xs])
+(defn spork/math/z-score
+  {:params [:number :number :number] :ret :number}
+  "The standard score of `x` for the mean `m` and the standard deviation `d`."
+  [x m d])
+(defn spork/math/zero
+  {:params [:number :number?] :ret (or @[:number] @[@[:number]])}
+  "A vector of `c` zeros, or a matrix of `r` of them when `r` is given."
+  [c &opt r])
+
+# -- spork/cc ----------------------------------------------------------------------------------
+
+(def spork/cc/*ar* {:type :keyword} "Archiver, `ar` by default." nil)
+(def spork/cc/*build-dir* {:type :keyword} "Where intermediate files go." nil)
+(def spork/cc/*build-type* {:type :keyword} "`:release`, `:develop` or `:debug` presets." nil)
+(def spork/cc/*c++* {:type :keyword} "C++ compiler, `c++` by default." nil)
+(def spork/cc/*c++-std* {:type :keyword} "C++ standard as a two digit number." nil)
+(def spork/cc/*c++flags* {:type :keyword} "Extra C++ compiler flags." nil)
+(def spork/cc/*c-std* {:type :keyword} "C standard as a two digit number." nil)
+(def spork/cc/*cc* {:type :keyword} "C compiler, `cc` by default." nil)
+(def spork/cc/*cflags* {:type :keyword} "Extra C compiler flags." nil)
+(def spork/cc/*defines* {:type :keyword} "Map of extra defines." nil)
+(def spork/cc/*dynamic-libs* {:type :keyword} "Dynamic libraries to link." nil)
+(def spork/cc/*janet-prefix* {:type :keyword} "Where libjanet and janet.h are found." nil)
+(def spork/cc/*lflags* {:type :keyword} "Extra linker flags." nil)
+(def spork/cc/*libs* {:type :keyword} "Libraries to link, static or dynamic." nil)
+(def spork/cc/*msvc-cpath* {:type :keyword} "Path to Janet libraries and headers for MSVC." nil)
+(def spork/cc/*msvc-libs* {:type :keyword} ".lib libraries to link with MSVC." nil)
+(def spork/cc/*msvc-vcvars* {:type :keyword} "Path to vcvarsall.bat." nil)
+(def spork/cc/*pkg-config-flags* {:type :keyword} "Extra flags for pkg-config." nil)
+(def spork/cc/*rules* {:type :keyword} "Rules `visit-add-rule` adds to." nil)
+(def spork/cc/*smart-libs* {:type :keyword} "Group libraries so the linker resolves their order." nil)
+(def spork/cc/*static-libs* {:type :keyword} "Static libraries to link." nil)
+(def spork/cc/*target-os* {:type :keyword} "Operating system the toolchain targets." nil)
+(def spork/cc/*use-rdynamic* {:type :keyword} "Export an executable's symbols to native modules." nil)
+(def spork/cc/*use-rpath* {:type :keyword} "Use the syspath as the runtime path of shared objects." nil)
+(def spork/cc/*vcvars-cache* {:type :keyword} "Where vcvars are cached." nil)
+(def spork/cc/*visit* {:type :keyword} "Callback handed each command with its inputs and outputs." nil)
+(def spork/cc/ver {:type [:number]} "The running Janet's version, as numbers." nil)
+
+(defn spork/cc/build-type
+  {:params [] :ret (enum :develop :debug :release :native)}
+  "The build type, `:develop` by default."
+  [])
+(defn spork/cc/check-library-exists
+  {:params [:string :keyword? :string?] :ret :boolean}
+  "Whether a test program links against the library."
+  [libname &opt binding test-source-code])
+(defn spork/cc/compile-and-link-executable
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and link an executable, answering the commands."
+  [to & sources])
+(defn spork/cc/compile-and-link-shared
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and link a shared library, answering the commands."
+  [to & sources])
+(defn spork/cc/compile-and-make-archive
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and archive a static library, answering the commands."
+  [to & sources])
+(defn spork/cc/compile-c
+  {:params [:string :string] :ret [:string]}
+  "Compile a C source to an object file, answering the command."
+  [from to])
+(defn spork/cc/compile-c++
+  {:params [:string :string] :ret [:string]}
+  "Compile a C++ source to an object file, answering the command."
+  [from to])
+(defn spork/cc/generic-preprocess
+  {:params [:string :string] :ret [:string]}
+  "Generate C from a Janet script as part of the build, answering the command."
+  [from to])
+(defn spork/cc/get-msvc-prefix
+  {:params [] :ret :string}
+  "Where Janet is installed on Windows."
+  [])
+(defn spork/cc/get-unix-prefix
+  {:params [] :ret :string}
+  "The prefix libjanet and janet.h are found under."
+  [])
+(defn spork/cc/link-executable-c
+  {:params [(or [:string] @[:string]) :string :boolean?] :ret [:string]}
+  "Link a C executable, answering the command."
+  [objects to &opt make-static])
+(defn spork/cc/link-executable-c++
+  {:params [(or [:string] @[:string]) :string :boolean?] :ret [:string]}
+  "Link a C++ executable, answering the command."
+  [objects to &opt make-static])
+(defn spork/cc/link-shared-c
+  {:params [(or [:string] @[:string]) :string] :ret [:string]}
+  "Link a C shared library, answering the command."
+  [objects to])
+(defn spork/cc/link-shared-c++
+  {:params [(or [:string] @[:string]) :string] :ret [:string]}
+  "Link a C++ shared library, answering the command."
+  [objects to])
+(defn spork/cc/load-settings
+  {:params [(or :struct :table)] :ret :nil}
+  "Set the dynamic bindings a `save-settings` snapshot holds."
+  [settings])
+(defn spork/cc/make-archive
+  {:params [(or [:string] @[:string]) :string] :ret [:string]}
+  "Make a static archive, answering the command."
+  [objects to])
+(defn spork/cc/msvc-compile-and-link-executable
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and link an executable with MSVC, answering the commands."
+  [to & sources])
+(defn spork/cc/msvc-compile-and-link-shared
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and link a shared library with MSVC, answering the commands."
+  [to & sources])
+(defn spork/cc/msvc-compile-and-make-archive
+  {:params [:string :string] :ret @[[:string]]}
+  "Compile and archive a static library with MSVC, answering the commands."
+  [to & sources])
+(defn spork/cc/msvc-compile-c
+  {:params [:string :string] :ret [:string]}
+  "Compile a C source with MSVC, answering the command."
+  [from to])
+(defn spork/cc/msvc-compile-c++
+  {:params [:string :string] :ret [:string]}
+  "Compile a C++ source with MSVC, answering the command."
+  [from to])
+(defn spork/cc/msvc-find
+  {:params [] :ret :nil}
+  "Find vcvarsall.bat and set up the environment for MSVC."
+  [])
+(defn spork/cc/msvc-janet-import-lib
+  {:params [] :ret :string}
+  "The path to the installed Janet import library."
+  [])
+(defn spork/cc/msvc-link-executable
+  {:params [(or [:string] @[:string]) :string :boolean?] :ret [:string]}
+  "Link an executable with MSVC, answering the command."
+  [objects to &opt _make-static])
+(defn spork/cc/msvc-link-shared
+  {:params [(or [:string] @[:string]) :string] :ret [:string]}
+  "Link a shared library with MSVC, answering the command."
+  [objects to])
+(defn spork/cc/msvc-make-archive
+  {:params [(or [:string] @[:string]) :string] :ret [:string]}
+  "Make a static archive with MSVC, answering the command."
+  [objects to])
+(defn spork/cc/msvc-setup?
+  {:params [] :ret :string? :narrows :any}
+  "Whether the MSVC environment is set up: the `LIBPATH` variable when it is."
+  [])
+(defn spork/cc/out-path
+  {:params [:string :string :string?] :ret :string}
+  "The output path of a source file, flattened into the build directory."
+  [path to-ext &opt sep])
+(defn spork/cc/pkg-config
+  {:params [:string] :ret :nil}
+  "Set defines, compiler and linker flags from pkg-config."
+  [& pkg-config-libraries])
+(defn spork/cc/save-settings
+  {:params [] :ret {:keyword :any}} # TODO: each setting holds what its dynamic binding was set to
+  "A snapshot of the compiler settings, for `load-settings`."
+  [])
+(defn spork/cc/search-dynamic-libraries
+  {:params [:string] :ret @[:string]}
+  "Add the dynamic libraries that exist to `*dynamic-libs*`, answering those that do not."
+  [& libraries])
+(defn spork/cc/search-libraries
+  {:params [:string] :ret @[:string]}
+  "Add the libraries that exist to `*libs*`, answering those that do not."
+  [& libraries])
+(defn spork/cc/search-static-libraries
+  {:params [:string] :ret @[:string]}
+  "Add the static libraries that exist to `*static-libs*`, answering those that do not."
+  [& libraries])
+(defn spork/cc/visit-add-rule
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :table}
+  "Add the command as a rule to `*rules*`, answering the rule."
+  [cmd inputs outputs message])
+(defn spork/cc/visit-clean
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :nil}
+  "Remove the outputs."
+  [_cmd _inputs outputs _message])
+(defn spork/cc/visit-do-nothing {:params [] :ret :nil} "Do nothing." [&])
+(defn spork/cc/visit-execute
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :number?}
+  "Run the command, answering its exit code when `:verbose` is set."
+  [cmd _inputs _outputs message])
+(defn spork/cc/visit-execute-if-stale
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :number?}
+  "Run the command when an input is newer than the outputs."
+  [cmd inputs outputs message])
+(defn spork/cc/visit-execute-quiet
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :number}
+  "Run the command with its output discarded, answering its exit code."
+  [cmd _inputs _outputs _message])
+(defn spork/cc/visit-generate-makefile
+  {:params [(or [:string] @[:string])
+            (or [:string] @[:string])
+            (or [:string] @[:string])
+            :string]
+   :ret :nil}
+  "Print the command as a Makefile target."
+  [cmd inputs outputs message])
+
+# -- spork/pm ----------------------------------------------------------------------------------
+
+(def spork/pm/*curlpath* {:type :keyword} "The curl command dependencies are fetched with." nil)
+(def spork/pm/*gitpath* {:type :keyword} "The git command dependencies are fetched with." nil)
+(def spork/pm/*pkglist* {:type :keyword} "The package listing, when no `pkgs` bundle is installed." nil)
+(def spork/pm/*tarpath* {:type :keyword} "The tar command dependencies are unpacked with." nil)
+
+(defn spork/pm/curl {:params [:string] :ret :number} "Run curl, answering its exit code." [& args])
+(defmacro spork/pm/deftemplate
+  {:params [:symbol a] :ret :function}
+  "Define `template-name` as a function of a dictionary rendering the `$` template string."
+  [template-name & body])
+(defn spork/pm/download-bundle
+  {:params [:string (enum :git :tar :file) :string?] :ret :string}
+  "Fetch a bundle's source to the cache, answering where it is."
+  [url bundle-type &opt tag])
+(defn spork/pm/download-git-bundle
+  {:params [:string :string :string?] :ret :number?}
+  "Clone or update a git bundle."
+  [bundle-dir url tag])
+(defn spork/pm/download-tar-bundle
+  {:params [:string :string] :ret :number}
+  "Download and unpack a bundle from a tar archive."
+  [bundle-dir url])
+(defn spork/pm/git {:params [:string] :ret :number} "Run git, answering its exit code." [& args])
+(defn spork/pm/jpm-dep-to-bundle-dep
+  {:params [(or :string :struct :table)] :ret :string?}
+  "The name of the installed bundle a jpm dependency names."
+  [dep-name])
+(defn spork/pm/load-lockfile
+  {:params [:string] :ret :nil}
+  "Install every bundle a lockfile lists."
+  [lock-src])
+(defn spork/pm/load-project-meta
+  {:params [:string] :ret (or :struct :table)}
+  "The metadata of a project, read without running project.janet."
+  [dir])
+(defn spork/pm/local-hook
+  {:params [(or :string :symbol :keyword) a] :ret :any} # TODO: whatever the hook answers
+  "Run a bundle hook of the project in the current directory."
+  [hook & args])
+(defn spork/pm/name-lookup
+  {:params [(or :struct :table)] :ret :string?}
+  "The name of the installed bundle at a bundle address."
+  [bundle-addr])
+(defn spork/pm/opt-ask
+  {:params [:keyword (or :struct :table)] :ret :any} # TODO: the default in `input-options`, else the string typed
+  "The default for `key`, or what the user types when there is none."
+  [key input-options])
+(defn spork/pm/pm-install
+  {:params [(or :string :struct :table) :boolean? :boolean? :boolean? :boolean?] :ret :string?}
+  "Fetch and install a bundle, answering its name unless it was already installed."
+  [bundle-code &named no-deps force-update no-install auto-remove])
+(defn spork/pm/resolve-bundle
+  {:params [(or :string :struct :table)] :ret {:url :string :tag :string? :type :keyword}}
+  "A bundle given by name, URL or dictionary, in its normal form."
+  [bundle])
+(defn spork/pm/save-lockfile
+  {:params [:string]
+   :ret @[{:name :string :pm (or :struct :table) :config (or :struct :table :nil)}]}
+  "Write a lockfile of the installed bundles, answering its entries."
+  [lock-dest])
+(defn spork/pm/scaffold-pm-shell
+  {:params [:string] :ret :nil}
+  "Create a shell environment with its activation scripts at `path`."
+  [path])
+(defn spork/pm/scaffold-project
+  {:params [:string (or :struct :table :nil)] :ret :nil}
+  "Create a project directory from a standard template."
+  [name &opt options])
+(defn spork/pm/tar {:params [:string] :ret :number} "Run tar, answering its exit code." [& args])
+(defn spork/pm/update-git-bundle
+  {:params [:string :string?] :ret :number}
+  "Fetch the tag of a git bundle and reset to it."
+  [bundle-dir tag])
+(defn spork/pm/vendor-binaries-pm-shell
+  {:params [:string] :ret :nil}
+  "Copy the Janet interpreter and its libraries into a shell environment."
+  [path])

@@ -135,7 +135,9 @@ For a name a file uses, the most local source wins:
    modules ship with the checker as one of these.
 5. `core.d.janet`: every root-env binding and special form, `:any` where any value belongs
    there, with a comment beside a result saying why. Its `(comment :peg …)` block types
-   PEG specials separately, since they share names with bindings.
+   PEG specials separately, since they share names with bindings. Its results are held to what
+   Janet answers: `core_results_fit_what_janet_answers_on_samples` calls every pure core function
+   on samples of the types it declares it takes, and the type of each answer has to fit `:ret`.
 6. Under all of these, what inference reads out of the file that defines the name.
 
 Inference sees the outside world through `Known`, two lookups over the same names:
