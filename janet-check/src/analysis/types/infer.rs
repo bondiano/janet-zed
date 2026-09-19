@@ -83,6 +83,9 @@ pub struct Finding {
     /// About a type as written rather than a value held to one: it holds in a declaration too,
     /// where the values stand in for the host's.
     pub about_type: bool,
+    /// The head of the call held to what its callee declares, by the byte it starts at: where to
+    /// look for the types the complaint is against.
+    pub called: Option<usize>,
 }
 
 /// What inference read out of one file.

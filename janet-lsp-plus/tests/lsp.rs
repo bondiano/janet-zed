@@ -718,6 +718,34 @@ fn completion_in_a_call() {
 }
 
 #[test]
+fn completion_replaces_the_qualified_name_typed_so_far() {
+    let mut session = Session::start();
+    let items = session
+        .request(
+            "textDocument/completion",
+            session.at("(string/join lines", 8),
+        )
+        .unwrap();
+    let join = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "string/join")
+        .unwrap();
+    assert_eq!(
+        join["textEdit"],
+        json!({
+            "range": {
+                "start": position(&session.text, "(string/join lines", 1),
+                "end": position(&session.text, "(string/join lines", 8),
+            },
+            "newText": "string/join",
+        })
+    );
+    session.finish();
+}
+
+#[test]
 fn signature_help_at_the_second_argument() {
     let mut session = Session::start();
     let help = session
@@ -951,6 +979,68 @@ fn code_actions_at_a_threading_macro() {
         session.cursor("(->> items", 0),
         titles.join("\n")
     ));
+    session.finish();
+}
+
+/// A client that resolves code actions is sent them without their edits, and gets an edit once it
+/// picks one.
+#[test]
+fn code_actions_resolve_their_edits() {
+    let capabilities = json!({
+        "textDocument": {"codeAction": {"resolveSupport": {"properties": ["edit"]}}},
+    });
+    let mut session = Session::start_as(
+        Session::root(),
+        "src/report.janet",
+        &Value::Null,
+        &capabilities,
+    );
+    let cursor = position(&session.text, "(->> items", 0);
+    let actions = session
+        .request(
+            "textDocument/codeAction",
+            json!({
+                "textDocument": {"uri": session.report},
+                "range": {"start": cursor, "end": cursor},
+                "context": {"diagnostics": []},
+            }),
+        )
+        .unwrap();
+    let first = actions[0].clone();
+    assert!(first.get("edit").is_none(), "{first}");
+    let resolved = session.request("codeAction/resolve", first).unwrap();
+    let edits = &resolved["edit"]["changes"][session.report.as_str()];
+    assert!(!edits.as_array().unwrap().is_empty(), "{resolved}");
+    session.finish();
+}
+
+/// A client that shows progress sees the index being built.
+#[test]
+fn indexing_reports_progress() {
+    let capabilities = json!({"window": {"workDoneProgress": true}});
+    let mut session = Session::start_as(
+        Session::root(),
+        "src/report.janet",
+        &Value::Null,
+        &capabilities,
+    );
+    session
+        .request("textDocument/hover", session.at("(shapes/area s", 9))
+        .unwrap();
+    assert!(
+        session
+            .requests
+            .iter()
+            .any(|method| method == "window/workDoneProgress/create")
+    );
+    let kinds: Vec<_> = session
+        .notifications
+        .iter()
+        .filter(|notification| notification.method == "$/progress")
+        .map(|notification| notification.params["value"]["kind"].as_str().unwrap())
+        .take(2)
+        .collect();
+    assert_eq!(kinds, ["begin", "end"]);
     session.finish();
 }
 
@@ -1507,6 +1597,9 @@ fn go_to_definition_from_an_arity_diagnostic_reaches_the_declaration() {
             }),
         )
         .unwrap();
+    // The diagnostic points there itself, for clients that show related locations.
+    assert_eq!(arity["code"], "types");
+    assert_eq!(arity["relatedInformation"][0]["location"], found);
     let declaration = session.show_location(found["uri"].as_str().unwrap(), &found["range"]);
     insta::assert_snapshot!(format!(
         "----- DIAGNOSTIC\n{}\n\n----- DEFINITION\n{declaration}\n",

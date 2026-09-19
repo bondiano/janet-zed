@@ -8,10 +8,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
-use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Uri};
+use lsp_types::{
+    Diagnostic, DiagnosticRelatedInformation, DiagnosticSeverity, DiagnosticTag, Location,
+    NumberOrString, Uri,
+};
 
 use super::state::Reporting;
-use janet_check::analysis::ignores::ignores;
+use janet_check::analysis::ignores::{self, ignores};
 use janet_check::analysis::modules::Package;
 use janet_check::analysis::types::infer::Finding;
 use janet_check::janet::{self, Check, Problem, Report};
@@ -154,6 +157,7 @@ pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
                     code: problem
                         .code()
                         .map(|code| NumberOrString::String(code.to_string())),
+                    tags: problem.code().and_then(tags_for),
                     // The symbol's name, for the quick fixes: round-tripped by the client.
                     data: problem.unknown_symbol().map(Into::into),
                     ..Diagnostic::default()
@@ -173,9 +177,28 @@ pub fn failed(err: &anyhow::Error) -> Diagnostic {
     }
 }
 
+/// How a client may render a diagnostic of `code`, by the kind its prefix names: `unused-…` code
+/// fades, `deprecated-…` is struck through.
+pub fn tags_for(code: &str) -> Option<Vec<DiagnosticTag>> {
+    if code.starts_with("unused") {
+        Some(vec![DiagnosticTag::UNNECESSARY])
+    } else if code.starts_with("deprecated") {
+        Some(vec![DiagnosticTag::DEPRECATED])
+    } else {
+        None
+    }
+}
+
 /// What inference makes of the file, at the severity `types.diagnostics` asks for. Empty when it
 /// asks for none, which is the default: the types are hints, and a hint marks nothing up.
-pub fn inferred(doc: &Document, findings: &[Finding], reporting: Reporting) -> Vec<Diagnostic> {
+/// `declared` is where the callee a finding is against was defined, from the byte its name starts
+/// at, pointed to beside the finding.
+pub fn inferred(
+    doc: &Document,
+    findings: &[Finding],
+    reporting: Reporting,
+    declared: impl Fn(usize) -> Option<Location>,
+) -> Vec<Diagnostic> {
     let Some(severity) = reporting.severity() else {
         return Vec::new();
     };
@@ -186,6 +209,13 @@ pub fn inferred(doc: &Document, findings: &[Finding], reporting: Reporting) -> V
             severity: Some(severity),
             source: Some("janet-zed".to_string()),
             message: finding.message.clone(),
+            code: Some(NumberOrString::String(ignores::TYPES.to_string())),
+            related_information: finding.called.and_then(&declared).map(|location| {
+                vec![DiagnosticRelatedInformation {
+                    location,
+                    message: "declared here".to_string(),
+                }]
+            }),
             ..Diagnostic::default()
         })
         .collect()

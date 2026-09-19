@@ -46,6 +46,15 @@ impl Reporting {
     }
 }
 
+/// Client capabilities the server answers differently for.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct Client {
+    /// Whether the client resolves a code action's edit once it is picked.
+    pub resolves_code_actions: bool,
+    /// Whether the client shows work-done progress the server starts.
+    pub reports_progress: bool,
+}
+
 pub struct State {
     pub workspace: Workspace,
     pub stdlib: Stdlib,
@@ -74,6 +83,8 @@ pub struct State {
     pub hints: bool,
     /// Whether the client can be asked to request the inlay hints again.
     pub refreshes_hints: bool,
+    /// What the client can do that changes how it is answered.
+    pub client: Client,
     /// Workspace files nobody has open that last had type diagnostics published, so the marks
     /// come off again when a finding goes away.
     pub published: HashSet<Uri>,
@@ -101,6 +112,7 @@ impl State {
             reporting,
             hints: true,
             refreshes_hints: false,
+            client: Client::default(),
             published: HashSet::new(),
         };
         state.rescan();

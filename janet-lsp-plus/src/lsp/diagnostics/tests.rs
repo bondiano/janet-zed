@@ -171,3 +171,17 @@ fn ignore_comments_silence_unknown_symbols() {
         ["unknown symbol not-below", "boom", "unknown symbol other"]
     );
 }
+
+#[test]
+fn tags_follow_the_code() {
+    use lsp_types::DiagnosticTag;
+    assert_eq!(
+        tags_for("unused-binding"),
+        Some(vec![DiagnosticTag::UNNECESSARY])
+    );
+    assert_eq!(
+        tags_for("deprecated-call"),
+        Some(vec![DiagnosticTag::DEPRECATED])
+    );
+    assert_eq!(tags_for(ignores::UNKNOWN_SYMBOL), None);
+}

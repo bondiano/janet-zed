@@ -12,22 +12,24 @@ use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestI
 use lsp_types::notification::{
     Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles,
     DidCloseTextDocument, DidOpenTextDocument, Exit, Notification as LspNotification,
-    PublishDiagnostics,
+    Progress as LspProgress, PublishDiagnostics,
 };
 use lsp_types::request::Formatting;
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, GotoDefinition,
-    HoverRequest, InlayHintRefreshRequest, InlayHintRequest, PrepareRenameRequest, References,
-    RegisterCapability, Rename, Request as LspRequest, ResolveCompletionItem, Shutdown,
-    SignatureHelpRequest, WorkspaceSymbolRequest,
+    CodeActionRequest, CodeActionResolveRequest, Completion, DocumentHighlightRequest,
+    DocumentSymbolRequest, GotoDefinition, HoverRequest, InlayHintRefreshRequest, InlayHintRequest,
+    PrepareRenameRequest, References, RegisterCapability, Rename, Request as LspRequest,
+    ResolveCompletionItem, Shutdown, SignatureHelpRequest, WorkDoneProgressCreate,
+    WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
     CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions,
     DocumentFormattingParams, FileSystemWatcher, GlobPattern, HoverProviderCapability,
-    InitializeParams, NumberOrString, OneOf, PublishDiagnosticsParams, Registration,
-    RegistrationParams, RenameOptions, ServerCapabilities, SignatureHelpOptions,
-    TextDocumentSyncKind, Uri, WorkDoneProgressOptions,
+    InitializeParams, NumberOrString, OneOf, ProgressParams, ProgressParamsValue,
+    PublishDiagnosticsParams, Registration, RegistrationParams, RenameOptions, ServerCapabilities,
+    SignatureHelpOptions, TextDocumentSyncKind, Uri, WorkDoneProgress, WorkDoneProgressBegin,
+    WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressOptions,
 };
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
@@ -42,7 +44,7 @@ use janet_check::analysis::stdlib::Stdlib;
 use janet_check::analysis::types::infer::Mode;
 use janet_check::analysis::workspace::Workspace;
 use janet_check::analysis::{modules, path_of};
-use state::{Reporting, State};
+use state::{Client, Reporting, State};
 
 /// `initializationOptions` sent by the Zed extension.
 #[derive(Debug, Default)]
@@ -214,6 +216,11 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let (checker, results) = Checker::spawn(compile.then(|| janet.to_string()));
     let started = Instant::now();
     let repl_port = options.repl_port;
+    let client = Client {
+        resolves_code_actions: resolves_code_actions(&params),
+        reports_progress: reports_progress(&params),
+    };
+    let indexing = Progress::begin(connection, client.reports_progress, "Indexing")?;
     let mut state = State::new(
         workspace,
         stdlib,
@@ -222,6 +229,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         types.diagnostics,
     );
     state.watching = watching;
+    state.client = client;
     state.hints = types.hints();
     state.refreshes_hints = refreshes_hints(&params);
     tracing::info!(
@@ -229,6 +237,10 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         elapsed = ?started.elapsed(),
         "indexed"
     );
+    if let Some(indexing) = indexing {
+        let files = state.workspace.paths().count();
+        indexing.end(connection, format!("{files} files"))?;
+    }
     serve(connection, state, &checker, &results)
 }
 
@@ -238,6 +250,8 @@ fn capabilities() -> ServerCapabilities {
         hover_provider: Some(HoverProviderCapability::Simple(true)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(true),
+            // `mod/` narrows to a module's names, `:` to the keys the form takes.
+            trigger_characters: Some(vec!["/".to_string(), ":".to_string()]),
             ..CompletionOptions::default()
         }),
         signature_help_provider: Some(SignatureHelpOptions {
@@ -253,6 +267,8 @@ fn capabilities() -> ServerCapabilities {
                 CodeActionKind::QUICKFIX,
                 CodeActionKind::REFACTOR_REWRITE,
             ]),
+            // Only a client that says it resolves the edit is sent actions without one.
+            resolve_provider: Some(true),
             ..CodeActionOptions::default()
         })),
         references_provider: Some(OneOf::Left(true)),
@@ -298,6 +314,78 @@ fn refreshes_hints(params: &InitializeParams) -> bool {
         .and_then(|workspace| workspace.inlay_hint.as_ref())
         .and_then(|hint| hint.refresh_support)
         .unwrap_or(false)
+}
+
+fn reports_progress(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .window
+        .as_ref()
+        .and_then(|window| window.work_done_progress)
+        .unwrap_or(false)
+}
+
+/// Work the client shows as under way, from `begin` until `end`.
+struct Progress {
+    token: NumberOrString,
+}
+
+impl Progress {
+    /// Asks the client for a progress token and starts reporting on it. `None` where the client
+    /// shows no progress.
+    fn begin(connection: &Connection, supported: bool, title: &str) -> Result<Option<Self>> {
+        static CREATED: AtomicU64 = AtomicU64::new(0);
+        if !supported {
+            return Ok(None);
+        }
+        let n = CREATED.fetch_add(1, Ordering::Relaxed);
+        let token = NumberOrString::String(format!("janet-zed/progress/{n}"));
+        let id = RequestId::from(format!("create-progress-{n}"));
+        let create = WorkDoneProgressCreateParams {
+            token: token.clone(),
+        };
+        let request = Request::new(id, WorkDoneProgressCreate::METHOD.to_string(), create);
+        connection.sender.send(request.into())?;
+        let progress = Self { token };
+        progress.report(
+            connection,
+            WorkDoneProgress::Begin(WorkDoneProgressBegin {
+                title: title.to_string(),
+                ..WorkDoneProgressBegin::default()
+            }),
+        )?;
+        Ok(Some(progress))
+    }
+
+    fn end(self, connection: &Connection, message: String) -> Result<()> {
+        self.report(
+            connection,
+            WorkDoneProgress::End(WorkDoneProgressEnd {
+                message: Some(message),
+            }),
+        )
+    }
+
+    fn report(&self, connection: &Connection, value: WorkDoneProgress) -> Result<()> {
+        let params = ProgressParams {
+            token: self.token.clone(),
+            value: ProgressParamsValue::WorkDone(value),
+        };
+        let notification = Notification::new(LspProgress::METHOD.to_string(), params);
+        connection.sender.send(notification.into())?;
+        Ok(())
+    }
+}
+
+/// Whether the client asks for a code action's edit only once one is picked.
+fn resolves_code_actions(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|document| document.code_action.as_ref())
+        .and_then(|action| action.resolve_support.as_ref())
+        .is_some_and(|support| support.properties.iter().any(|property| property == "edit"))
 }
 
 /// Asks the client to request the inlay hints again, where it can: the types they show changed
@@ -350,6 +438,8 @@ fn serve(
 ) -> Result<()> {
     let mut queue = VecDeque::new();
     let mut project_stale = true;
+    // The first pass infers every file; those after it mostly read the cache, too quick to show.
+    let mut inferred_once = false;
     loop {
         // Everything that has arrived, so a request cancelled while it waited is not served.
         queue.extend(connection.receiver.try_iter());
@@ -405,8 +495,19 @@ fn serve(
             continue;
         }
         if project_stale {
+            let shown = !inferred_once && state.reporting != Reporting::Off;
+            let inferring = Progress::begin(
+                connection,
+                shown && state.client.reports_progress,
+                "Inferring types",
+            )?;
             // Stopped by a message, it carries on from where it was once that one is served.
             project_stale = !publish_project(connection, &mut state, &mut queue, results)?;
+            inferred_once |= !project_stale;
+            if let Some(inferring) = inferring {
+                let done = if project_stale { "paused" } else { "done" };
+                inferring.end(connection, done.to_string())?;
+            }
             // What an importer shows can follow from an edit to what it imports.
             if !project_stale && state.hints {
                 refresh_hints(connection, &state)?;
@@ -567,6 +668,9 @@ fn dispatch(state: &State, request: Request) -> Response {
         }
         CodeActionRequest::METHOD => {
             handle::<CodeActionRequest>(state, request, handlers::code_action)
+        }
+        CodeActionResolveRequest::METHOD => {
+            handle::<CodeActionResolveRequest>(state, request, handlers::code_action_resolve)
         }
         References::METHOD => handle::<References>(state, request, handlers::references),
         DocumentHighlightRequest::METHOD => {
@@ -776,15 +880,17 @@ fn publish_buffer(connection: &Connection, state: &mut State, uri: Uri) -> Resul
         return Ok(());
     }
     // Off, nothing is inferred for this: the types are only read when someone asks to see them.
-    let path = (state.reporting != Reporting::Off)
-        .then(|| state.file(&uri).map(|file| file.path.clone()))
-        .transpose()?;
-    let facts = path.map(|path| state.workspace.facts(&path));
+    let file = state.file(&uri)?;
+    let facts = (state.reporting != Reporting::Off).then(|| state.workspace.facts(&file.path));
     let findings = facts.as_deref().map_or(&[][..], |facts| &facts.findings);
-    let document = state.document(&uri)?;
     // The types add to what the checker found rather than replacing it.
     let mut diagnostics = compiled.clone();
-    diagnostics.extend(diagnostics::inferred(document, findings, state.reporting));
+    diagnostics.extend(diagnostics::inferred(
+        &file.document,
+        findings,
+        state.reporting,
+        |offset| handlers::declaration_at(state, file, offset),
+    ));
     // Kept for quick fixes: clients need not send them back with `codeAction`.
     state.diagnostics.insert(uri.clone(), diagnostics.clone());
     send_diagnostics(connection, uri, diagnostics, Some(version))
@@ -823,7 +929,9 @@ fn publish_project(
             }
             let facts = state.workspace.facts(&path);
             let diagnostics =
-                diagnostics::inferred(&file.document, &facts.findings, state.reporting);
+                diagnostics::inferred(&file.document, &facts.findings, state.reporting, |offset| {
+                    handlers::declaration_at(state, file, offset)
+                });
             if !diagnostics.is_empty() {
                 found.push((file.uri.clone(), diagnostics));
             }

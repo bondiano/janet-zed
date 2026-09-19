@@ -74,7 +74,7 @@ impl<'d> Infer<'d> {
         {
             let called = self.text(head);
             let message = format!("{called} is {ty}, not a function");
-            self.complain(head.byte_range(), message);
+            self.complain_call(head, head.byte_range(), message);
         }
         let Some(Annotation::Function(signature)) = written else {
             return;
@@ -144,10 +144,10 @@ impl<'d> Infer<'d> {
                     "{called} takes {declared} here{}, given {given}",
                     pinned_by(written, declared)
                 );
-                self.complain(arg.byte_range(), message);
+                self.complain_call(head, arg.byte_range(), message);
             }
         }
-        self.options(called, core, &signature, args, types);
+        self.options(head, core, &signature, args, types);
         // `:where {a :number}`: what a variable is pinned to must fit its bound. The finding
         // sits on the first argument written with the variable.
         for (var, bound) in &signature.bounds {
@@ -161,7 +161,7 @@ impl<'d> Infer<'d> {
                     .map_or(head, |(_, arg)| *arg);
                 let given = self.settled(given);
                 let message = format!("{called} takes {var}: {bound}, given {given}");
-                self.complain(at.byte_range(), message);
+                self.complain_call(head, at.byte_range(), message);
             }
         }
     }
@@ -196,7 +196,7 @@ impl<'d> Infer<'d> {
         } else {
             return;
         };
-        self.complain(head.byte_range(), message);
+        self.complain_call(head, head.byte_range(), message);
     }
 
     /// `(f x :sep ",")` against `[x &named sep]`: each option's name is one the declaration
@@ -204,12 +204,13 @@ impl<'d> Infer<'d> {
     /// parameters; a key that is not a literal keyword, or a splice, leaves the rest unpaired.
     fn options(
         &mut self,
-        called: &str,
+        head: Node<'d>,
         core: bool,
         signature: &Signature,
         args: &[Node<'d>],
         types: &[Type],
     ) {
+        let called = self.text(head);
         let positional = signature.params.len();
         if signature.named.is_empty()
             || args
@@ -234,7 +235,7 @@ impl<'d> Infer<'d> {
                     .map(|(named, _)| format!(":{named}"))
                     .collect();
                 let message = format!("{called} takes no :{name}; it takes {}", names.join(" "));
-                self.complain(key.byte_range(), message);
+                self.complain_call(head, key.byte_range(), message);
                 continue;
             };
             let [_, (value, actual)] = pair else {
@@ -251,7 +252,7 @@ impl<'d> Infer<'d> {
             if ruled_out {
                 let given = self.settled(actual);
                 let message = format!("{called} takes {declared} for :{name}, given {given}");
-                self.complain(value.byte_range(), message);
+                self.complain_call(head, value.byte_range(), message);
             }
         }
     }
@@ -300,11 +301,21 @@ impl<'d> Infer<'d> {
     }
 
     pub(super) fn complain(&mut self, range: Range<usize>, message: String) {
+        self.record_finding(range, message, None);
+    }
+
+    /// A complaint against what the call `head` heads declares.
+    fn complain_call(&mut self, head: Node<'d>, range: Range<usize>, message: String) {
+        self.record_finding(range, message, Some(head.start_byte()));
+    }
+
+    fn record_finding(&mut self, range: Range<usize>, message: String, called: Option<usize>) {
         if self.record {
             self.findings.push(Finding {
                 range,
                 message,
                 about_type: false,
+                called,
             });
         }
     }

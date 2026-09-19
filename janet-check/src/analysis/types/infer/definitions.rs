@@ -35,6 +35,7 @@ impl<'d> Infer<'d> {
                         range: node.byte_range(),
                         message: format!("{name} takes {takes}, given {given}"),
                         about_type: true,
+                        called: None,
                     });
                 }
             }

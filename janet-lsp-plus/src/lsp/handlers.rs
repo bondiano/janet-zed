@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use anyhow::{Context, Result, bail, ensure};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
-    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, CompletionTextEdit,
+    Diagnostic, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, Documentation, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
     InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, NumberOrString,
@@ -21,6 +21,7 @@ use lsp_types::{
 };
 
 use lsp_types::DocumentFormattingParams;
+use serde::{Deserialize, Serialize};
 use tree_sitter::Node;
 
 use super::state::State;
@@ -72,6 +73,19 @@ pub fn definition(
         Target::Form { .. } => repl_location(state, file, offset),
     };
     Ok(location.map(GotoDefinitionResponse::Scalar))
+}
+
+/// Where the workspace defines the name at `offset` of `file`, if it does.
+pub fn declaration_at(state: &State, file: &SourceFile, offset: usize) -> Option<Location> {
+    let (_, target) = references::resolve(
+        &state.workspace,
+        file,
+        offset,
+        |name| state.stdlib.is_core(name),
+        |name| state.stdlib.project(name).is_some(),
+    )?;
+    references::declaration(&state.workspace, &target)
+        .map(|declaration| Location::new(declaration.file.uri.clone(), range_of(&declaration)))
 }
 
 /// Where a running REPL says the symbol at `offset` was defined.
@@ -248,10 +262,18 @@ pub fn completion(state: &State, params: CompletionParams) -> Result<Option<Comp
     let position = params.text_document_position;
     let file = state.file(&position.text_document.uri)?;
     let offset = file.document.offset(position.position);
+    // What is typed of the name so far, `mod/` or `:` included, is what an item replaces.
+    let typed = file
+        .document
+        .range(prefix_start(&file.document.text, offset)..offset);
     let items = symbols::completions(&state.workspace, &state.stdlib, file, offset)
         .into_iter()
         .enumerate()
         .map(|(rank, candidate)| CompletionItem {
+            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
+                typed,
+                candidate.label.clone(),
+            ))),
             label: candidate.label,
             kind: Some(match candidate.kind {
                 CandidateKind::Function => CompletionItemKind::FUNCTION,
@@ -270,6 +292,18 @@ pub fn completion(state: &State, params: CompletionParams) -> Result<Option<Comp
         })
         .collect();
     Ok(Some(CompletionResponse::Array(items)))
+}
+
+/// Where the symbol or keyword ending at `offset` starts: the characters Janet reads as part of
+/// one, `/` and `:` among them.
+fn prefix_start(text: &str, offset: usize) -> usize {
+    let is_part = |c: char| c.is_alphanumeric() || !c.is_ascii() || "!$%&*+-./:<=>?@^_".contains(c);
+    text[..offset]
+        .char_indices()
+        .rev()
+        .take_while(|&(_, c)| is_part(c))
+        .last()
+        .map_or(offset, |(start, _)| start)
 }
 
 pub fn completion_resolve(state: &State, mut item: CompletionItem) -> Result<CompletionItem> {
@@ -432,10 +466,68 @@ pub fn workspace_symbol(
     Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
 }
 
+/// What a lazily resolved code action carries to have its edit computed again.
+#[derive(Serialize, Deserialize)]
+struct Unresolved {
+    uri: Uri,
+    range: Range,
+}
+
+/// The actions at the selection. A client that resolves them gets each without its edit, which
+/// [`code_action_resolve`] computes once one is picked.
 pub fn code_action(state: &State, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
     let uri = &params.text_document.uri;
+    let only = params.context.only.as_deref();
+    let actions = code_actions(state, uri, params.range)?
+        .into_iter()
+        .filter(|action| {
+            only.is_none_or(|only| {
+                only.iter().any(|requested| {
+                    action
+                        .kind
+                        .as_ref()
+                        .is_some_and(|kind| kind.as_str().starts_with(requested.as_str()))
+                })
+            })
+        })
+        .map(|action| {
+            if !state.client.resolves_code_actions {
+                return action;
+            }
+            let data = Unresolved {
+                uri: uri.clone(),
+                range: params.range,
+            };
+            CodeAction {
+                edit: None,
+                data: serde_json::to_value(data).ok(),
+                ..action
+            }
+        })
+        .map(CodeActionOrCommand::CodeAction)
+        .collect();
+    Ok(Some(actions))
+}
+
+/// The edit of an action [`code_action`] left without one: the actions at its selection are
+/// computed again, and the one of the same title and kind gives it.
+pub fn code_action_resolve(state: &State, mut action: CodeAction) -> Result<CodeAction> {
+    let data = action
+        .data
+        .take()
+        .context("the code action carries no data")?;
+    let Unresolved { uri, range } = serde_json::from_value(data)?;
+    let resolved = code_actions(state, &uri, range)?
+        .into_iter()
+        .find(|candidate| candidate.title == action.title && candidate.kind == action.kind)
+        .context("the code action no longer applies")?;
+    action.edit = resolved.edit;
+    Ok(action)
+}
+
+fn code_actions(state: &State, uri: &Uri, range: Range) -> Result<Vec<CodeAction>> {
     let doc = state.document(uri)?;
-    let selection = doc.offset(params.range.start)..doc.offset(params.range.end);
+    let selection = doc.offset(range.start)..doc.offset(range.end);
     let fixes: Vec<CodeAction> = unknown_symbol(state, uri, doc, selection.start)
         .map(|(symbol, diagnostic)| {
             let preferred = editing::fixes(doc, symbol)
@@ -457,23 +549,7 @@ pub fn code_action(state: &State, params: CodeActionParams) -> Result<Option<Cod
     let rewrites = editing::actions(doc, selection)
         .into_iter()
         .map(|action| code_action_of(doc, uri, action, CodeActionKind::REFACTOR_REWRITE));
-    let only = params.context.only.as_deref();
-    let actions = fixes
-        .into_iter()
-        .chain(rewrites)
-        .filter(|action| {
-            only.is_none_or(|only| {
-                only.iter().any(|requested| {
-                    action
-                        .kind
-                        .as_ref()
-                        .is_some_and(|kind| kind.as_str().starts_with(requested.as_str()))
-                })
-            })
-        })
-        .map(CodeActionOrCommand::CodeAction)
-        .collect();
-    Ok(Some(actions))
+    Ok(fixes.into_iter().chain(rewrites).collect())
 }
 
 /// The symbol at `offset`, when the diagnostics last published for `uri` call it unknown. By name
