@@ -34,7 +34,7 @@
     :rect (* (shape :w) (shape :h))
     :label 0))
 
-(defn describe
+(defn describe-shape
   {:params [Shape] :ret :string}
   "One line about a shape."
   [shape]
@@ -85,11 +85,11 @@
 
 (assert (= 4 (length shapes)))
 (assert (> total 9))
-(assert (= "rect 2x3" (describe (rect 2 3))))
+(assert (= "rect 2x3" (describe-shape (rect 2 3))))
 (assert (= 20 (font-size (caption "big" 20))))
 (assert (= 12 (font-size (caption "small"))))
 (assert (= :rect ((widest shapes) :kind)))
 (assert (nil? (widest [])))
 (assert (deep= [1 1] (centre [0 0] [2 2])))
 (assert (= 24 (area (scale (rect 2 3) 2))))
-(assert (= "label hi" (describe (scale (caption "hi") 3))))
+(assert (= "label hi" (describe-shape (scale (caption "hi") 3))))

@@ -4,6 +4,7 @@ pub mod config;
 pub mod definitions;
 pub mod hints;
 pub mod ignores;
+pub mod lints;
 pub mod modules;
 pub mod peg;
 pub mod project;

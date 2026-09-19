@@ -334,7 +334,7 @@ pub fn syspath(janet: &str) -> Result<PathBuf> {
 }
 
 /// Mirrors `import*`: `:as` wins over `:prefix`, then the module's last path segment.
-fn import_prefix(doc: &Document, spec: &str, options: &[Node]) -> String {
+pub fn import_prefix(doc: &Document, spec: &str, options: &[Node]) -> String {
     let value = |key: &str| option(doc, options, key).and_then(|node| literal(doc, node));
     let segment = spec.rsplit('/').next().unwrap_or(spec);
     value(":as")

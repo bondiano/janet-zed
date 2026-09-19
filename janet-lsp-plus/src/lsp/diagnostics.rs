@@ -15,6 +15,7 @@ use lsp_types::{
 
 use super::state::Reporting;
 use janet_check::analysis::ignores::{self, ignores};
+use janet_check::analysis::lints::Lint;
 use janet_check::analysis::modules::Package;
 use janet_check::analysis::types::infer::Finding;
 use janet_check::janet::{self, Check, Problem, Report};
@@ -216,6 +217,23 @@ pub fn inferred(
                     message: "declared here".to_string(),
                 }]
             }),
+            ..Diagnostic::default()
+        })
+        .collect()
+}
+
+/// What the lints find, by code. With Janet compiling, what it reports too is left to it.
+pub fn linted(doc: &Document, lints: Vec<Lint>, compiles: bool) -> Vec<Diagnostic> {
+    lints
+        .into_iter()
+        .filter(|lint| !compiles || !lint.compiled)
+        .map(|lint| Diagnostic {
+            range: doc.range(lint.range),
+            severity: Some(DiagnosticSeverity::WARNING),
+            source: Some("janet-zed".to_string()),
+            code: Some(NumberOrString::String(lint.code.to_string())),
+            tags: tags_for(lint.code),
+            message: lint.message,
             ..Diagnostic::default()
         })
         .collect()

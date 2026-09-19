@@ -1,7 +1,10 @@
 //! `# janet-zed: ignore <category> [names…]` comments: what a file says it does not want
 //! reported. A category is `unknown-symbol` for what the compiler could not resolve, or `types`
 //! for what the written types rule out — a test that passes a wrong argument on purpose, to
-//! assert that the function rejects it, is the usual reason for the latter.
+//! assert that the function rejects it, is the usual reason for the latter. A lint's code, such
+//! as `unused-binding`, is a category too.
+
+use super::lints::CODES;
 
 /// A category of diagnostic a directive can silence.
 pub const UNKNOWN_SYMBOL: &str = "unknown-symbol";
@@ -47,10 +50,12 @@ pub fn ignores(text: &str) -> Vec<Ignore<'_>> {
                 _ => return None,
             };
             let category = words.next()?;
-            matches!(category, UNKNOWN_SYMBOL | TYPES).then(|| Ignore {
-                line,
-                category,
-                names: words.collect(),
+            (matches!(category, UNKNOWN_SYMBOL | TYPES) || CODES.contains(&category)).then(|| {
+                Ignore {
+                    line,
+                    category,
+                    names: words.collect(),
+                }
             })
         })
         .collect()

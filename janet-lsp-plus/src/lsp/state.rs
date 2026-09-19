@@ -55,6 +55,7 @@ pub struct Client {
     pub reports_progress: bool,
 }
 
+#[allow(clippy::struct_excessive_bools, reason = "independent settings")]
 pub struct State {
     pub workspace: Workspace,
     pub stdlib: Stdlib,
@@ -71,6 +72,8 @@ pub struct State {
     pub retype: HashSet<Uri>,
     /// Whether the client reports file changes. Without, closing a buffer walks the roots again.
     pub watching: bool,
+    /// Whether open buffers are compiled by `janet`, which then reports what some lints would.
+    pub compiles: bool,
     /// The netrepl port hover and go-to-definition ask; the port the REPL kernel recorded for a
     /// workspace root when not set.
     repl_port: Option<u16>,
@@ -107,6 +110,7 @@ impl State {
             compiled: HashMap::new(),
             retype: HashSet::new(),
             watching: false,
+            compiles: true,
             repl_port,
             repl: RefCell::new(None),
             reporting,

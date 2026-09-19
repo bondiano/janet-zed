@@ -1,0 +1,35 @@
+---
+source: janet-check/src/analysis/lints/tests.rs
+expression: "show(\"(defn two [a b] a)\\n(defn some [a &opt b & rest] a)\\n(two 1)\\n(two 1 2 3)\\n(some)\\n(some 1 2 3 4)\\n(two ;[1 2 3])\\n(-> 1 (two 2))\\n(defn outer []\\n  (defn inner [x] x)\\n  (let [g (fn [y] y)]\\n    (inner)\\n    (g 1 2)))\\n\")"
+---
+(defn two [a b] a)
+             ▔
+(defn some [a &opt b & rest] a)
+      ▔▔▔▔         ▔   ▔▔▔▔
+(two 1)
+▔▔▔▔▔▔▔
+(two 1 2 3)
+▔▔▔▔▔▔▔▔▔▔▔
+(some)
+▔▔▔▔▔▔
+(some 1 2 3 4)
+(two ;[1 2 3])
+(-> 1 (two 2))
+(defn outer []
+  (defn inner [x] x)
+  (let [g (fn [y] y)]
+    (inner)
+    ▔▔▔▔▔▔▔
+    (g 1 2)))
+    ▔▔▔▔▔▔▔
+
+
+unused-binding: b is never used
+shadowed-core: some shadows the core binding of that name
+unused-binding: b is never used
+unused-binding: rest is never used
+wrong-arity: two takes 2 arguments, given 1
+wrong-arity: two takes 2 arguments, given 3
+wrong-arity: some takes at least 1 argument, given 0
+wrong-arity: inner takes 1 argument, given 0
+wrong-arity: g takes 1 argument, given 2

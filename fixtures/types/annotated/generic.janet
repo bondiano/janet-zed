@@ -80,9 +80,9 @@
 (assert (= 2 (text-length @"ab")))
 (assert (= 1 (text-length 'x)))
 
-(def values [1 -2 "three" 4 nil])
+(def samples [1 -2 "three" 4 nil])
 (var total {:type :number} 0)
-(each v values
+(each v samples
   (when (positive? v)
     (+= total v)))
 (assert (= 5 total))

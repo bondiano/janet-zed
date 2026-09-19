@@ -49,7 +49,7 @@ use diagnostics::{Checked, Checker};
 use janet_check::analysis::stdlib::Stdlib;
 use janet_check::analysis::types::infer::Mode;
 use janet_check::analysis::workspace::Workspace;
-use janet_check::analysis::{modules, path_of};
+use janet_check::analysis::{lints, modules, path_of};
 use state::{Client, Reporting, State};
 
 /// `initializationOptions` sent by the Zed extension.
@@ -236,6 +236,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     );
     state.watching = watching;
     state.client = client;
+    state.compiles = compile;
     state.hints = types.hints();
     state.refreshes_hints = refreshes_hints(&params);
     tracing::info!(
@@ -923,7 +924,8 @@ fn publish_buffer(connection: &Connection, state: &mut State, uri: Uri) -> Resul
     let file = state.file(&uri)?;
     let facts = (state.reporting != Reporting::Off).then(|| state.workspace.facts(&file.path));
     let findings = facts.as_deref().map_or(&[][..], |facts| &facts.findings);
-    // The types add to what the checker found rather than replacing it.
+    let lints = lints::lints(&state.workspace, &file.path);
+    // The types and the lints add to what the checker found rather than replacing it.
     let mut diagnostics = compiled.clone();
     diagnostics.extend(diagnostics::inferred(
         &file.document,
@@ -931,6 +933,7 @@ fn publish_buffer(connection: &Connection, state: &mut State, uri: Uri) -> Resul
         state.reporting,
         |offset| handlers::declaration_at(state, file, offset),
     ));
+    diagnostics.extend(diagnostics::linted(&file.document, lints, state.compiles));
     // Kept for quick fixes: clients need not send them back with `codeAction`.
     state.diagnostics.insert(uri.clone(), diagnostics.clone());
     send_diagnostics(connection, uri, diagnostics, Some(version))

@@ -1,0 +1,18 @@
+---
+source: janet-check/src/analysis/lints/tests.rs
+expression: "show(\"(import ./lib)\\n(import ./lib :as l)\\n(import ./nowhere)\\n(import ./lib :as used)\\n(use ./lib)\\n(used/f 1)\\n\")"
+---
+(import ./lib)
+        ▔▔▔▔▔
+(import ./lib :as l)
+        ▔▔▔▔▔
+(import ./nowhere)
+        ▔▔▔▔▔▔▔▔▔
+(import ./lib :as used)
+(use ./lib)
+(used/f 1)
+
+
+unused-import: nothing imported from ./lib is used
+unused-import: nothing imported from ./lib is used
+unresolved-import: no module ./nowhere to import

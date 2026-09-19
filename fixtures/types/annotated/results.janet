@@ -62,7 +62,7 @@
   [text]
   (try
     (checked-age text)
-    ([err] nil)))
+    ([_] nil)))
 
 (defn domain
   {:params [Entry] :ret :string?}

@@ -1,0 +1,16 @@
+---
+source: janet-check/src/analysis/lints/tests.rs
+expression: "show(\"(defn map [f xs] xs)\\n(def x 1)\\n(def x 2)\\n(var v 1)\\n(varfn v [] 2)\\n\")"
+---
+(defn map [f xs] xs)
+      ▔▔▔  ▔
+(def x 1)
+(def x 2)
+     ▔
+(var v 1)
+(varfn v [] 2)
+
+
+shadowed-core: map shadows the core binding of that name
+unused-binding: f is never used
+duplicate-definition: x is already defined on line 2

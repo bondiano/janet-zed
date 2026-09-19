@@ -254,7 +254,7 @@
                            (check/stand-in env)))
      :on-compile-warning (fn [message _ where &opt line col]
                            (when (= where file) (check/report 2 message line col)))
-     :on-parse-error (fn [parser where]
+     :on-parse-error (fn [parser _where]
                        (def [line col] (parser/where parser))
                        (check/report 1 (parser/error parser) line col))
      # Only a failing import is worth reporting: other forms run on a partial environment

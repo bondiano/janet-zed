@@ -488,7 +488,7 @@
   the program as `janet` runs a file, `main` included."
   [port]
   (set driver/conn (net/connect "127.0.0.1" port))
-  (def reader (ev/spawn (driver/read-commands)))
+  (def _reader (ev/spawn (driver/read-commands)))
   (def [_ _ program args stop-on-entry] (ev/take driver/commands))
   (def path (driver/real program))
   (def env (make-env root-env))
