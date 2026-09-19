@@ -2,24 +2,25 @@
 //! its `(import …)`, and the same as a quick fix for an unknown symbol.
 
 // Handlers fit the `Handler` signature `lsp::dispatch` routes by.
-#![allow(clippy::needless_pass_by_value)]
+#![allow(clippy::needless_pass_by_value, clippy::unnecessary_wraps)]
 
-use std::collections::HashMap;
-use std::path::{Component, Path};
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::Result;
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
-    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, TextEdit,
-    WorkspaceEdit,
+    CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, FileOperationFilter,
+    FileOperationPattern, FileOperationPatternKind, FileOperationRegistrationOptions,
+    RenameFilesParams, TextEdit, Uri, WorkspaceEdit, WorkspaceFileOperationsServerCapabilities,
 };
 
 use super::handlers;
 use super::state::State;
 use crate::editing::Edit;
 use janet_check::analysis::symbols::{self, CandidateKind};
-use janet_check::analysis::workspace::{self, Workspace};
-use janet_check::analysis::{SourceFile, is_declaration};
+use janet_check::analysis::workspace::{self, Edge, Workspace};
+use janet_check::analysis::{SourceFile, canonical, is_declaration, path_of};
 use janet_check::syntax;
 
 /// [`handlers::completion`], and after its names those of modules the file does not import yet,
@@ -317,6 +318,150 @@ fn fixes(
             })
         });
     imported.chain(imports).collect()
+}
+
+/// What `workspace/willRenameFiles` is asked for: `.janet` files, and folders that may hold some.
+pub fn file_operations() -> WorkspaceFileOperationsServerCapabilities {
+    let filter = |glob: &str, matches| FileOperationFilter {
+        scheme: Some("file".to_string()),
+        pattern: FileOperationPattern {
+            glob: glob.to_string(),
+            matches: Some(matches),
+            options: None,
+        },
+    };
+    WorkspaceFileOperationsServerCapabilities {
+        will_rename: Some(FileOperationRegistrationOptions {
+            filters: vec![
+                filter("**/*.janet", FileOperationPatternKind::File),
+                filter("**/*", FileOperationPatternKind::Folder),
+            ],
+        }),
+        ..WorkspaceFileOperationsServerCapabilities::default()
+    }
+}
+
+/// The imports a move breaks, written again: those of moved files, and those of files importing
+/// them. Against the files as they are before the move, which is when the client applies it.
+pub fn will_rename_files(
+    state: &State,
+    params: RenameFilesParams,
+) -> Result<Option<WorkspaceEdit>> {
+    let path = |uri: &str| path_of(&uri.parse().ok()?).map(|path| located(&path));
+    let moves: Vec<(PathBuf, PathBuf)> = params
+        .files
+        .iter()
+        .filter_map(|rename| Some((path(&rename.old_uri)?, path(&rename.new_uri)?)))
+        .collect();
+    let changes = moved_imports(&state.workspace, &moves).into_iter().fold(
+        HashMap::<Uri, Vec<TextEdit>>::new(),
+        |mut changes, (file, edit)| {
+            changes
+                .entry(file.uri.clone())
+                .or_default()
+                .push(text_edit(file, edit));
+            changes
+        },
+    );
+    Ok((!changes.is_empty()).then(|| WorkspaceEdit::new(changes)))
+}
+
+/// `path` as the index names it, when it or at least its directory exists.
+fn located(path: &Path) -> PathBuf {
+    path.parent()
+        .filter(|parent| parent.exists())
+        .zip(path.file_name())
+        .map_or_else(
+            || canonical(path),
+            |(parent, name)| canonical(parent).join(name),
+        )
+}
+
+/// Each import spec `moves` (old path, new path; a folder moves what is under it) makes wrong,
+/// with the spec that fits the new places. Relative and project-rooted specs only: a package's
+/// module is found wherever the importer is.
+fn moved_imports<'w>(
+    workspace: &'w Workspace,
+    moves: &[(PathBuf, PathBuf)],
+) -> Vec<(&'w SourceFile, Edit)> {
+    let new = |path: &Path| {
+        moves
+            .iter()
+            .find_map(|(old, new)| Some(new.join(path.strip_prefix(old).ok()?)))
+            .map_or_else(|| path.to_path_buf(), |moved| moved.components().collect())
+    };
+    let written = |file: &'w SourceFile, edge: &Edge| {
+        let root = edge
+            .spec
+            .starts_with('/')
+            .then(|| workspace.project_root(&file.path))
+            .flatten();
+        let relative = edge.spec.starts_with("./") || edge.spec.starts_with("../");
+        if edge.included || !(relative || root.is_some()) {
+            return None;
+        }
+        let spec = spec_of(&new(&file.path), &new(&edge.path), root.as_deref())?;
+        let extension = if Path::new(&edge.spec)
+            .extension()
+            .is_some_and(|ext| ext == "janet")
+        {
+            ".janet"
+        } else {
+            ""
+        };
+        let spec = format!("{spec}{extension}");
+        (spec != edge.spec).then_some(spec)
+    };
+    let edits: BTreeMap<(&Path, usize), (&SourceFile, Edit)> = workspace
+        .paths()
+        .filter_map(|path| workspace.file(path))
+        .flat_map(|file| {
+            workspace
+                .imports_of(&file.path)
+                .iter()
+                .filter(|edge| new(&file.path) != file.path || new(&edge.path) != edge.path)
+                .filter_map(|edge| Some((edge, written(file, edge)?)))
+                .flat_map(move |(edge, spec)| {
+                    spec_ranges(file, &edge.spec).into_iter().map(move |range| {
+                        let key = (file.path.as_path(), range.start);
+                        let text = spec.clone();
+                        (key, (file, Edit { range, text }))
+                    })
+                })
+        })
+        .collect();
+    edits.into_values().collect()
+}
+
+/// Where `file` writes `spec` in its top-level imports and re-export calls, quotes aside.
+fn spec_ranges(file: &SourceFile, spec: &str) -> Vec<std::ops::Range<usize>> {
+    let doc = &file.document;
+    syntax::forms(doc.root())
+        .into_iter()
+        .filter(|form| form.kind() == syntax::LIST)
+        .flat_map(|list| {
+            let forms = syntax::forms(list);
+            let imports = forms
+                .first()
+                .is_some_and(|head| matches!(doc.text_of(*head), "import" | "use"));
+            // An import's every argument; a re-export call's first.
+            let arguments: Vec<_> = if imports {
+                forms.into_iter().skip(1).collect()
+            } else {
+                forms.get(1).copied().into_iter().collect()
+            };
+            arguments
+                .into_iter()
+                .filter(move |node| {
+                    (imports && node.kind() == syntax::SYMBOL) || node.kind() == syntax::STRING
+                })
+                .map(|node| match node.kind() {
+                    syntax::STRING => node.start_byte() + 1..node.end_byte() - 1,
+                    _ => node.byte_range(),
+                })
+                .filter(|range| doc.text[range.clone()] == *spec)
+        })
+        .collect()
 }
 
 #[cfg(test)]

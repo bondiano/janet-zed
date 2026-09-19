@@ -1,5 +1,7 @@
 #![allow(clippy::unwrap_used)]
 
+use std::collections::BTreeMap;
+
 use super::*;
 use crate::editing::apply;
 use crate::lsp::fixture::workspace_of;
@@ -130,5 +132,87 @@ fn an_unknown_name_is_imported_or_qualified_under_its_alias() {
     assert_eq!(
         fixed("dist"),
         ["Use `g/dist`\n(import ./geo :as g)\n(area 1)\n(g/dist)\n"]
+    );
+}
+
+/// Every file `moves` rewrites, as it reads afterwards.
+fn moved(files: &[(&str, &str)], moves: &[(&str, &str)]) -> Vec<(String, String)> {
+    let workspace = workspace_of(files);
+    let moves: Vec<(PathBuf, PathBuf)> = moves
+        .iter()
+        .map(|(old, new)| (PathBuf::from(old), PathBuf::from(new)))
+        .collect();
+    let mut edits: BTreeMap<String, (&SourceFile, Vec<Edit>)> = BTreeMap::new();
+    for (file, edit) in moved_imports(&workspace, &moves) {
+        let entry = edits
+            .entry(file.path.display().to_string())
+            .or_insert((file, Vec::new()));
+        entry.1.push(edit);
+    }
+    edits
+        .into_iter()
+        .map(|(path, (file, edits))| (path, apply(&file.document.text, &edits)))
+        .collect()
+}
+
+fn owned(files: &[(&str, &str)]) -> Vec<(String, String)> {
+    files
+        .iter()
+        .map(|(path, text)| (path.to_string(), text.to_string()))
+        .collect()
+}
+
+#[test]
+fn moving_a_file_rewrites_its_importers_and_its_own_imports() {
+    let files = [
+        (
+            "/ws/src/shapes.janet",
+            "(import ./util)\n(import /lib/text)\n",
+        ),
+        ("/ws/src/util.janet", ""),
+        ("/ws/lib/text.janet", ""),
+        (
+            "/ws/src/report.janet",
+            "(import ./shapes :as s)\n(re-export \"./shapes\" ['area])\n(import spork/json)\n",
+        ),
+        ("/ws/test/shapes.janet", "(use ../src/shapes)\n"),
+    ];
+    let rewritten = moved(
+        &files,
+        &[("/ws/src/shapes.janet", "/ws/src/geo/shapes.janet")],
+    );
+    assert_eq!(
+        rewritten,
+        owned(&[
+            (
+                "/ws/src/report.janet",
+                "(import ./geo/shapes :as s)\n(re-export \"./geo/shapes\" ['area])\n(import spork/json)\n",
+            ),
+            (
+                "/ws/src/shapes.janet",
+                "(import ../util)\n(import /lib/text)\n"
+            ),
+            ("/ws/test/shapes.janet", "(use ../src/geo/shapes)\n"),
+        ])
+    );
+}
+
+#[test]
+fn moving_a_folder_keeps_the_imports_within_it() {
+    let files = [
+        ("/ws/src/a/one.janet", "(import ./two)\n(import ../main)\n"),
+        ("/ws/src/a/two.janet", ""),
+        ("/ws/src/main.janet", "(import ./a/one)\n"),
+    ];
+    let rewritten = moved(&files, &[("/ws/src/a", "/ws/lib/b")]);
+    assert_eq!(
+        rewritten,
+        owned(&[
+            (
+                "/ws/src/a/one.janet",
+                "(import ./two)\n(import ../../src/main)\n"
+            ),
+            ("/ws/src/main.janet", "(import ../lib/b/one)\n"),
+        ])
     );
 }

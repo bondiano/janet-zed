@@ -26,7 +26,7 @@ use lsp_types::request::{
     ResolveCompletionItem, Shutdown, SignatureHelpRequest, WorkDoneProgressCreate,
     WorkspaceSymbolRequest,
 };
-use lsp_types::request::{SemanticTokensFullRequest, SemanticTokensRangeRequest};
+use lsp_types::request::{SemanticTokensFullRequest, SemanticTokensRangeRequest, WillRenameFiles};
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
     CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions,
@@ -285,6 +285,10 @@ fn capabilities() -> ServerCapabilities {
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
         semantic_tokens_provider: Some(tokens::capability()),
+        workspace: Some(lsp_types::WorkspaceServerCapabilities {
+            workspace_folders: None,
+            file_operations: Some(imports::file_operations()),
+        }),
         ..ServerCapabilities::default()
     }
 }
@@ -691,6 +695,9 @@ fn dispatch(state: &State, request: Request) -> Response {
         Rename::METHOD => handle::<Rename>(state, request, handlers::rename),
         InlayHintRequest::METHOD => {
             handle::<InlayHintRequest>(state, request, handlers::inlay_hint)
+        }
+        WillRenameFiles::METHOD => {
+            handle::<WillRenameFiles>(state, request, imports::will_rename_files)
         }
         SemanticTokensFullRequest::METHOD => {
             handle::<SemanticTokensFullRequest>(state, request, tokens::full)

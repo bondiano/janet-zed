@@ -910,6 +910,42 @@ fn rename_an_imported_definition() {
 }
 
 #[test]
+fn moving_a_module_rewrites_the_imports_of_it() {
+    let mut session = Session::start();
+    let moved = |relative: &str| uri(&session.root.join(relative));
+    let params = json!({"files": [{
+        "oldUri": moved("src/shapes.janet"),
+        "newUri": moved("src/geo/shapes.janet"),
+    }]});
+    let rename = session
+        .request("workspace/willRenameFiles", params)
+        .unwrap();
+    let mut edits: Vec<_> = rename["changes"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .flat_map(|(uri, edits)| {
+            edits.as_array().unwrap().iter().map(|edit| {
+                format!(
+                    "{} {}",
+                    session.show_location(uri, &edit["range"]),
+                    edit["newText"].as_str().unwrap()
+                )
+            })
+        })
+        .collect();
+    edits.sort();
+    assert_eq!(
+        edits,
+        [
+            "src/report.janet 2:8-2:16 ./geo/shapes",
+            "test/shapes.janet 0:8-0:21 ../src/geo/shapes",
+        ]
+    );
+    session.finish();
+}
+
+#[test]
 fn rename_a_core_binding() {
     let mut session = Session::start();
     let mut params = session.at("(map", 2);
