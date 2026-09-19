@@ -839,23 +839,35 @@ fn named_call<'d>(
 
 /// The declarations the server carries, written out as the lowest-priority library: read like
 /// the ones a library exports, and a real file for go-to-definition to open. The version names
-/// the directory, so one build never reads what another one wrote.
+/// the directory, so one build never reads what another one wrote. It is in the user's cache
+/// directory, where other users cannot write.
+// ponytail: the shared temp directory only without a home directory; the file is checked when
+// the server starts, not each time it is read.
 fn builtin_dir() -> &'static Path {
     static DIR: OnceLock<PathBuf> = OnceLock::new();
     DIR.get_or_init(|| {
-        let dir = std::env::temp_dir().join(concat!("janet-zed-", env!("CARGO_PKG_VERSION")));
-        let exports = dir.join("janet-zed.exports/spork");
-        let file = exports.join("spork.d.janet");
-        if !file.is_file() && std::fs::create_dir_all(&exports).is_ok() {
-            // Written under another name and moved, so that a second server reading the directory
-            // never finds half a file.
-            let pending = exports.join(format!("spork.{}.pending", std::process::id()));
-            if std::fs::write(&pending, types::SPORK).is_ok() {
-                std::fs::rename(&pending, &file).ok();
-            }
-        }
+        let dir = dirs::cache_dir()
+            .unwrap_or_else(std::env::temp_dir)
+            .join(concat!("janet-zed-", env!("CARGO_PKG_VERSION")));
+        write_builtins(&dir);
         canonical(&dir)
     })
+}
+
+/// Writes the declarations the server carries under `dir`, unless they are there already as
+/// this build has them: a file another server left half written, or someone changed, is replaced.
+fn write_builtins(dir: &Path) {
+    let exports = dir.join("janet-zed.exports/spork");
+    let file = exports.join("spork.d.janet");
+    let current = std::fs::read(&file).is_ok_and(|text| text == types::SPORK.as_bytes());
+    if !current && std::fs::create_dir_all(&exports).is_ok() {
+        // Written under another name and moved, so that a second server reading the directory
+        // never finds half a file.
+        let pending = exports.join(format!("spork.{}.pending", std::process::id()));
+        if std::fs::write(&pending, types::SPORK).is_ok() {
+            std::fs::rename(&pending, &file).ok();
+        }
+    }
 }
 
 /// The canonical path of every `.janet` file under `roots`, honoring .gitignore. Canonical, so

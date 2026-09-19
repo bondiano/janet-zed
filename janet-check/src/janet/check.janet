@@ -158,11 +158,17 @@
   nil)
 (array/insert module/paths 0 [check/note-import :source])
 
-# ponytail: length and Janet's 32-bit `hash` of the contents; a collision keeps a stale module
-# until the file changes again.
+# The modification time and size of the file, read without reading the file. Janet's times are
+# whole seconds, so a file modified within the last one could change again without them showing
+# it: its contents count too, until the next request finds it settled (and reloads it once).
+# ponytail: Janet's 32-bit `hash` of those contents; a collision keeps a stale module until the
+# file changes again.
 (defn- check/fingerprint [path]
-  (when-let [contents (try (string (slurp path)) ([_] nil))]
-    [(length contents) (hash contents)]))
+  (when-let [stat (os/stat path)]
+    (def modified (stat :modified))
+    [modified (stat :size)
+     (when (>= modified (dec (os/time)))
+       (hash (try (string (slurp path)) ([_] nil))))]))
 
 (defn- check/unload [path]
   (put check/fingerprints path nil)

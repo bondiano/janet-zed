@@ -435,3 +435,103 @@ fn declared_core_names_keep_their_bindings() {
         .problems;
     assert_eq!(show_problems(&problems), "");
 }
+
+#[test]
+fn fails_fast_while_a_hung_check_has_not_changed() {
+    let dir = std::env::temp_dir().join(format!("janet-tooling-hung-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("slow.janet"), "(os/sleep 2)\n").unwrap();
+    std::fs::write(dir.join("b.janet"), "(import ./slow)\n").unwrap();
+    let file = dir.join("a.janet");
+    let mut worker = Worker::new("janet");
+    worker.timeout = Duration::from_millis(300);
+    let mut timed = || {
+        let started = Instant::now();
+        let checked = worker.check(&Check {
+            path: &file,
+            text: "(import ./b)\n",
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+        });
+        (checked.unwrap_err().to_string(), started.elapsed())
+    };
+
+    let (first, took) = timed();
+    assert!(first.contains("did not finish"), "{first}");
+    assert!(took >= Duration::from_millis(300));
+    let (again, took) = timed();
+    assert_eq!(again, first);
+    assert!(took < Duration::from_millis(200), "unchanged: {took:?}");
+    // A module it imports through another one changed: the check runs again.
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(dir.join("slow.janet"), "(os/sleep 3)\n").unwrap();
+    let (_, took) = timed();
+    assert!(took >= Duration::from_millis(300), "changed: {took:?}");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[cfg(unix)]
+#[test]
+fn a_hung_check_takes_the_processes_it_started_along() {
+    let dir = std::env::temp_dir().join(format!("janet-tooling-group-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let pid = dir.join("pid");
+    std::fs::write(
+        dir.join("spawns.janet"),
+        format!(
+            "(def p (os/spawn [\"sleep\" \"30\"] :p))\n(spit {:?} (string (p :pid)))\n(os/sleep 5)\n",
+            pid.display().to_string()
+        ),
+    )
+    .unwrap();
+    let mut worker = Worker::new("janet");
+    worker.timeout = Duration::from_millis(500);
+    let hung = worker.check(&Check {
+        path: &dir.join("a.janet"),
+        text: "(import ./spawns)\n",
+        cwd: &dir,
+        packages: &[],
+        natives: &[],
+        declared: &[],
+    });
+    assert!(hung.is_err());
+    let pid = std::fs::read_to_string(&pid).unwrap();
+    // `kill -0` only asks whether the process is there.
+    let alive = || {
+        Command::new("kill")
+            .args(["-0", &pid])
+            .stderr(Stdio::null())
+            .status()
+            .unwrap()
+            .success()
+    };
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while alive() && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    assert!(!alive(), "`sleep` {pid} outlived the check");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn keeps_the_end_of_stderr() {
+    let text = format!("{}the error\n", "noise ".repeat(100_000));
+    let kept = drain(Some(std::io::Cursor::new(text.clone().into_bytes())), 1024)
+        .join()
+        .unwrap();
+    assert_eq!(kept.len(), 1024);
+    assert!(text.ends_with(&kept));
+    let all = drain(Some(std::io::Cursor::new(b"short".to_vec())), 1024);
+    assert_eq!(all.join().unwrap(), "short");
+}
+
+#[test]
+fn reads_janet_versions() {
+    assert_eq!(version("1.42.1-homebrew\n"), Some((1, 42, 1)));
+    assert_eq!(version("1.35.0"), Some((1, 35, 0)));
+    assert_eq!(version("dev"), None);
+    assert!(version("1.34.9").unwrap() < MIN_VERSION);
+    assert_eq!(too_old("janet"), None, "the installed janet checks");
+}

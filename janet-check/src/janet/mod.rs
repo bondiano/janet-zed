@@ -1,15 +1,16 @@
 //! Janet programs the server runs with the user's `janet`: one-shot scripts, and the long-lived
 //! checker.
 
-use std::collections::HashMap;
+use std::cell::OnceCell;
+use std::collections::{BTreeMap, HashMap};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
-use anyhow::{Context, Result, bail, ensure};
+use anyhow::{Context, Result, anyhow, bail, ensure};
 use crossbeam_channel::{Receiver, RecvTimeoutError};
 use serde::Deserialize;
 
@@ -30,6 +31,10 @@ const CHECK: &str = concat!(
     include_str!("check.janet")
 );
 const CHECK_TIMEOUT: Duration = Duration::from_secs(5);
+/// The oldest Janet `check.janet` runs on: it sets `*module-make-env*`, new in 1.35.0.
+const MIN_VERSION: (u32, u32, u32) = (1, 35, 0);
+/// How much of a `janet`'s stderr is kept for its error: the end, where the failure is.
+const STDERR_LIMIT: usize = 64 * 1024;
 /// Starts each reply of `check.janet`: checked code may write to stdout too.
 const MARKER: &str = "\u{1}janet-zed ";
 /// spork's formatter, the one `janet-format` runs.
@@ -124,6 +129,16 @@ pub struct Worker {
     janet: String,
     timeout: Duration,
     process: Option<Process>,
+    /// Why `janet` is too old to check with, asked once.
+    too_old: OnceCell<Option<String>>,
+    /// Checks that did not finish, by file: the same request over unchanged files fails at once
+    /// instead of waiting out the timeout again.
+    hung: HashMap<PathBuf, Hung>,
+}
+
+struct Hung {
+    request: String,
+    inputs: Vec<(PathBuf, Option<SystemTime>)>,
 }
 
 struct Process {
@@ -139,6 +154,8 @@ impl Worker {
             janet: janet.to_string(),
             timeout: CHECK_TIMEOUT,
             process: None,
+            too_old: OnceCell::new(),
+            hung: HashMap::new(),
         }
     }
 
@@ -146,11 +163,32 @@ impl Worker {
     /// Its macros expand, and the modules it imports load fully, top-level code included, as
     /// Janet loads them. `janet` works in `cwd`, the project root, and finds `packages` and
     /// `natives` besides its own module paths.
-    pub fn check(&mut self, request: &Check) -> Result<Report> {
-        let request = line(request)?;
-        let reply = self
-            .exchange(&request)
-            .inspect_err(|_| self.process = None)?;
+    pub fn check(&mut self, check: &Check) -> Result<Report> {
+        if let Some(too_old) = self.too_old.get_or_init(|| too_old(&self.janet)) {
+            bail!("{too_old}");
+        }
+        let request = line(check)?;
+        if let Some(hung) = self.hung.remove(check.path)
+            && hung.request == request
+            && hung.inputs == inputs(check)
+        {
+            self.hung.insert(check.path.to_path_buf(), hung);
+            return Err(self.timed_out());
+        }
+        let reply = match self.exchange(&request) {
+            Ok(Some(reply)) => reply,
+            Ok(None) => {
+                self.process = None;
+                let inputs = inputs(check);
+                self.hung
+                    .insert(check.path.to_path_buf(), Hung { request, inputs });
+                return Err(self.timed_out());
+            }
+            Err(err) => {
+                self.process = None;
+                return Err(err);
+            }
+        };
         match reply.strip_prefix("error ") {
             Some(message) => bail!("check failed: {}", serde_json::from_str::<String>(message)?),
             None => serde_json::from_str(&reply)
@@ -158,7 +196,12 @@ impl Worker {
         }
     }
 
-    fn exchange(&mut self, request: &str) -> Result<String> {
+    fn timed_out(&self) -> anyhow::Error {
+        anyhow!("`{}` did not finish in {:?}", self.janet, self.timeout)
+    }
+
+    /// The reply to `request`, or none when it does not come in time.
+    fn exchange(&mut self, request: &str) -> Result<Option<String>> {
         let process = match &mut self.process {
             Some(process) => process,
             None => self.process.insert(Process::spawn(&self.janet)?),
@@ -169,12 +212,10 @@ impl Worker {
             match process.lines.recv_deadline(deadline) {
                 Ok(line) => {
                     if let Some((_, reply)) = line.split_once(MARKER) {
-                        return Ok(reply.to_string());
+                        return Ok(Some(reply.to_string()));
                     }
                 }
-                Err(RecvTimeoutError::Timeout) => {
-                    bail!("`{}` did not finish in {:?}", self.janet, self.timeout)
-                }
+                Err(RecvTimeoutError::Timeout) => return Ok(None),
                 Err(RecvTimeoutError::Disconnected) => {
                     process.child.wait().ok();
                     let stderr = process.stderr.take().and_then(|stderr| stderr.join().ok());
@@ -207,7 +248,7 @@ impl Process {
             }
         });
         Ok(Self {
-            stderr: Some(drain(child.stderr.take())),
+            stderr: Some(drain(child.stderr.take(), STDERR_LIMIT)),
             child,
             stdin,
             lines,
@@ -217,9 +258,64 @@ impl Process {
 
 impl Drop for Process {
     fn drop(&mut self) {
-        self.child.kill().ok();
-        self.child.wait().ok();
+        kill(&mut self.child);
     }
+}
+
+/// Why `janet` is too old to check with, from what `janet -v` prints. One that prints no version
+/// it can be judged by is given the benefit of the doubt.
+fn too_old(janet: &str) -> Option<String> {
+    let output = Command::new(janet).arg("-v").output().ok()?;
+    let printed = String::from_utf8_lossy(&output.stdout);
+    let (major, minor, patch) = MIN_VERSION;
+    (version(&printed)? < MIN_VERSION).then(|| {
+        format!(
+            "`{janet}` is Janet {}, but checking needs {major}.{minor}.{patch} or newer",
+            printed.trim()
+        )
+    })
+}
+
+/// `1.42.1` of `1.42.1-homebrew`.
+fn version(printed: &str) -> Option<(u32, u32, u32)> {
+    let mut parts = printed.trim().split(['.', '-']).map(str::parse);
+    Some((
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+        parts.next()?.ok()?,
+    ))
+}
+
+/// The files a check of `check` reads, each with when it was last modified: the checked file and
+/// the modules it imports, transitively, as far as they resolve without Janet.
+// ponytail: modules found on the syspath or by a custom loader are not followed; a hung check
+// that depends on one is retried when a file it names changes.
+fn inputs(check: &Check) -> Vec<(PathBuf, Option<SystemTime>)> {
+    let search = Search {
+        roots: vec![check.cwd.to_path_buf()],
+        syspath: None,
+        packages: check.packages.to_vec(),
+    };
+    let mut seen = BTreeMap::new();
+    let mut pending = vec![(check.path.to_path_buf(), Some(check.text.to_string()))];
+    while let Some((file, text)) = pending.pop() {
+        if seen.contains_key(&file) {
+            continue;
+        }
+        let modified = std::fs::metadata(&file).and_then(|meta| meta.modified());
+        seen.insert(file.clone(), modified.ok());
+        let Some(text) = text.or_else(|| std::fs::read_to_string(&file).ok()) else {
+            continue;
+        };
+        let imports = modules::import_specs(&Document::new(text));
+        pending.extend(
+            imports
+                .iter()
+                .filter_map(|import| search.resolve(&file, &import.spec, Path::is_file))
+                .map(|module| (module, None)),
+        );
+    }
+    seen.into_iter().collect()
 }
 
 /// What checking one buffer takes.
@@ -289,7 +385,22 @@ fn command(janet: &str, script: &str) -> Command {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // A group of its own, for `kill` to reach the processes it starts too.
+    #[cfg(unix)]
+    std::os::unix::process::CommandExt::process_group(&mut command, 0);
     command
+}
+
+/// Kills `child` and, on Unix, the processes it started: they share its process group.
+// ponytail: on Windows only `child` dies; a job object would take its children along.
+fn kill(child: &mut Child) {
+    #[cfg(unix)]
+    {
+        use rustix::process::{Pid, Signal, kill_process_group};
+        kill_process_group(Pid::from_child(child), Signal::KILL).ok();
+    }
+    child.kill().ok();
+    child.wait().ok();
 }
 
 /// Runs `script` with `input` on stdin and returns its stdout. `janet` is killed after `timeout`.
@@ -312,8 +423,8 @@ pub fn run(
     let mut stdin = child.stdin.take().context("no stdin for janet")?;
     let input = input.to_string();
     let writer = thread::spawn(move || stdin.write_all(input.as_bytes()));
-    let stdout = drain(child.stdout.take());
-    let stderr = drain(child.stderr.take());
+    let stdout = drain(child.stdout.take(), usize::MAX);
+    let stderr = drain(child.stderr.take(), STDERR_LIMIT);
 
     let deadline = Instant::now() + timeout;
     let status = loop {
@@ -321,8 +432,7 @@ pub fn run(
             break status;
         }
         if Instant::now() >= deadline {
-            child.kill().ok();
-            child.wait().ok();
+            kill(&mut child);
             bail!("`{janet}` did not finish in {timeout:?}");
         }
         thread::sleep(Duration::from_millis(2));
@@ -335,13 +445,22 @@ pub fn run(
     Ok(stdout)
 }
 
-fn drain(pipe: Option<impl Read + Send + 'static>) -> thread::JoinHandle<String> {
+/// What `pipe` carries until it closes: the last `limit` bytes of it.
+fn drain(pipe: Option<impl Read + Send + 'static>, limit: usize) -> thread::JoinHandle<String> {
     thread::spawn(move || {
-        let mut bytes = Vec::new();
+        let mut tail = Vec::new();
+        let mut chunk = [0; 8192];
         if let Some(mut pipe) = pipe {
-            pipe.read_to_end(&mut bytes).ok();
+            while let Ok(read @ 1..) = pipe.read(&mut chunk) {
+                tail.extend_from_slice(&chunk[..read]);
+                // Trimmed once it holds twice the limit, so each byte moves at most once.
+                if tail.len() / 2 > limit {
+                    tail.drain(..tail.len() - limit);
+                }
+            }
         }
-        String::from_utf8_lossy(&bytes).into_owned()
+        tail.drain(..tail.len().saturating_sub(limit));
+        String::from_utf8_lossy(&tail).into_owned()
     })
 }
 

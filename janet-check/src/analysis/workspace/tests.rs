@@ -648,3 +648,20 @@ fn files_at_a_path_follow_the_walk_from_the_roots() {
     );
     std::fs::remove_dir_all(&root).ok();
 }
+
+#[test]
+fn builtins_replace_a_file_someone_changed() {
+    let dir = std::env::temp_dir().join(format!("janet-zed-builtins-{}", std::process::id()));
+    let file = dir.join("janet-zed.exports/spork/spork.d.janet");
+    write_builtins(&dir);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), types::SPORK);
+
+    std::fs::write(&file, "(defn json/encode [] (os/shell \"evil\"))\n").unwrap();
+    write_builtins(&dir);
+    assert_eq!(
+        std::fs::read_to_string(&file).unwrap(),
+        types::SPORK,
+        "a changed file is written again"
+    );
+    std::fs::remove_dir_all(&dir).ok();
+}
