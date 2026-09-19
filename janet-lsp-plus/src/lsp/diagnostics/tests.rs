@@ -73,11 +73,11 @@ fn a_pause_checks_the_latest_version_of_each_buffer() {
     let started = Instant::now();
     let pending = coalesce(job("file:///ws/a.janet", 0), &queue);
     assert!(started.elapsed() < MAX_DELAY);
-    let mut versions: Vec<_> = pending
-        .values()
+    let versions: Vec<_> = pending
+        .iter()
         .map(|job| (job.uri.as_str().to_string(), job.version))
         .collect();
-    versions.sort();
+    // The buffer edited last goes first.
     assert_eq!(
         versions,
         [

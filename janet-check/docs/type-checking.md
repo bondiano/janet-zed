@@ -255,13 +255,15 @@ call of its head.
 | `(match v p b …)` | The union of the bodies | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
 | `(and …)`, `(or …)` | The union of the arguments | Each argument narrowed by the ones before it |
 | `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any` |
-| `(seq …)`, `(catseq …)`, `(generate …)` | An array of the body's type | |
+| `(seq …)`, `(catseq …)` | An array of the body's type | |
+| `(generate …)` | `:fiber` | |
 | `(tabseq …)` | An open table | |
 | `(let [p v …] …)`, `(with …)` | The body | Patterns bound |
 | `(if-let …)`, `(when-let …)` | As `if` / `when` | Every bound name is non-nil in the branch it guards |
 | `(try body ([e f] …))` | `(or body handler)` | `e` is the union of what the body raised, `:any` when nothing; `f` is a fiber |
 | `(error v)` | `:never` | `v` raised into the frame |
-| `(errorf …)`, `(assertf …)` | `:never` | `:string` raised |
+| `(errorf …)` | `:never` | `:string` raised |
+| `(assertf x …)` | `x` without `nil` | `:string` raised |
 | `(-> v s…)`, `(->> v s…)` | Each step applied with `v` as the first / last argument | |
 | `(as-> v n s…)` | Each step with `n` bound to the value so far | |
 | `(with-syms [a …] …)` | The body | Each name is `:symbol` |
@@ -377,7 +379,9 @@ member a different one. `(or {:kind :circle …} {:kind :rect …})` is discrimi
   passes narrows it to the predicate's type.
 - `fit` against an open union is never `No`, and an open union given is `Maybe`.
 
-A `case` or `match` without a default is exhaustive over its value when the value's type is static
+Falling through to `nil` is idiomatic Janet, so exhaustiveness is checked only when asked for:
+`types.exhaustive` in the editor settings, `--exhaustive` for `janet-check`, or strict mode, which
+implies it (`Mode::exhaustive`). A `case` or `match` without a default is exhaustive over its value when the value's type is static
 and closed and lists its tags: `narrow::tags` for a union or `enum` of keywords (what `(shape :kind)`
 reads out of a tagged union), `narrow::discriminant` for a `match` of struct patterns over the
 union itself. A `case` over `(x :k)` names the finding after `x`, over `((x :a) :k)` after
@@ -425,7 +429,7 @@ else `Known::written`. Its checks, each stopping at the first doubt:
 | `f returns U, declared T` | `f` declares `:ret T`, its body is not empty, and `fit(U, T)` is `No` for the type `U` of its last form; marked on that form | The last form is `Dynamic`, a variable or a union |
 | `Name takes N type arguments, given M` | A `(Name …)` written in a definition's metadata or in the value of a `:typedef` names a typedef, in the file or around it, of `N` parameters, and `M` is neither `N` nor zero; marked on the whole form. A declaration, a `*.d.janet` file or a `(comment :declare …)` block, is told this one alone. It is the one kind error the language has: only a typedef takes type arguments, and each is a type | A bare `Name`: that is `Name` of `:any` everywhere. A capitalised head that names no typedef. A call in the code of a value or a body, which is not a type |
 | `:k is not a key: this form has …` | A literal keyword is read from a named type whose expansion is a closed struct without it | The struct is open, a table, a dict, unnamed, or a union |
-| `case over T misses :tag …` | A `case` or `match` has no default, its value is static and closed with tags, and some tag no clause names; marked on the whole form, named after the local a `case` reads the tag out of | The value is `Dynamic`, open, nullable, or not all tags. A clause is anything but a tag. The union has fewer than two tags |
+| `case over T misses :tag …` | Exhaustiveness is asked for or strict mode is on; a `case` or `match` has no default, its value is static and closed with tags, and some tag no clause names; marked on the whole form, named after the local a `case` reads the tag out of | The value is `Dynamic`, open, nullable, or not all tags. A clause is anything but a tag. The union has fewer than two tags |
 
 The core's declarations come out of Janet's C sources, which take a keyword where they say a
 number (`(file/read f :line)`) and an integer box where they say a number. Against a core

@@ -587,3 +587,47 @@ fn names_a_macro_binds_drop_what_was_inferred_without_them() {
         "the same names dropped types again"
     );
 }
+
+/// A file or directory created under a root is found as the walk from the root finds it.
+#[test]
+fn files_at_a_path_follow_the_walk_from_the_roots() {
+    let root = std::env::temp_dir().join(format!("janet-zed-files-at-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    for dir in ["gen", ".hidden", "jpm_tree", "sub/deep"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    std::fs::write(root.join(".ignore"), "gen/\n").unwrap();
+    for name in [
+        "a.janet",
+        "gen/b.janet",
+        ".hidden/c.janet",
+        "jpm_tree/d.janet",
+        "sub/deep/e.janet",
+        "sub/notes.txt",
+    ] {
+        std::fs::write(root.join(name), "").unwrap();
+    }
+    let root = canonical(&root);
+    let roots = [root.clone()];
+    let at = |relative: &str| -> Vec<String> {
+        janet_files_at(&roots, &root.join(relative))
+            .iter()
+            .map(|path| path.strip_prefix(&root).unwrap().display().to_string())
+            .collect()
+    };
+    assert_eq!(at("a.janet"), ["a.janet"]);
+    assert_eq!(at("sub"), ["sub/deep/e.janet"]);
+    assert!(at("gen/b.janet").is_empty());
+    assert!(at(".hidden/c.janet").is_empty());
+    assert!(at("jpm_tree/d.janet").is_empty());
+    assert!(at("sub/notes.txt").is_empty());
+    let walked: BTreeSet<PathBuf> = janet_files(&roots);
+    assert_eq!(
+        walked,
+        ["a.janet", "sub/deep/e.janet"]
+            .iter()
+            .map(|name| root.join(name))
+            .collect()
+    );
+    std::fs::remove_dir_all(&root).ok();
+}

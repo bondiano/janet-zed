@@ -1,0 +1,26 @@
+---
+source: janet-lsp-plus/src/editing/fixes/tests.rs
+assertion_line: 125
+expression: "(def s ``\n# janet-zed: declare a\n``)\n(print |b)\n"
+---
+----- BEFORE FIX
+(def s ``
+# janet-zed: declare a
+``)
+(print b)
+       ↑
+
+
+----- AFTER FIX: Ignore `b` on this line
+(def s ``
+# janet-zed: declare a
+``)
+# janet-zed: ignore unknown-symbol b
+(print b)
+
+----- AFTER FIX: Declare `b` in this file
+# janet-zed: declare b
+(def s ``
+# janet-zed: declare a
+``)
+(print b)

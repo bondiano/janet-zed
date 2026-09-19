@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use super::config::Config;
 use super::modules::{ImportSpec, Package, Search, native_modules, packages};
 use super::references;
-use super::types::infer::{self, Facts};
+use super::types::infer::{self, Facts, Mode};
 use super::types::{self, Annotation, Type};
 use super::{DefInfo, SourceFile, canonical, is_declaration, uri_of};
 use crate::janet::Binding;
@@ -92,8 +92,8 @@ pub struct Workspace {
     /// How often inference actually ran, to tell a cache hit from a miss in tests.
     inferences: AtomicUsize,
     stale: bool,
-    /// Strict mode: unions and inferred types are held to written signatures too.
-    strict: bool,
+    /// What is reported beyond what a written signature rules out.
+    mode: Mode,
 }
 
 impl Workspace {
@@ -116,14 +116,14 @@ impl Workspace {
         &self.config
     }
 
-    pub fn strict(&self) -> bool {
-        self.strict
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     /// Findings of every file are read again in the other mode; the types themselves are the same.
-    pub fn set_strict(&mut self, strict: bool) {
-        if strict != self.strict {
-            self.strict = strict;
+    pub fn set_mode(&mut self, mode: Mode) {
+        if mode != self.mode {
+            self.mode = mode;
             lock(&self.types).clear();
         }
     }
@@ -475,7 +475,7 @@ impl Workspace {
             all: &all,
             written: &written,
         };
-        let mut facts = infer::facts(&file.document, &file.scopes, known, self.strict);
+        let mut facts = infer::facts(&file.document, &file.scopes, known, self.mode);
         // A declaration file declares and never runs: the `nil` of `(def x {:type T} nil)` there
         // stands in for a value the host has, so nothing in it is held to its type. What it
         // writes as types is still read.
@@ -867,12 +867,37 @@ pub fn janet_files(roots: &[PathBuf]) -> BTreeSet<PathBuf> {
                 .build()
         })
         .flatten()
-        .filter(|entry| {
-            entry.file_type().is_some_and(|kind| kind.is_file())
-                && entry.path().extension().is_some_and(|ext| ext == "janet")
-        })
+        .filter(is_janet_file)
         .map(|entry| canonical(entry.path()))
         .collect()
+}
+
+/// What [`janet_files`] finds at `path`, a file or a directory, without walking all the roots:
+/// for a file created under them. The walk goes down the directories leading to `path` alone, so
+/// what would skip it from a root, .gitignore or a hidden directory on the way, still does.
+pub fn janet_files_at(roots: &[PathBuf], path: &Path) -> BTreeSet<PathBuf> {
+    roots
+        .iter()
+        .map(|root| canonical(root))
+        .filter(|root| path.starts_with(root))
+        .flat_map(|root| {
+            let target = path.to_path_buf();
+            ignore::WalkBuilder::new(root)
+                .filter_entry(move |entry| {
+                    entry.file_name() != "jpm_tree"
+                        && (target.starts_with(entry.path()) || entry.path().starts_with(&target))
+                })
+                .build()
+        })
+        .flatten()
+        .filter(is_janet_file)
+        .map(|entry| canonical(entry.path()))
+        .collect()
+}
+
+fn is_janet_file(entry: &ignore::DirEntry) -> bool {
+    entry.file_type().is_some_and(|kind| kind.is_file())
+        && entry.path().extension().is_some_and(|ext| ext == "janet")
 }
 
 pub fn is_project(path: &Path) -> bool {

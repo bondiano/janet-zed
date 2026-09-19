@@ -11,6 +11,7 @@ use std::process::ExitCode;
 use anyhow::Context;
 use clap::Parser;
 use janet_check::analysis::ignores::ignores;
+use janet_check::analysis::types::infer::Mode;
 use janet_check::analysis::workspace::{Workspace, janet_files};
 use janet_check::analysis::{SourceFile, canonical, is_declaration, uri_of};
 use janet_check::janet::{Check, Worker};
@@ -45,12 +46,21 @@ struct Args {
     /// cannot fit at all.
     #[arg(long)]
     strict: bool,
+
+    /// Also report a `case` or `match` without a default that misses a tag of a closed union.
+    /// `--strict` reports it too.
+    #[arg(long)]
+    exhaustive: bool,
 }
 
 fn main() -> ExitCode {
     let args = Args::parse();
     let janet = (!args.types_only).then_some(args.janet.as_str());
-    match check(&args.paths, args.strict, janet) {
+    let mode = Mode {
+        strict: args.strict,
+        exhaustive: args.exhaustive,
+    };
+    match check(&args.paths, mode, janet) {
         Ok(true) => ExitCode::SUCCESS,
         Ok(false) => ExitCode::FAILURE,
         Err(err) => {
@@ -63,7 +73,7 @@ fn main() -> ExitCode {
 /// Whether every file the paths name is clean. The whole project around each path is read, so
 /// imports and ambient declarations resolve the way they do for the editor. With `janet`, each
 /// file is also compiled by it.
-fn check(paths: &[PathBuf], strict: bool, janet: Option<&str>) -> anyhow::Result<bool> {
+fn check(paths: &[PathBuf], mode: Mode, janet: Option<&str>) -> anyhow::Result<bool> {
     let files = janet_files(paths);
     anyhow::ensure!(!files.is_empty(), "no .janet files under the given paths");
     if let Some(janet) = janet {
@@ -79,7 +89,7 @@ fn check(paths: &[PathBuf], strict: bool, janet: Option<&str>) -> anyhow::Result
         .into_iter()
         .collect();
     let mut workspace = Workspace::new(roots.clone(), None);
-    workspace.set_strict(strict);
+    workspace.set_mode(mode);
     for path in janet_files(&roots).union(&files) {
         if let Some(file) =
             uri_of(path).and_then(|uri| SourceFile::read(path.clone(), uri, workspace.config()))

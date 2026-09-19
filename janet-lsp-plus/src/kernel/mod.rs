@@ -26,12 +26,44 @@ use netrepl::{Evaluation, Netrepl};
 
 use anyhow::Result;
 
+/// Where the kernelspec Zed discovers lives.
+fn kernel_dir() -> Result<PathBuf> {
+    Ok(user_data_dir()?.join("kernels/janet-zed"))
+}
+
 /// Writes the kernelspec Zed discovers; its `language` matches the Janet language name.
 pub fn register(janet: &str) -> Result<PathBuf> {
-    let dir = user_data_dir()?.join("kernels/janet-zed");
-    fs::create_dir_all(&dir)?;
+    let dir = kernel_dir()?;
+    install(&dir, &std::env::current_exe()?, janet)?;
+    Ok(dir)
+}
+
+/// Removes the kernelspec, where there is one.
+pub fn unregister() -> Result<()> {
+    match fs::remove_dir_all(kernel_dir()?) {
+        Err(err) if err.kind() != std::io::ErrorKind::NotFound => Err(err.into()),
+        _ => Ok(()),
+    }
+}
+
+/// The kernelspec in `dir`, starting a copy of `exe` kept beside it. The binary the server runs
+/// from lives in a directory named after its version, which the extension deletes once it
+/// downloads the next one: a spec pointing there would outlive its kernel.
+fn install(dir: &Path, exe: &Path, janet: &str) -> Result<()> {
+    fs::create_dir_all(dir)?;
+    let kernel = dir.join(format!("janet-lsp-plus{}", std::env::consts::EXE_SUFFIX));
+    if !is_copy_of(&kernel, exe)? {
+        // Renamed into place: a kernel running from the old copy keeps its file. The name is the
+        // process's own, so two servers starting at once do not write into one file.
+        let fresh = kernel.with_extension(format!("new-{}", std::process::id()));
+        fs::copy(exe, &fresh)?;
+        if let Err(err) = fs::rename(&fresh, &kernel) {
+            fs::remove_file(&fresh).ok();
+            return Err(err.into());
+        }
+    }
     let spec = json!({
-        "argv": [std::env::current_exe()?, "kernel", "{connection_file}", janet],
+        "argv": [kernel, "kernel", "{connection_file}", janet],
         "display_name": "Janet",
         "language": "janet",
     });
@@ -39,7 +71,17 @@ pub fn register(janet: &str) -> Result<PathBuf> {
         dir.join("kernel.json"),
         serde_json::to_string_pretty(&spec)?,
     )?;
-    Ok(dir)
+    Ok(())
+}
+
+/// Whether `kernel` is a copy of `exe` already: of its size, and no older. A binary replaced
+/// later is newer than the copy made of the one before.
+fn is_copy_of(kernel: &Path, exe: &Path) -> Result<bool> {
+    let exe = fs::metadata(exe)?;
+    Ok(fs::metadata(kernel).is_ok_and(|kernel| {
+        kernel.len() == exe.len()
+            && matches!((kernel.modified(), exe.modified()), (Ok(copied), Ok(built)) if copied >= built)
+    }))
 }
 
 pub fn run(connection_file: &Path, janet: &str) -> Result<()> {
@@ -230,5 +272,42 @@ fn kernel_info() -> KernelInfoReply {
         help_links: vec![],
         debugger: false,
         error: None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #![allow(clippy::unwrap_used)]
+
+    use super::*;
+
+    #[test]
+    fn the_kernelspec_starts_a_copy_that_outlives_the_server_binary() {
+        let root =
+            std::env::temp_dir().join(format!("janet-zed-kernelspec-{}", std::process::id()));
+        fs::remove_dir_all(&root).ok();
+        let versioned = root.join("janet-lsp-plus-v0.3.0");
+        fs::create_dir_all(&versioned).unwrap();
+        let exe = versioned.join("janet-lsp-plus");
+        fs::write(&exe, "v0.3.0").unwrap();
+        let dir = root.join("kernels/janet-zed");
+
+        install(&dir, &exe, "janet").unwrap();
+        fs::remove_dir_all(&versioned).unwrap();
+
+        let spec: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("kernel.json")).unwrap()).unwrap();
+        let kernel = PathBuf::from(spec["argv"][0].as_str().unwrap());
+        assert!(kernel.starts_with(&dir));
+        assert_eq!(fs::read_to_string(&kernel).unwrap(), "v0.3.0");
+
+        // The next version replaces the copy.
+        fs::create_dir_all(&versioned).unwrap();
+        fs::write(&exe, "v0.3.10").unwrap();
+        install(&dir, &exe, "janet").unwrap();
+        assert_eq!(fs::read_to_string(&kernel).unwrap(), "v0.3.10");
+        // Nothing is left behind by the copy.
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        fs::remove_dir_all(&root).ok();
     }
 }

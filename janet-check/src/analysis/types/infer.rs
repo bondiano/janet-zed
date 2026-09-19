@@ -6,7 +6,7 @@
 // `:symbol`; typing every argument as the form it is would need the core's macros declared so too.
 
 use std::cell::Cell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ops::Range;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -149,9 +149,25 @@ fn literal(doc: &Document, node: Node) -> Option<Type> {
     })
 }
 
-/// The types of `doc`, whose locals `scopes` resolved and whose free names `known` answers for.
-/// `strict` holds unions and inferred types to written signatures too, not only what is static.
-pub fn facts(doc: &Document, scopes: &Scopes, known: Known, strict: bool) -> Facts {
+/// What findings are reported beyond the calls a written signature rules out.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct Mode {
+    /// Holds unions and inferred types to written signatures too, not only what is static.
+    pub strict: bool,
+    /// Reports a `case` or `match` without a default that misses a tag of a closed union. Falling
+    /// through to `nil` is idiomatic Janet, so it is asked for, or comes with `strict`.
+    pub exhaustive: bool,
+}
+
+impl Mode {
+    fn exhaustive(self) -> bool {
+        self.strict || self.exhaustive
+    }
+}
+
+/// The types of `doc`, whose locals `scopes` resolved and whose free names `known` answers for,
+/// with the findings `mode` asks for.
+pub fn facts(doc: &Document, scopes: &Scopes, known: Known, mode: Mode) -> Facts {
     let forms = Forms::default();
     let (defines, declared) = declarations(doc, &forms);
     let named: HashMap<SmolStr, Typedef> = declared
@@ -173,7 +189,7 @@ pub fn facts(doc: &Document, scopes: &Scopes, known: Known, strict: bool) -> Fac
         );
         // Only the last pass is kept, so only it is worth remembering the forms of.
         infer.record = pass + 1 == PASSES;
-        infer.strict = strict;
+        infer.mode = mode;
         infer.run();
         (module, locals, exprs, subst, findings) = infer.finish();
     }
@@ -226,8 +242,8 @@ struct Infer<'d> {
     /// Calls a written signature rules out. Filled on the last pass only, like `exprs`.
     findings: Vec<Finding>,
     record: bool,
-    /// Strict mode: findings hold unions and guesses to what is written as well.
-    strict: bool,
+    /// What is reported beyond what a written signature rules out.
+    mode: Mode,
     /// What a `case` or `match` over a named type has to name, by the name: the key a tagged
     /// union is told apart at, if it is one, and its tags. Found once a pass, however many
     /// dispatches read it.
@@ -266,7 +282,7 @@ impl<'d> Infer<'d> {
             exprs: HashMap::new(),
             findings: Vec::new(),
             record: false,
-            strict: false,
+            mode: Mode::default(),
             tagsets: HashMap::new(),
         };
         // Every name gets something to stand for before the walk, so that a use before the
@@ -356,6 +372,21 @@ impl<'d> Infer<'d> {
         }
     }
 
+    /// [`Self::unwrapped`], a named type expanded to what it stands for: `Shape` is a union.
+    fn unnamed(&self, ty: &Type) -> Type {
+        let mut resolved = self.unwrapped(ty);
+        for _ in 0..DEPTH {
+            let Type::Named { name, args } = &resolved else {
+                break;
+            };
+            match self.expand(name, args) {
+                Some(expanded) => resolved = self.unwrapped(&expanded),
+                None => break,
+            }
+        }
+        resolved
+    }
+
     /// A form with the keys its row was bound to, for reading a key out of it.
     fn spliced(&self, ty: &Type) -> Type {
         match ty {
@@ -413,7 +444,7 @@ impl<'d> Infer<'d> {
     /// asks. Inference and narrowing ask [`Infer::fits`], so the types are the same in both modes.
     fn rules_out(&self, actual: &Type, expected: &Type) -> bool {
         let expand = |name: &str, args: &[Type]| self.expand(name, args);
-        fit(actual, expected, &self.subst, &expand, self.strict) == Fit::No
+        fit(actual, expected, &self.subst, &expand, self.mode.strict) == Fit::No
     }
 
     /// Whether `var` is inside `ty`, following what the variables in it stand for.
@@ -1386,9 +1417,14 @@ impl<'d> Infer<'d> {
                 self.loop_(args);
                 nil()
             }
-            "seq" | "catseq" | "generate" => {
+            "seq" | "catseq" => {
                 let element = self.loop_(args);
                 Type::Array([element].into())
+            }
+            // A fiber that yields each value of the body.
+            "generate" => {
+                self.loop_(args);
+                atom("fiber")
             }
             "tabseq" => self.tabseq(args),
             "let" | "with-vars" => self.let_(args),
@@ -1404,12 +1440,18 @@ impl<'d> Infer<'d> {
             "with" => self.with(args),
             "try" => self.try_(args),
             "error" => self.error(args),
-            "errorf" | "assertf" => {
+            "errorf" => {
                 for arg in args {
                     self.expr(*arg);
                 }
                 self.raise(atom("string"));
                 never()
+            }
+            // `(assertf x fmt …)` is `x` where it holds, and raises the formatted string where not.
+            "assertf" => {
+                let checked: Vec<Type> = args.iter().map(|arg| self.expr(*arg)).collect();
+                self.raise(atom("string"));
+                checked.first().map_or_else(any, |ty| self.without_nil(ty))
             }
             "get" | "in" => self.get(args),
             "get-in" | "in-in" => self.get_in(args),
@@ -1863,8 +1905,9 @@ impl<'d> Infer<'d> {
     /// A `case` or `match` with no default, over a static closed type that lists every tag its
     /// value can hold, whose clauses name none of some of them: `case over Shape misses :rect`.
     /// A clause that is anything but a tag may match what the tags do not, and ends the check.
+    /// Only when [`Mode`] asks for it.
     fn exhaustive(&mut self, form: Node<'d>, ty: &Type, over: Option<&Type>, clauses: &[Node<'d>]) {
-        if !self.record {
+        if !self.record || !self.mode.exhaustive() {
             return;
         }
         let ty = self.zonk(ty, DEPTH);
@@ -2404,7 +2447,7 @@ impl<'d> Infer<'d> {
     fn pattern(&mut self, node: Node<'d>, ty: Type) {
         // What is taken apart of a guess is a guess too, and so is what a table or an array holds:
         // whatever was put in it last.
-        let resolved = self.unwrapped(&ty);
+        let resolved = self.unnamed(&ty);
         let unwritten = self.is_dynamic(&ty)
             || matches!(
                 resolved,
@@ -3080,41 +3123,59 @@ pub(super) fn kind(ty: &Type) -> Option<&'static str> {
     }
 }
 
+/// How many members a union holds before it is `:any`: a `cond` of a thousand different forms
+/// says nothing a check could use, and every union it meets would be held to each of them.
+/// Keyword literals are exact however many there are, and past the width are one `(enum …)`.
+// ponytail: past the cap a union of forms is `:any`, not the kinds of its members; keep the kinds
+// if a wide union ever has to be checked.
+const WIDTH: usize = 64;
+
 /// A union in normal form: flat, without repeats, `:never` dropped, `:any` swallowing the rest,
 /// and a lone `nil` written as the `?` suffix. A union with a member nobody wrote is `Dynamic` as
-/// a whole, and one with an open member is open.
+/// a whole, and one with an open member is open. Wider than [`WIDTH`], its keyword literals are
+/// one `(enum …)`, and what is still wider is `:any`.
 pub(super) fn unions(types: Vec<Type>) -> Type {
+    /// What is flattened so far. Literals are looked up by name, and the other members are at
+    /// most [`WIDTH`], so a wide union is not built in the square of its members.
     #[derive(Default)]
-    struct Marks {
+    struct Flat {
+        members: Vec<Type>,
+        literals: HashSet<SmolStr>,
+        others: usize,
         unwritten: bool,
         open: bool,
     }
-    fn flatten(ty: Type, flat: &mut Vec<Type>, marks: &mut Marks) {
+    fn flatten(ty: Type, flat: &mut Flat) {
         match ty {
-            Type::Or(items) => items
-                .iter()
-                .for_each(|item| flatten(item.clone(), flat, marks)),
+            Type::Or(items) => items.iter().for_each(|item| flatten(item.clone(), flat)),
             Type::Open(items) => {
-                marks.open = true;
-                for item in items.iter() {
-                    flatten(item.clone(), flat, marks);
-                }
+                flat.open = true;
+                items.iter().for_each(|item| flatten(item.clone(), flat));
             }
             Type::Nullable(inner) => {
-                flatten(Arc::unwrap_or_clone(inner), flat, marks);
-                flatten(nil(), flat, marks);
+                flatten(Arc::unwrap_or_clone(inner), flat);
+                flatten(nil(), flat);
             }
             Type::Dynamic(inner) => {
-                marks.unwritten = true;
-                flatten(Arc::unwrap_or_clone(inner), flat, marks);
+                flat.unwritten = true;
+                flatten(Arc::unwrap_or_clone(inner), flat);
             }
-            ty if is_never(&ty) || flat.contains(&ty) => {}
-            ty => flat.push(ty),
+            ty if is_never(&ty) => {}
+            Type::Keyword(name) if !is_atom(&name) => {
+                if flat.literals.insert(name.clone()) {
+                    flat.members.push(Type::Keyword(name));
+                }
+            }
+            ty if flat.members.contains(&ty) => {}
+            ty => {
+                flat.others += 1;
+                flat.members.push(ty);
+            }
         }
     }
     // A literal an `(enum …)` alongside it already lists is not a member of its own.
     fn fold_listed(flat: &mut Vec<Type>) {
-        let listed: Vec<SmolStr> = flat
+        let listed: HashSet<SmolStr> = flat
             .iter()
             .filter_map(|ty| match ty {
                 Type::Enum(values) => Some(values.iter().cloned()),
@@ -3128,22 +3189,50 @@ pub(super) fn unions(types: Vec<Type>) -> Type {
             );
         }
     }
-    let mut flat = Vec::new();
-    let mut marks = Marks::default();
+    // Too wide: the literals are one `(enum …)`, where the first of them was.
+    fn fold_literals(flat: Vec<Type>) -> Vec<Type> {
+        let is_literal = |ty: &Type| matches!(ty, Type::Keyword(name) if !is_atom(name));
+        let literals: Arc<[SmolStr]> = flat
+            .iter()
+            .filter_map(|ty| match ty {
+                Type::Keyword(name) if is_literal(ty) => Some(name.clone()),
+                _ => None,
+            })
+            .collect();
+        let first = flat.iter().position(is_literal);
+        flat.into_iter()
+            .enumerate()
+            .filter_map(|(at, ty)| match first {
+                Some(first) if at == first => Some(Type::Enum(literals.clone())),
+                _ if is_literal(&ty) => None,
+                _ => Some(ty),
+            })
+            .collect()
+    }
+    let mut flat = Flat::default();
     for ty in types {
-        flatten(ty, &mut flat, &mut marks);
+        flatten(ty, &mut flat);
+        // Literals fold away, the other members do not: this many of them stays this wide. The
+        // mark of what nobody wrote does not matter here, since `:any` is dynamic already.
+        if flat.others > WIDTH {
+            return any();
+        }
     }
+    let Flat {
+        members: mut flat,
+        unwritten,
+        open,
+        ..
+    } = flat;
     fold_listed(&mut flat);
-    let union = if marks.open {
-        open_of(flat)
-    } else {
-        union_of(flat)
-    };
-    if marks.unwritten {
-        dynamic(union)
-    } else {
-        union
+    if flat.len() > WIDTH {
+        flat = fold_literals(flat);
     }
+    if flat.len() > WIDTH {
+        return any();
+    }
+    let union = if open { open_of(flat) } else { union_of(flat) };
+    if unwritten { dynamic(union) } else { union }
 }
 
 /// An open union keeps its members as they are, `nil` among them: a `?` would say that `nil` is
@@ -3171,13 +3260,19 @@ fn union_of(flat: Vec<Type>) -> Type {
     }
 }
 
+/// Each type once, in the order first given; more than [`WIDTH`] of them are `:any`, as a union
+/// that wide would be.
 fn distinct(types: impl Iterator<Item = Type>) -> Vec<Type> {
-    types.fold(Vec::new(), |mut kept, ty| {
+    let mut kept = Vec::new();
+    for ty in types {
         if !kept.contains(&ty) {
             kept.push(ty);
         }
-        kept
-    })
+        if kept.len() > WIDTH {
+            return vec![any()];
+        }
+    }
+    kept
 }
 
 /// Names the variables of a finished type `a`, `b`, … in the order they are written. One that

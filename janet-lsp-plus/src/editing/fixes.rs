@@ -25,25 +25,57 @@ pub fn fixes(doc: &Document, symbol: Node) -> Vec<Action> {
 /// Silencing `symbol` instead: `ignore` above its line, or `declare` for the whole file.
 pub fn ignores(doc: &Document, symbol: Node) -> Vec<Action> {
     let name = doc.text_of(symbol);
-    vec![ignore_line(doc, symbol, name), declare(doc, name)]
+    ignore_line(doc, symbol, name)
+        .into_iter()
+        .chain([declare(doc, name)])
+        .collect()
 }
 
-fn ignore_line(doc: &Document, symbol: Node, name: &str) -> Action {
-    let line_start = doc.text[..symbol.start_byte()]
+/// `ignore` on a line of its own above the symbol's, else at the end of the symbol's line: where
+/// a multi-line string holds the one, the directive would be text of the string. `None` when a
+/// string holds both.
+fn ignore_line(doc: &Document, symbol: Node, name: &str) -> Option<Action> {
+    let text = &doc.text;
+    let line_start = text[..symbol.start_byte()]
         .rfind('\n')
         .map_or(0, |index| index + 1);
-    let before = &doc.text[line_start..symbol.start_byte()];
+    let line_end = text[symbol.end_byte()..]
+        .find('\n')
+        .map_or(text.len(), |index| symbol.end_byte() + index);
+    let before = &text[line_start..symbol.start_byte()];
     let indent = &before[..before.len() - before.trim_start().len()];
-    Action {
+    let directive = format!("# janet-zed: ignore unknown-symbol {name}");
+    let edit = if !in_string(doc, line_start + indent.len()) {
+        Edit::insert(line_start + indent.len(), &format!("{directive}\n{indent}"))
+    } else if !in_string(doc, line_end) {
+        Edit::insert(line_end, &format!(" {directive}"))
+    } else {
+        return None;
+    };
+    Some(Action {
         title: format!("Ignore `{name}` on this line"),
-        edits: vec![Edit::insert(
-            line_start + indent.len(),
-            &format!("# janet-zed: ignore unknown-symbol {name}\n{indent}"),
-        )],
+        edits: vec![edit],
+    })
+}
+
+/// Whether `offset` falls inside a string or buffer literal, between its quotes.
+fn in_string(doc: &Document, offset: usize) -> bool {
+    let mut node = doc.root().descendant_for_byte_range(offset, offset);
+    while let Some(current) = node {
+        let kind = current.kind();
+        if (kind.ends_with("str_lit") || kind.ends_with("buf_lit"))
+            && current.start_byte() < offset
+            && offset < current.end_byte()
+        {
+            return true;
+        }
+        node = current.parent();
     }
+    false
 }
 
 /// `name` added to the first `# janet-zed: declare` line, or a new one at the top, below a shebang.
+/// A line inside a string that reads like one is text, not a directive.
 fn declare(doc: &Document, name: &str) -> Action {
     let text = &doc.text;
     let existing = text
@@ -53,7 +85,9 @@ fn declare(doc: &Document, name: &str) -> Action {
             *next += line.len() + 1;
             Some((start, line))
         })
-        .find(|(_, line)| line.trim_start().starts_with("# janet-zed: declare "));
+        .find(|(start, line)| {
+            line.trim_start().starts_with("# janet-zed: declare ") && !in_string(doc, *start)
+        });
     let edit = if let Some((start, line)) = existing {
         Edit::insert(start + line.trim_end().len(), &format!(" {name}"))
     } else {

@@ -4,6 +4,16 @@ use std::path::PathBuf;
 use super::*;
 use crate::analysis::types;
 
+const STRICT: Mode = Mode {
+    strict: true,
+    exhaustive: false,
+};
+
+const EXHAUSTIVE: Mode = Mode {
+    strict: false,
+    exhaustive: true,
+};
+
 /// `shapes.janet` with every annotation taken off: what inference has to find on its own.
 const BARE: &str = r#"(def pi-ish 3.14159)
 
@@ -41,14 +51,14 @@ fn ambient(source: &str) -> HashMap<String, Annotation> {
 
 /// The types of `source`, with the core and `declared` in scope.
 fn infer(source: &str, declared: &HashMap<String, Annotation>) -> (Document, Scopes, Facts) {
-    infer_in(source, declared, false)
+    infer_in(source, declared, Mode::default())
 }
 
-/// [`infer`], in strict mode or not.
+/// [`infer`], reporting what `mode` asks for.
 fn infer_in(
     source: &str,
     declared: &HashMap<String, Annotation>,
-    strict: bool,
+    mode: Mode,
 ) -> (Document, Scopes, Facts) {
     let doc = Document::new(source.to_string());
     let scopes = Scopes::new(&doc);
@@ -65,7 +75,7 @@ fn infer_in(
             all: &lookup,
             written: &lookup,
         },
-        strict,
+        mode,
     );
     (doc, scopes, facts)
 }
@@ -286,7 +296,7 @@ fn a_thousand_lines_are_inferred_in_milliseconds() {
             all: &lookup,
             written: &lookup,
         },
-        false,
+        Mode::default(),
     );
     let elapsed = started.elapsed();
     assert!(!facts.definitions.is_empty());
@@ -324,7 +334,7 @@ fn nothing_in_a_janet_file_makes_inference_panic() {
                 all: &lookup,
                 written: &lookup,
             },
-            false,
+            Mode::default(),
         );
     }
 }
@@ -469,12 +479,12 @@ fn a_nullable_name_is_there_inside_the_branch_that_checked() {
 }
 
 /// The findings of a diagnostics fixture, drawn under its source.
-fn findings_drawn(name: &str, strict: bool) -> String {
+fn findings_drawn(name: &str, mode: Mode) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../fixtures/diagnostics")
         .join(name);
     let source = std::fs::read_to_string(&path).expect("the diagnostics fixture");
-    let (doc, _, facts) = infer_in(&source, &HashMap::new(), strict);
+    let (doc, _, facts) = infer_in(&source, &HashMap::new(), mode);
     let shown: Vec<String> = facts
         .findings
         .iter()
@@ -498,7 +508,7 @@ fn findings_drawn(name: &str, strict: bool) -> String {
 /// The four classes of §5.4, and the near misses of each, drawn under the source.
 #[test]
 fn a_written_signature_is_what_a_finding_speaks_for() {
-    insta::assert_snapshot!(findings_drawn("types.janet", false));
+    insta::assert_snapshot!(findings_drawn("types.janet", EXHAUSTIVE));
 }
 
 /// Strict mode holds a union to every member and a guess to what it could be; the default mode
@@ -506,10 +516,10 @@ fn a_written_signature_is_what_a_finding_speaks_for() {
 #[test]
 fn strictly_a_union_and_a_guess_answer_to_what_is_written() {
     assert!(
-        findings_drawn("strict.janet", false).starts_with("----- FINDINGS\n\n"),
+        findings_drawn("strict.janet", Mode::default()).starts_with("----- FINDINGS\n\n"),
         "the default mode reports none of it"
     );
-    insta::assert_snapshot!(findings_drawn("strict.janet", true));
+    insta::assert_snapshot!(findings_drawn("strict.janet", STRICT));
 }
 
 /// Janet as it is written: the fixture project, and every package the installed Janet holds.
@@ -537,7 +547,7 @@ fn nothing_written_the_usual_way_is_complained_about() {
                     all: &lookup,
                     written: &lookup,
                 },
-                false,
+                Mode::default(),
             );
             facts
                 .findings
@@ -672,7 +682,7 @@ const TAGGED: &str = r"(def Circle :typedef {:kind :circle :r :number})
 
 #[test]
 fn a_tag_picks_a_member_and_a_closed_union_is_held_to_every_tag() {
-    let (doc, scopes, facts) = alone(TAGGED);
+    let (doc, scopes, facts) = infer_in(TAGGED, &HashMap::new(), EXHAUSTIVE);
     let locals: Vec<String> = scopes
         .locals
         .iter()
@@ -692,6 +702,23 @@ fn a_tag_picks_a_member_and_a_closed_union_is_held_to_every_tag() {
         locals.join("\n"),
         findings.join("\n")
     ));
+}
+
+/// Falling through a `case` or `match` to `nil` is idiomatic: a missed tag is reported only when
+/// asked for, and in strict mode.
+#[test]
+fn a_missed_tag_is_reported_only_when_asked_for() {
+    let misses = |mode| {
+        infer_in(TAGGED, &HashMap::new(), mode)
+            .2
+            .findings
+            .iter()
+            .filter(|finding| finding.message.contains(" misses "))
+            .count()
+    };
+    assert_eq!(misses(Mode::default()), 0, "the default mode lets it pass");
+    assert!(misses(EXHAUSTIVE) > 0);
+    assert_eq!(misses(STRICT), misses(EXHAUSTIVE), "strict reports it too");
 }
 
 /// Declarations the pitfalls below call, each taking one written kind.
@@ -835,7 +862,7 @@ fn zz_slowest_corpus_files() {
                     all: &lookup,
                     written: &lookup,
                 },
-                false,
+                Mode::default(),
             );
             (started.elapsed(), path.display().to_string())
         })
@@ -865,7 +892,7 @@ fn zz_thousand_lines_median() {
                     all: &lookup,
                     written: &lookup,
                 },
-                false,
+                Mode::default(),
             );
             started.elapsed()
         })
@@ -1356,6 +1383,17 @@ fn a_table_under_a_name_holds_what_is_put_in_it_later() {
     );
 }
 
+/// `assertf` is the value it asserts where it holds, not the error it raises where it does not.
+#[test]
+fn assertf_is_the_value_it_asserts() {
+    let (_, _, facts) = alone("(def n (assertf 5 \"not %d\" 5))\n");
+    assert_eq!(defined(&facts, "n"), ":number");
+    assert_eq!(
+        messages("(defn f {:params [:string] :ret :nil} [s] nil)\n(f (assertf 5 \"x\"))\n"),
+        ["f takes :string here, given :number"]
+    );
+}
+
 /// What the core declares a call returns is what Janet returns: each call is handed to a function
 /// that takes the type Janet reports for its value, and no finding says it does not fit.
 #[test]
@@ -1371,6 +1409,9 @@ fn core_results_are_what_janet_returns() {
         "(prewalk (fn [x] 1) [1 2])",
         "(walk (fn [x] 1) [1 2])",
         "(walk (fn [x] 1) 5)",
+        "(seq [x :range [0 2]] x)",
+        "(catseq [x :range [0 2]] [x])",
+        "(generate [x :range [0 2]] x)",
     ];
     let script = calls.iter().fold(String::new(), |mut script, call| {
         writeln!(script, "(print (type {call}))").expect("writing to a string");
@@ -1388,4 +1429,124 @@ fn core_results_are_what_janet_returns() {
             format!("(defn wants {{:params [:{ty}] :ret :nil}} [x] nil)\n(wants {call})\n");
         assert_eq!(messages(&source), Vec::<String>::new(), "{call} is a {ty}");
     }
+}
+
+/// A parameter written as a named union is taken apart member by member, like the union it names:
+/// the written type stays what it is, and a key read out of it is what the members hold there.
+#[test]
+fn a_named_union_is_destructured_as_the_union_it_names() {
+    let source = "(def Circle :typedef {:kind :circle :r :number})
+(def Rect :typedef {:kind :rect :w :number :h :number})
+(def Shape :typedef (or Circle Rect))
+(defn takes {:params [:string] :ret :nil} [x] nil)
+(defn let-bound {:params [Shape]} [s]
+  (let [{:kind k} s]
+    (takes (s :r))
+    k))
+(defn in-params {:params [Shape]} [{:kind k :r r}]
+  (takes r)
+  k)
+";
+    let (_, scopes, facts) = infer_in(source, &HashMap::new(), STRICT);
+    assert_eq!(
+        local(&scopes, &facts, "s"),
+        "Shape",
+        "the written type is kept"
+    );
+    assert_eq!(local(&scopes, &facts, "k"), "(or :circle :rect)");
+    assert_eq!(local(&scopes, &facts, "r"), ":number?");
+    let messages: Vec<&str> = facts.findings.iter().map(|f| f.message.as_str()).collect();
+    assert_eq!(
+        messages,
+        [
+            "takes takes :string here, given :number?",
+            "takes takes :string here, given :number?"
+        ]
+    );
+}
+
+/// A `cond` of four thousand branches, each giving what `body` writes with its index for `{i}`.
+fn wide_cond(body: &str) -> String {
+    let branches = (0..4000).fold(String::new(), |mut source, i| {
+        let branch = body.replace("{i}", &i.to_string());
+        writeln!(source, "    (= x {i}) {branch}").expect("writing to a string");
+        source
+    });
+    format!("(defn f [x]\n  (cond\n{branches}    nil))\n")
+}
+
+/// A union of forms past [`WIDTH`] members is `:any`, of tags one `(enum …)`, what is raised too: a wide `cond` is inferred in
+/// the time any four thousand lines are, rather than in the square of its branches.
+#[test]
+fn a_wide_union_is_any_and_costs_no_more_than_its_lines() {
+    types::core();
+    let lookup = |name: &str| types::core().binding(name).cloned();
+    for (body, ret, throws) in [
+        (":k{i}", "(enum :k0", None),
+        ("{:k{i} 1}", ":any", None),
+        ("(error :k{i})", ":nil", Some("throws :any")),
+    ] {
+        let doc = Document::new(wide_cond(body));
+        let scopes = Scopes::new(&doc);
+        let started = std::time::Instant::now();
+        let facts = facts(
+            &doc,
+            &scopes,
+            Known {
+                all: &lookup,
+                written: &lookup,
+            },
+            Mode::default(),
+        );
+        let elapsed = started.elapsed();
+        let Some(Annotation::Function(f)) = facts.definitions.get("f") else {
+            panic!("f is a function")
+        };
+        assert!(f.ret.to_string().starts_with(ret), "{body}: {}", f.ret);
+        assert_eq!(f.throws_line().as_deref(), throws, "{body}");
+        // The release budget is 5 ms a thousand lines; the debug one is as loose as the one of
+        // `a_thousand_lines_are_inferred_in_milliseconds`, and still well below the square.
+        let budget = if cfg!(debug_assertions) { 2000 } else { 20 };
+        assert!(
+            elapsed.as_millis() < budget,
+            "{body}: inference took {elapsed:?}, more than {budget}ms"
+        );
+    }
+}
+
+/// Keyword literals are exact however many there are: a written union of seventy tags is one
+/// `(enum …)` past the width, `nil` kept apart, and a test of a tag picks it out rather than
+/// leaving `:any`. A union of an `(enum …)` and the literals it lists is as wide as the enum,
+/// however many literals there were.
+#[test]
+fn a_wide_union_of_tags_stays_the_tags() {
+    let tags = (0..70).fold(String::new(), |mut tags, i| {
+        write!(tags, " :t{i}").expect("writing to a string");
+        tags
+    });
+    let source = format!(
+        "(defn f {{:params [(or{tags} :nil)]}} [x]\n  (if (= x :t0) (def yes x) (def no x)))\n"
+    );
+    let (_, scopes, facts) = alone(&source);
+    assert_eq!(local(&scopes, &facts, "yes"), ":t0");
+    // An `(enum …)` is one member, which `(= x :t0)` failing does not take a value out of.
+    assert_eq!(local(&scopes, &facts, "no"), format!("(enum{tags})?"));
+
+    let listed = std::iter::once(Type::Enum(
+        (0..70).map(|i| format!("t{i}").into()).collect(),
+    ))
+    .chain((0..70).map(|i| Type::Keyword(format!("t{i}").into())))
+    .chain([dynamic(atom("number"))])
+    .collect();
+    assert_eq!(
+        unions(listed),
+        dynamic(Type::Or(
+            [
+                Type::Enum((0..70).map(|i| format!("t{i}").into()).collect()),
+                atom("number")
+            ]
+            .into()
+        )),
+        "folded before the width is held to, and still unwritten"
+    );
 }

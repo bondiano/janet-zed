@@ -46,11 +46,14 @@ All settings are optional. Put them in `settings.json`:
         "janet_source": "~/src/janet",
         // Report what the types rule out: "off" (default), "hint" or "warning".
         // `strict` also reports a union a member of which does not fit, and a type inference
-        // guessed that cannot fit at all.
-        "types": { "diagnostics": "hint", "strict": false },
+        // guessed that cannot fit at all. `exhaustive` (implied by `strict`) reports a `case` or
+        // `match` without a default that misses a tag of a closed union.
+        "types": { "diagnostics": "hint", "strict": false, "exhaustive": false },
         // Compile open files with `janet` for unknown symbols and wrong arities (default true).
         // This runs the project's code: see "Trust" below.
-        "compile": true
+        "compile": true,
+        // Register the REPL kernel with Zed (default true); `false` removes it.
+        "kernel": true
       },
       "binary": {
         // Server log verbosity: error, warn, info (default), debug or trace.
@@ -84,7 +87,7 @@ documented in `janet-check`.
 
 1. Install spork: `jpm install spork`.
 2. Open any `.janet` file. The language server registers the **Janet** kernel when it
-   starts. If Zed does not list it, run `repl: refresh kernelspecs`.
+   starts (unless `"kernel": false`). If Zed does not list it, run `repl: refresh kernelspecs`.
 3. Select a form and press `ctrl-shift-enter` (`repl: run`). The result appears inline.
    With no selection, Zed runs the current line, or the whole cell if the cursor is
    between `# %%` markers (see the `cell` snippet).

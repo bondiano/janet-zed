@@ -10,5 +10,4 @@ expression: "reported.join(\"\\n\")"
 73: host/fetch takes :number here, given :string
 78: host/fetch takes :number here, given :string
 84: caption returns :number, declared :string
-105: case over Shape misses :rect
 111: host/draw takes Shape here, given {:kind :square :side :number}

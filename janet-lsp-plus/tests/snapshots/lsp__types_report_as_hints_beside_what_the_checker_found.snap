@@ -11,5 +11,4 @@ janet-zed 4 67: host/tag takes :keyword here, given :string
 janet-zed 4 73: host/fetch takes :number here, given :string
 janet-zed 4 78: host/fetch takes :number here, given :string
 janet-zed 4 84: caption returns :number, declared :string
-janet-zed 4 105: case over Shape misses :rect
 janet-zed 4 111: host/draw takes Shape here, given {:kind :square :side :number}

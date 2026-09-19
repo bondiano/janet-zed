@@ -102,3 +102,28 @@ fn declare_below_a_shebang() {
 fn declare_next_to_other_declarations() {
     assert_fixes!(ignores, "# janet-zed: declare a\n(print a |b)\n");
 }
+
+#[test]
+fn ignore_after_a_line_a_long_string_starts() {
+    assert_fixes!(ignores, "(print ``text\nmore`` |b)\n");
+}
+
+#[test]
+fn no_ignore_between_two_long_strings() {
+    let text = "(print ``a\nb`` c ``d\ne``)\n";
+    let doc = Document::new(text.to_string());
+    let symbol = syntax::symbol_at(doc.root(), text.find(" c ").unwrap() + 1).unwrap();
+    let titles: Vec<String> = ignores(&doc, symbol)
+        .into_iter()
+        .map(|action| action.title)
+        .collect();
+    assert_eq!(titles, ["Declare `c` in this file"]);
+}
+
+#[test]
+fn declare_skips_a_directive_inside_a_string() {
+    assert_fixes!(
+        ignores,
+        "(def s ``\n# janet-zed: declare a\n``)\n(print |b)\n"
+    );
+}

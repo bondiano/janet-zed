@@ -1,12 +1,12 @@
 //! Diagnostics: open buffers are flychecked by the user's `janet` on a background thread once
 //! typing pauses, and the problems are published for the version that was checked.
 
-use std::collections::HashMap;
+use std::panic::{self, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
 use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
 
@@ -66,24 +66,20 @@ impl Checker {
     }
 }
 
+/// Checks what `queue` brings until the server goes. A check that panics is reported as failed
+/// for its buffer, and the worker, in whatever state the panic left it, is started afresh: the
+/// thread goes on serving the buffers after it rather than stopping without a word.
 fn check_queued(janet: Option<&str>, queue: &Receiver<Job>, done: &Sender<Checked>) {
     let mut worker = janet.map(janet::Worker::new);
     while let Ok(first) = queue.recv() {
-        for job in coalesce(first, queue).into_values() {
+        for job in coalesce(first, queue) {
             let started = Instant::now();
-            let report = worker.as_mut().map_or_else(
-                || Ok(Report::default()),
-                |worker| {
-                    worker.check(&Check {
-                        path: &job.path,
-                        text: &job.text,
-                        cwd: &job.cwd,
-                        packages: &job.packages,
-                        natives: &job.natives,
-                        declared: &job.declared,
-                    })
-                },
-            );
+            let report = panic::catch_unwind(AssertUnwindSafe(|| check_one(worker.as_mut(), &job)))
+                .unwrap_or_else(|_| {
+                    tracing::error!(uri = job.uri.as_str(), "the checker panicked, restarted");
+                    worker = janet.map(janet::Worker::new);
+                    Err(anyhow!("the checker panicked"))
+                });
             tracing::debug!(
                 uri = job.uri.as_str(),
                 version = job.version,
@@ -102,14 +98,33 @@ fn check_queued(janet: Option<&str>, queue: &Receiver<Job>, done: &Sender<Checke
     }
 }
 
+fn check_one(worker: Option<&mut janet::Worker>, job: &Job) -> Result<Report> {
+    worker.map_or_else(
+        || Ok(Report::default()),
+        |worker| {
+            worker.check(&Check {
+                path: &job.path,
+                text: &job.text,
+                cwd: &job.cwd,
+                packages: &job.packages,
+                natives: &job.natives,
+                declared: &job.declared,
+            })
+        },
+    )
+}
+
 /// `first` and the jobs after it, the latest per buffer, until edits pause for `DEBOUNCE` or
-/// `MAX_DELAY` has passed since `first`.
-fn coalesce(first: Job, queue: &Receiver<Job>) -> HashMap<Uri, Job> {
+/// `MAX_DELAY` has passed since `first`. The buffer queued last comes first: it is the one being
+/// edited, and its checks should not wait behind the files a save touched.
+fn coalesce(first: Job, queue: &Receiver<Job>) -> Vec<Job> {
     let cutoff = Instant::now() + MAX_DELAY;
-    let mut pending = HashMap::from([(first.uri.clone(), first)]);
+    let mut pending = vec![first];
     while let Ok(job) = queue.recv_deadline((Instant::now() + DEBOUNCE).min(cutoff)) {
-        pending.insert(job.uri.clone(), job);
+        pending.retain(|queued| queued.uri != job.uri);
+        pending.push(job);
     }
+    pending.reverse();
     pending
 }
 
@@ -140,6 +155,17 @@ pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
                 }),
         )
         .collect()
+}
+
+/// A check that failed or timed out: what Janet reported before is gone with the version it was
+/// for, and this says why nothing stands in for it.
+pub fn failed(err: &anyhow::Error) -> Diagnostic {
+    Diagnostic {
+        severity: Some(DiagnosticSeverity::WARNING),
+        source: Some("janet-zed".to_string()),
+        message: format!("janet could not check this file: {err:#}"),
+        ..Diagnostic::default()
+    }
 }
 
 /// What inference makes of the file, at the severity `types.diagnostics` asks for. Empty when it

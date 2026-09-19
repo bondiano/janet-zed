@@ -1368,6 +1368,26 @@ fn changing_the_setting_turns_strict_mode_on() {
     session.finish();
 }
 
+/// A `case` that misses a tag of a closed union is reported once `exhaustive` asks for it.
+#[test]
+fn changing_the_setting_turns_exhaustiveness_on() {
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(Session::root(), "src/report.janet", &settings);
+    let source = with_a_broken_call(&session.root);
+    let scratch = uri(&session.root.join("src/mistakes.janet"));
+    session.open(&scratch, &source);
+    let lenient = published(&mut session, &scratch);
+    session.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"types": {"diagnostics": "warning", "exhaustive": true}}}),
+    );
+    let exhaustive = published(&mut session, &scratch);
+    let missed = "case over Shape misses :rect";
+    assert!(!lenient.contains(missed), "{lenient}");
+    assert!(exhaustive.contains(missed), "{exhaustive}");
+    session.finish();
+}
+
 #[test]
 fn go_to_definition_from_an_arity_diagnostic_reaches_the_declaration() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -1560,4 +1580,141 @@ fn type_errors_are_reported_for_files_that_are_not_open() {
     session.finish();
     std::fs::remove_dir_all(&root).ok();
     insta::assert_snapshot!(reported.join("\n"));
+}
+
+/// A copy of `files` of the fixture project in a directory of its own, for a test that writes.
+fn scratch_project(name: &str, files: &[&str]) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("janet-zed-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    for file in files {
+        std::fs::copy(Session::root().join(file), root.join(file)).unwrap();
+    }
+    root.canonicalize().unwrap()
+}
+
+fn messages(diagnostics: &Value) -> Vec<String> {
+    diagnostics
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|problem| problem["message"].as_str().unwrap().to_string())
+        .collect()
+}
+
+/// Janet loads an import from disk: once it is saved, the buffers importing it are checked again.
+#[test]
+fn saving_an_import_checks_what_imports_it_again() {
+    let root = scratch_project("saved-import", &["src/shapes.janet", "src/report.janet"]);
+    let mut session = Session::start_at(root.clone(), "src/report.janet");
+    let report = session.report.clone();
+    assert_eq!(session.diagnostics(&report, 1), json!([]));
+
+    let shapes = root.join("src/shapes.janet");
+    let text = std::fs::read_to_string(&shapes).unwrap();
+    assert!(text.contains("(defn area\n"));
+    std::fs::write(&shapes, text.replace("(defn area\n", "(defn surface\n")).unwrap();
+    session.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": uri(&shapes), "type": 2}]}),
+    );
+    let found = messages(&session.diagnostics(&report, 1));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    assert!(
+        found.iter().any(|message| message.contains("shapes/area")),
+        "{found:?}"
+    );
+}
+
+/// The types read an import from its buffer: an unsaved edit there types the buffers importing it
+/// again.
+#[test]
+fn an_unsaved_import_retypes_the_buffers_importing_it() {
+    let settings = json!({"types": {"diagnostics": "hint"}});
+    let mut session = Session::start_with(Session::root(), "src/report.janet", &settings);
+    let scratch = uri(&session.root.join("src/scratch.janet"));
+    session.open(&scratch, "(import ./shapes)\n\n(shapes/circle \"x\")\n");
+    assert_ne!(session.diagnostics(&scratch, 1), json!([]));
+
+    let (shapes, text) = session.open_file("src/shapes.janet");
+    let declared = "{:params [:number] :ret Circle}";
+    assert!(text.contains(declared));
+    session.notify(
+        "textDocument/didChange",
+        json!({
+            "textDocument": {"uri": shapes, "version": 2},
+            "contentChanges": [{"text": text.replace(declared, "{:params [:string] :ret Circle}")}],
+        }),
+    );
+    // Checked again on the open of the import too, before the edit: the last one is clean.
+    while session.diagnostics(&scratch, 1) != json!([]) {}
+    session.finish();
+}
+
+/// A file created on disk joins the index without a walk of the workspace, and leaves it once
+/// deleted.
+#[test]
+fn a_created_file_is_indexed_and_a_deleted_one_dropped() {
+    let root = scratch_project("created", &["src/shapes.janet"]);
+    let settings = json!({"types": {"diagnostics": "hint"}});
+    let mut session = Session::start_with(root.clone(), "src/shapes.janet", &settings);
+    let created = root.join("src/created.janet");
+    std::fs::write(&created, "(import ./shapes)\n\n(shapes/circle \"x\")\n").unwrap();
+    session.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": uri(&created), "type": 1}]}),
+    );
+    let found = session.project_diagnostics(&uri(&created));
+    std::fs::remove_file(&created).unwrap();
+    session.notify(
+        "workspace/didChangeWatchedFiles",
+        json!({"changes": [{"uri": uri(&created), "type": 3}]}),
+    );
+    let after = session.project_diagnostics(&uri(&created));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    assert_ne!(found, json!([]));
+    assert_eq!(after, json!([]));
+}
+
+/// An option of the wrong type is left at its default rather than keeping the server from
+/// starting.
+#[test]
+fn a_mistyped_option_is_ignored() {
+    let mut session = Session::start_with(
+        Session::root(),
+        "src/report.janet",
+        &json!({"replPort": "9365", "compile": "yes"}),
+    );
+    let hover = session
+        .request("textDocument/hover", session.at("(shapes/area s", 9))
+        .unwrap();
+    assert!(
+        hover["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .contains("area")
+    );
+    session.finish();
+}
+
+/// A check that fails still publishes, saying so: what Janet found in an earlier version does
+/// not stand in for it.
+#[test]
+fn a_failed_check_says_so() {
+    let mut session = Session::start_with(
+        Session::root(),
+        "src/report.janet",
+        &json!({"janetPath": "/nonexistent/janet"}),
+    );
+    let report = session.report.clone();
+    let found = messages(&session.diagnostics(&report, 1));
+    session.finish();
+    assert!(
+        found
+            .iter()
+            .any(|message| message.starts_with("janet could not check this file")),
+        "{found:?}"
+    );
 }

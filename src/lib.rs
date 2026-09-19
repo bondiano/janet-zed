@@ -277,6 +277,8 @@ impl zed::Extension for JanetExtension {
             "types": configured(worktree, "types"),
             // `false` stops compiling open files, which runs the project's code.
             "compile": configured(worktree, "compile"),
+            // The kernelspec of Zed's REPL: on unless `false`, which removes it.
+            "kernel": configured(worktree, "kernel").unwrap_or_else(|| true.into()),
         })))
     }
 

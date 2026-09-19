@@ -37,6 +37,10 @@ not UTF-8 for one, is reported too.
 (`(if flag 16 "16")` where a number is taken, a `:number?` read out of a union), and a type
 inference guessed that cannot fit however it is read. By default neither is reported.
 
+`--exhaustive` reports a `case` or `match` without a default that misses a tag of a closed union:
+`case over Shape misses :rect`. Falling through to `nil` is idiomatic Janet, so it is off by
+default; `--strict` turns it on too.
+
 A file that does not parse is reported as one `parse error` and nothing else: its types would
 be read out of whatever the parser salvaged, and those are guesses.
 

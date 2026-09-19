@@ -54,8 +54,9 @@ Sent through the client's LSP configuration; both are optional.
   // A local Janet checkout to read the stdlib from, instead of downloading the sources.
   "janet_source": "~/src/janet",
   // Report what the written types rule out: "off" (default), "hint" or "warning".
-  // `strict` also holds unions and inferred types to them.
-  "types": { "diagnostics": "hint", "strict": false }
+  // `strict` also holds unions and inferred types to them; `exhaustive` (implied by `strict`)
+  // reports a `case` or `match` without a default that misses a tag.
+  "types": { "diagnostics": "hint", "strict": false, "exhaustive": false }
 }
 ```
 
@@ -71,7 +72,7 @@ Types mark nothing up by default. `types.diagnostics` turns what `janet-check` r
 diagnostics at the severity you name, alongside what the compiler reports, under the same
 buffer version. Every other file in the workspace is reported too, so a type error shows up in
 the project diagnostics without opening the file it is in. `types.strict` reports what
-`janet-check --strict` does. A hover says `type inferred` where the type shown is inference's
+`janet-check --strict` does, `types.exhaustive` what `janet-check --exhaustive` does. A hover says `type inferred` where the type shown is inference's
 guess rather than something written.
 
 ## Structural editing
@@ -98,7 +99,10 @@ threading comes first; inside a form, paredit does. Quick fixes are always on to
 The kernel runs code in a [`spork/netrepl`](https://github.com/janet-lang/spork) process of the
 project, on a free port of `127.0.0.1`, so a terminal client sees everything evaluated from the
 editor, and the other way round. The language server writes the kernelspec that makes Zed
-discover it.
+discover it when the client sends `"kernel": true` in `initializationOptions`, as the Zed
+extension does unless its `kernel` setting is `false`; `false` removes the kernelspec, and a
+client that sends neither leaves it alone. The spec starts a copy of the server binary kept in
+its own directory, so it keeps working after the extension replaces the version it came from.
 
 The project is the nearest directory with `.git` or `project.janet` around the file the kernel
 runs; each project has its own Janet process, shared by its editors. The port is recorded in

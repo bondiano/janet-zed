@@ -1,0 +1,19 @@
+---
+source: janet-lsp-plus/src/editing/fixes/tests.rs
+assertion_line: 108
+expression: "(print ``text\nmore`` |b)\n"
+---
+----- BEFORE FIX
+(print ``text
+more`` b)
+       ↑
+
+
+----- AFTER FIX: Ignore `b` on this line
+(print ``text
+more`` b) # janet-zed: ignore unknown-symbol b
+
+----- AFTER FIX: Declare `b` in this file
+# janet-zed: declare b
+(print ``text
+more`` b)

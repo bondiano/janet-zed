@@ -36,13 +36,13 @@ use std::time::{Duration, Instant};
 use crate::kernel;
 use diagnostics::{Checked, Checker};
 use janet_check::analysis::stdlib::Stdlib;
+use janet_check::analysis::types::infer::Mode;
 use janet_check::analysis::workspace::Workspace;
 use janet_check::analysis::{modules, path_of};
 use state::{Reporting, State};
 
 /// `initializationOptions` sent by the Zed extension.
-#[derive(Debug, Default, Deserialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Debug, Default)]
 struct Options {
     janet_path: Option<String>,
     /// A Janet checkout matching the installed `janet`; enables stdlib go-to-definition.
@@ -53,10 +53,39 @@ struct Options {
     /// Whether open files are compiled by `janet`, for unknown symbols and wrong arities. On by
     /// default. Compiling runs the project's code: imported modules load, macros expand.
     compile: Option<bool>,
+    /// Whether to write the Jupyter kernelspec Zed's REPL starts the kernel from: `true` writes
+    /// it, `false` removes it, and a client that does not say leaves it alone.
+    kernel: Option<bool>,
     /// What the client can change later with `didChangeConfiguration`. Null where the client
     /// sends the key with nothing configured under it, as the Zed extension does.
-    #[serde(default)]
     types: Option<Types>,
+}
+
+impl Options {
+    /// Each option on its own: one of the wrong type is warned about and left at its default,
+    /// rather than keeping the server from starting.
+    fn read(options: Option<&serde_json::Value>) -> Self {
+        let options = options.unwrap_or(&serde_json::Value::Null);
+        Self {
+            janet_path: read_option(options, "janetPath"),
+            janet_source: read_option(options, "janetSource"),
+            repl_port: read_option(options, "replPort"),
+            compile: read_option(options, "compile"),
+            kernel: read_option(options, "kernel"),
+            types: read_option(options, "types"),
+        }
+    }
+}
+
+/// The option `key` of `options`, `None` where it is missing, null, or not what it should be.
+fn read_option<T: serde::de::DeserializeOwned>(
+    options: &serde_json::Value,
+    key: &str,
+) -> Option<T> {
+    let value = options.get(key).filter(|value| !value.is_null())?;
+    serde_json::from_value(value.clone())
+        .inspect_err(|err| tracing::warn!("ignoring initialization option {key}: {err}"))
+        .ok()
 }
 
 /// The `types` block of the settings, in `initializationOptions` and in `didChangeConfiguration`.
@@ -67,6 +96,18 @@ struct Types {
     /// Holds unions and inferred types to written signatures too.
     #[serde(default)]
     strict: bool,
+    /// Reports a `case` or `match` without a default that misses a tag. Implied by `strict`.
+    #[serde(default)]
+    exhaustive: bool,
+}
+
+impl Types {
+    fn mode(&self) -> Mode {
+        Mode {
+            strict: self.strict,
+            exhaustive: self.exhaustive,
+        }
+    }
 }
 
 /// What `didChangeConfiguration` carries. Everything is optional: a client that sends settings
@@ -87,17 +128,12 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// Serves LSP over `connection` until shutdown. `register_kernel` writes the Jupyter kernelspec
-/// for Zed's REPL.
+/// Serves LSP over `connection` until shutdown. `register_kernel` lets the `kernel` option write
+/// or remove the Jupyter kernelspec for Zed's REPL.
 pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let params: InitializeParams =
         serde_json::from_value(connection.initialize(serde_json::to_value(capabilities())?)?)?;
-    let options: Options = params
-        .initialization_options
-        .clone()
-        .map(serde_json::from_value)
-        .transpose()?
-        .unwrap_or_default();
+    let options = Options::read(params.initialization_options.as_ref());
 
     let janet = options.janet_path.as_deref().unwrap_or("janet");
     let client = params.client_info.as_ref();
@@ -109,11 +145,17 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         janet_source = ?options.janet_source,
         "starting"
     );
-    if register_kernel {
-        match kernel::register(janet) {
+    match options.kernel.filter(|_| register_kernel) {
+        Some(true) => match kernel::register(janet) {
             Ok(dir) => tracing::info!("registered Jupyter kernel at {}", dir.display()),
             Err(err) => tracing::warn!("could not register Jupyter kernel: {err:#}"),
+        },
+        Some(false) => {
+            if let Err(err) = kernel::unregister() {
+                tracing::warn!("could not remove the Jupyter kernel: {err:#}");
+            }
         }
+        None => {}
     }
     if options.janet_source.is_none() {
         tracing::warn!("no janetSource, stdlib go-to-definition disabled");
@@ -127,7 +169,8 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         .inspect_err(|err| tracing::warn!("could not read Janet's syspath: {err:#}"))
         .ok();
 
-    if watches_files(&params) {
+    let watching = watches_files(&params);
+    if watching {
         watch_files(connection)?;
     } else {
         tracing::warn!("client does not watch files; the index only follows open buffers");
@@ -141,7 +184,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     );
     let types = options.types.unwrap_or_default();
     let mut workspace = Workspace::new(roots, syspath);
-    workspace.set_strict(types.strict);
+    workspace.set_mode(types.mode());
     let compile = options.compile.unwrap_or(true);
     if !compile {
         tracing::info!("compile is off: open files are not compiled by janet");
@@ -149,13 +192,14 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let (checker, results) = Checker::spawn(compile.then(|| janet.to_string()));
     let started = Instant::now();
     let repl_port = options.repl_port;
-    let state = State::new(
+    let mut state = State::new(
         workspace,
         stdlib,
         janet.to_string(),
         repl_port,
         types.diagnostics,
     );
+    state.watching = watching;
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),
@@ -451,8 +495,9 @@ fn sync(
                 version = document.version,
                 "opened"
             );
-            state.open(document.uri.clone(), document.version, document.text);
+            let importers = state.open(document.uri.clone(), document.version, document.text);
             check(state, checker, &document.uri);
+            return Ok(retype(state, importers));
         }
         DidChangeTextDocument::METHOD => {
             let mut params = extract::<DidChangeTextDocument>(notification)?;
@@ -464,8 +509,9 @@ fn sync(
                     version = document.version,
                     "changed"
                 );
-                state.open(document.uri.clone(), document.version, change.text);
+                let importers = state.open(document.uri.clone(), document.version, change.text);
                 check(state, checker, &document.uri);
+                return Ok(retype(state, importers));
             }
         }
         DidCloseTextDocument::METHOD => {
@@ -473,34 +519,35 @@ fn sync(
                 .text_document
                 .uri;
             tracing::debug!(uri = uri.as_str(), "closed");
-            state.close(&uri);
+            let importers = state.close(&uri);
             send_diagnostics(connection, uri, Vec::new(), None)?;
+            retype(state, importers);
             // Back to what the file says on disk, as any other project file.
             return Ok(true);
         }
         DidChangeWatchedFiles::METHOD => {
             let changes = extract::<DidChangeWatchedFiles>(notification)?.changes;
             tracing::debug!(files = changes.len(), "changed on disk");
-            state.changed(changes);
+            // A saved import is what Janet loads when it checks the buffers importing it.
+            let importers = state.changed(changes);
+            check_all(state, checker, importers);
             return Ok(true);
         }
         DidChangeConfiguration::METHOD => {
             let settings = extract::<DidChangeConfiguration>(notification)?.settings;
             // No `types` key is no change: `{}` or `null` must not turn configured checks off.
-            let Some(Types {
-                diagnostics: reporting,
-                strict,
-            }) = serde_json::from_value::<Settings>(settings)
+            let Some(types) = serde_json::from_value::<Settings>(settings)
                 .unwrap_or_default()
                 .types
             else {
                 tracing::debug!("configuration without types, kept");
                 return Ok(false);
             };
-            tracing::debug!(?reporting, strict, "configured");
-            if state.reporting != reporting || state.workspace.strict() != strict {
+            let (reporting, mode) = (types.diagnostics, types.mode());
+            tracing::debug!(?reporting, ?mode, "configured");
+            if state.reporting != reporting || state.workspace.mode() != mode {
                 state.reporting = reporting;
-                state.workspace.set_strict(strict);
+                state.workspace.set_mode(mode);
                 // The buffers are marked up again, or their marks taken off.
                 for uri in state.open_buffers() {
                     check(state, checker, &uri);
@@ -523,18 +570,31 @@ fn check(state: &State, checker: &Checker, uri: &Uri) {
     }
 }
 
+fn check_all(state: &State, checker: &Checker, uris: Vec<Uri>) {
+    for uri in uris {
+        check(state, checker, &uri);
+    }
+}
+
+/// An edit to a buffer others import, which Janet does not see: it loads imports from disk. Only
+/// their types, which read the buffer, are published again, once typing pauses. Whether any are.
+fn retype(state: &mut State, importers: Vec<Uri>) -> bool {
+    let any = !importers.is_empty();
+    state.retype.extend(importers);
+    any
+}
+
 /// Publishes a check's diagnostics. Whether the project's type findings are to be read again.
 fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Result<bool> {
-    let report = match checked.report {
-        Ok(report) => report,
-        Err(err) => {
-            tracing::warn!("checking {} failed: {err:#}", checked.uri.as_str());
-            return Ok(false);
-        }
-    };
-    // Even from a stale check: a module's bindings come once per load, and names are looked up
-    // in the current text.
-    state.workspace.expand(report.bindings);
+    let problems = checked.report.map(|report| {
+        // Even from a stale check: a module's bindings come once per load, and names are looked
+        // up in the current text.
+        state.workspace.expand(report.bindings);
+        report.problems
+    });
+    if let Err(err) = &problems {
+        tracing::warn!("checking {} failed: {err:#}", checked.uri.as_str());
+    }
     // A result for an older version, or for a closed buffer, is stale.
     if state.version(&checked.uri) != Some(checked.version) {
         tracing::trace!(
@@ -544,25 +604,43 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
         );
         return Ok(false);
     }
-    // Off, nothing is inferred for this: the types are only read when someone asks to see them.
-    let path = (state.reporting != Reporting::Off)
-        .then(|| state.file(&checked.uri).map(|file| file.path.clone()))
-        .transpose()?;
-    let facts = path.map(|path| state.workspace.facts(&path));
-    let findings = facts.as_deref().map_or(&[][..], |facts| &facts.findings);
     let document = state.document(&checked.uri)?;
-    // Both sets go out together, under the version that was checked: the types add to what the
-    // checker found rather than replacing it.
-    let mut diagnostics = diagnostics::diagnostics(document, &report.problems);
-    diagnostics.extend(diagnostics::inferred(document, findings, state.reporting));
-    // Kept for quick fixes: clients need not send them back with `codeAction`.
+    // A failed check still publishes: what Janet found in an older version no longer holds.
+    let mut compiled = diagnostics::diagnostics(document, problems.as_deref().unwrap_or_default());
+    compiled.extend(problems.as_ref().err().map(diagnostics::failed));
     state
-        .diagnostics
-        .insert(checked.uri.clone(), diagnostics.clone());
-    send_diagnostics(connection, checked.uri, diagnostics, Some(checked.version))?;
+        .compiled
+        .insert(checked.uri.clone(), (checked.version, compiled));
+    state.retype.remove(&checked.uri);
+    publish_buffer(connection, state, checked.uri)?;
     // An edit here can contradict a signature over there: the rest of the project is read again
     // once typing pauses, which is when a check comes back.
     Ok(true)
+}
+
+/// What Janet last found in the open buffer at `uri` and what the types find in it now, together
+/// under the version Janet checked. Nothing until Janet has checked the current version.
+fn publish_buffer(connection: &Connection, state: &mut State, uri: Uri) -> Result<()> {
+    let Some((version, compiled)) = state.compiled.get(&uri) else {
+        return Ok(());
+    };
+    let version = *version;
+    if state.version(&uri) != Some(version) {
+        return Ok(());
+    }
+    // Off, nothing is inferred for this: the types are only read when someone asks to see them.
+    let path = (state.reporting != Reporting::Off)
+        .then(|| state.file(&uri).map(|file| file.path.clone()))
+        .transpose()?;
+    let facts = path.map(|path| state.workspace.facts(&path));
+    let findings = facts.as_deref().map_or(&[][..], |facts| &facts.findings);
+    let document = state.document(&uri)?;
+    // The types add to what the checker found rather than replacing it.
+    let mut diagnostics = compiled.clone();
+    diagnostics.extend(diagnostics::inferred(document, findings, state.reporting));
+    // Kept for quick fixes: clients need not send them back with `codeAction`.
+    state.diagnostics.insert(uri.clone(), diagnostics.clone());
+    send_diagnostics(connection, uri, diagnostics, Some(version))
 }
 
 /// Type findings for every workspace file nobody has open. The checker only ever sees open
@@ -581,6 +659,10 @@ fn publish_project(connection: &Connection, state: &mut State) -> Result<bool> {
             .infer_until(paths.iter().map(PathBuf::as_path), &waiting)
         {
             return Ok(false);
+        }
+        let retyped: Vec<Uri> = state.retype.drain().collect();
+        for uri in retyped {
+            publish_buffer(connection, state, uri)?;
         }
         for path in paths {
             let Some(file) = state.workspace.file(&path) else {

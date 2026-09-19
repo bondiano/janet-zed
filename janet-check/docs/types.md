@@ -381,8 +381,9 @@ syntax of its own: the key and its keywords are enough.
       {:kind :rect :w :number :h :number}))
 ```
 
-A test of the tag picks the member out, and a `case` or `match` with no default has to name
-every tag:
+A test of the tag picks the member out. With `--exhaustive` or `--strict` (`types.exhaustive` or
+`types.strict` in the editor), a `case` or `match` with no default has to name every tag; by
+default falling through to `nil` is left alone, as Janet code usually does:
 
 ```janet
 (defn describe {:params [Shape]} [shape]
@@ -390,7 +391,7 @@ every tag:
     shape))                 # shape : {:kind :circle :r :number}
 
 (defn area {:params [Shape] :ret :number} [shape]
-  (case (shape :kind)       # ! case over Shape misses :rect
+  (case (shape :kind)       # --exhaustive: ! case over Shape misses :rect
     :circle (* 3.14 (shape :r) (shape :r))))
 
 (defn area2 {:params [Shape] :ret :number} [shape]
