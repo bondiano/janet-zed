@@ -791,6 +791,68 @@ fn references_with_the_declaration() {
 }
 
 #[test]
+fn document_highlight_on_a_definition_and_its_use() {
+    let mut session = Session::start();
+    let highlights = session
+        .request(
+            "textDocument/documentHighlight",
+            session.at("total-area items", 2),
+        )
+        .unwrap();
+    let report = session.report.clone();
+    let mut shown: Vec<String> = highlights
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|highlight| {
+            let kind = match highlight["kind"].as_i64() {
+                Some(2) => "read",
+                Some(3) => "write",
+                other => panic!("unexpected highlight kind {other:?}"),
+            };
+            format!(
+                "{} {kind}",
+                session.show_location(&report, &highlight["range"])
+            )
+        })
+        .collect();
+    shown.sort();
+    insta::assert_snapshot!(format!(
+        "----- CURSOR\n{}\n\n----- HIGHLIGHTS\n{}\n",
+        session.cursor("total-area items", 2),
+        shown.join("\n")
+    ));
+    session.finish();
+}
+
+/// A workspace symbol search matches names case-insensitively and by substring, across files.
+#[test]
+fn workspace_symbol_matches_by_substring() {
+    let mut session = Session::start();
+    let symbols = session
+        .request("workspace/symbol", json!({"query": "AREA"}))
+        .unwrap();
+    let mut shown: Vec<String> = symbols
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|symbol| {
+            format!(
+                "{} {}",
+                symbol["name"].as_str().unwrap(),
+                session.show_location(
+                    symbol["location"]["uri"].as_str().unwrap(),
+                    &symbol["location"]["range"]
+                )
+            )
+        })
+        .collect();
+    shown.sort();
+    insta::assert_snapshot!(shown.join("\n"));
+    session.finish();
+}
+
+#[test]
 fn rename_an_imported_definition() {
     let mut session = Session::start();
     let mut params = session.at("shapes/area", 8);

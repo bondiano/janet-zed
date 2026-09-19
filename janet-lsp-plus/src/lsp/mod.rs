@@ -1,5 +1,6 @@
 //! The Janet language server: hover, completion, signature help, go-to-definition, document
-//! symbols, structural code actions, references and rename.
+//! symbols, workspace symbols, structural code actions, references, document highlight and
+//! rename.
 
 mod diagnostics;
 mod handlers;
@@ -15,10 +16,10 @@ use lsp_types::notification::{
 };
 use lsp_types::request::Formatting;
 use lsp_types::request::{
-    CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-    InlayHintRefreshRequest, InlayHintRequest, PrepareRenameRequest, References,
+    CodeActionRequest, Completion, DocumentHighlightRequest, DocumentSymbolRequest, GotoDefinition,
+    HoverRequest, InlayHintRefreshRequest, InlayHintRequest, PrepareRenameRequest, References,
     RegisterCapability, Rename, Request as LspRequest, ResolveCompletionItem, Shutdown,
-    SignatureHelpRequest,
+    SignatureHelpRequest, WorkspaceSymbolRequest,
 };
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
@@ -242,6 +243,8 @@ fn capabilities() -> ServerCapabilities {
             ..CodeActionOptions::default()
         })),
         references_provider: Some(OneOf::Left(true)),
+        document_highlight_provider: Some(OneOf::Left(true)),
+        workspace_symbol_provider: Some(OneOf::Left(true)),
         inlay_hint_provider: Some(OneOf::Left(true)),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
@@ -425,7 +428,7 @@ fn answer(connection: &Connection, state: &State, request: Request) -> Result<()
 }
 
 /// Infers every file of `paths` on a thread of its own, answering requests meanwhile: they only
-/// read, and inference only fills its cache. Anything else stops it at the next component, since
+/// read, and inference only fills its cache. Anything else stops it at the next file, since
 /// it changes what is inferred or waits to be published: a notification or shutdown, left at the
 /// back of `queue` with whatever comes after it, or a check come back, left in `results`. Whether
 /// it finished.
@@ -553,6 +556,12 @@ fn dispatch(state: &State, request: Request) -> Response {
             handle::<CodeActionRequest>(state, request, handlers::code_action)
         }
         References::METHOD => handle::<References>(state, request, handlers::references),
+        DocumentHighlightRequest::METHOD => {
+            handle::<DocumentHighlightRequest>(state, request, handlers::document_highlight)
+        }
+        WorkspaceSymbolRequest::METHOD => {
+            handle::<WorkspaceSymbolRequest>(state, request, handlers::workspace_symbol)
+        }
         PrepareRenameRequest::METHOD => {
             handle::<PrepareRenameRequest>(state, request, handlers::prepare_rename)
         }

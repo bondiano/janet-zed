@@ -87,7 +87,7 @@ fn formats_with_spork_fmt() {
 
 #[test]
 fn checks_without_running() {
-    let dir = std::env::temp_dir().join("janet-tooling-check-test");
+    let dir = std::env::temp_dir().join(format!("janet-tooling-check-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("b.janet"), IMPORTED).unwrap();
     let marker = dir.join("ran");
@@ -150,7 +150,10 @@ fn checks_past_a_definition_that_fails_to_compile() {
 
 #[test]
 fn checks_against_directives_not_script_helpers() {
-    let dir = std::env::temp_dir().join("janet-tooling-directive-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-directive-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("helpers.janet"), "(defn- helper [] 1)\n").unwrap();
     let source = "# janet-zed: include ./helpers.janet\n# janet-zed: declare host/name\n\
@@ -165,7 +168,10 @@ fn checks_against_directives_not_script_helpers() {
 #[test]
 fn checks_imports_of_workspace_packages() {
     // A monorepo: `http` imports `void/core/x` from the sibling package `core`.
-    let dir = std::env::temp_dir().join("janet-tooling-packages-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-packages-test-{}",
+        std::process::id()
+    ));
     let core = dir.join("core/void");
     std::fs::create_dir_all(core.join("core")).unwrap();
     std::fs::create_dir_all(dir.join("http")).unwrap();
@@ -193,7 +199,10 @@ fn checks_imports_of_workspace_packages() {
 fn checks_against_what_imports_bind_at_run_time() {
     // Flycheck rules would skip both: the loop in the imported module and, before quoted data
     // counted as pure, `methods`, leaving `m` unexpanded.
-    let dir = std::env::temp_dir().join("janet-tooling-run-time-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-run-time-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("b.janet"),
@@ -208,7 +217,8 @@ fn checks_against_what_imports_bind_at_run_time() {
 
 #[test]
 fn checks_without_running_asserts_or_computed_imports() {
-    let dir = std::env::temp_dir().join("janet-tooling-assert-test");
+    let dir =
+        std::env::temp_dir().join(format!("janet-tooling-assert-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let marker = dir.join("ran");
     std::fs::remove_file(&marker).ok();
@@ -223,11 +233,10 @@ fn checks_without_running_asserts_or_computed_imports() {
 
 #[test]
 fn keeps_imports_loaded_until_their_files_change() {
-    let dir = std::env::temp_dir().join("janet-tooling-cache-test");
+    let dir = std::env::temp_dir().join(format!("janet-tooling-cache-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let loads = dir.join("loads");
     std::fs::write(&loads, "").unwrap();
-    // Each module notes its loading in `loads`; `c` imports `b`.
     // Each module notes its loading in `loads` first; `c` imports `b`.
     let module = |name: &str, body: &str| {
         let note = format!("(spit {:?} {name:?} :a)\n", loads.display().to_string());
@@ -268,7 +277,8 @@ fn keeps_imports_loaded_until_their_files_change() {
 
 #[test]
 fn restarts_after_a_check_that_does_not_finish() {
-    let dir = std::env::temp_dir().join("janet-tooling-restart-test");
+    let dir =
+        std::env::temp_dir().join(format!("janet-tooling-restart-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(dir.join("slow.janet"), "(os/sleep 2)\n").unwrap();
     let file = dir.join("a.janet");
@@ -301,7 +311,10 @@ fn restarts_after_a_check_that_does_not_finish() {
 
 #[test]
 fn reports_the_types_a_macro_declares() {
-    let dir = std::env::temp_dir().join("janet-tooling-binding-types-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-binding-types-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("a.janet");
     let source = concat!(
@@ -335,7 +348,10 @@ fn reports_the_types_a_macro_declares() {
 
 #[test]
 fn reports_what_macros_bind() {
-    let dir = std::env::temp_dir().join("janet-tooling-bindings-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-bindings-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     std::fs::write(
         dir.join("b.janet"),
@@ -398,7 +414,10 @@ fn reports_what_macros_bind() {
 
 #[test]
 fn declared_core_names_keep_their_bindings() {
-    let dir = std::env::temp_dir().join("janet-tooling-declared-core-test");
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-declared-core-test-{}",
+        std::process::id()
+    ));
     std::fs::create_dir_all(&dir).unwrap();
     let declared = ["def-".to_string(), "defn".to_string(), "host".to_string()];
     let problems = Worker::new("janet")

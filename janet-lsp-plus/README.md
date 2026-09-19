@@ -28,8 +28,8 @@ downloads.
 - Diagnostics from the Janet compiler as you type, and from the types when they are asked for.
 - Completion with docs, hover, and signature help, all typed where a type is known.
 - Go-to-definition for locals, imported modules and the standard library (`boot.janet` and the
-  C sources), find references, and scope-aware rename across the workspace.
-- Document symbols and formatting (spork `fmt`).
+  C sources), find references, document highlight, and scope-aware rename across the workspace.
+- Document symbols, workspace symbol search, and formatting (spork `fmt`).
 - Code actions: [structural editing](#structural-editing) and quick fixes for unknown symbols
   (create the function or `def`, ignore the line, or declare the name).
 - In `project.janet`, the bindings jpm and janet-pm (`spork/declare-cc`) give it, taken from the

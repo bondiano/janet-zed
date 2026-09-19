@@ -5,7 +5,7 @@
 //! Requests about a stop (stack, variables, evaluation, stepping) go to the driver; the session
 //! lifecycle, threads and breakpoint bookkeeping stay here.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::time::Duration;
@@ -180,6 +180,8 @@ struct Session {
     /// Requests sent to the driver, by seq (the id the driver answers with).
     pending: HashMap<i64, String>,
     stopped: bool,
+    /// Thread id → name: the main program, and the tasks that stopped and have not ended.
+    threads: BTreeMap<i64, String>,
     kill: Option<oneshot::Sender<()>>,
     /// The netrepl connection an attach session keeps open.
     repl: Option<Netrepl>,
@@ -198,6 +200,7 @@ impl Session {
             driver: None,
             pending: HashMap::new(),
             stopped: false,
+            threads: BTreeMap::from([(1, "main".to_string())]),
             kill: None,
             repl: None,
         }
@@ -229,7 +232,13 @@ impl Session {
             "setBreakpoints" => self.set_breakpoints(arguments).await,
             "setExceptionBreakpoints" => self.set_exceptions(arguments).await,
             "configurationDone" => self.start().await.map(|()| json!({})),
-            "threads" => Ok(json!({"threads": [{"id": 1, "name": "main"}]})),
+            "threads" => Ok(json!({
+                "threads": self
+                    .threads
+                    .iter()
+                    .map(|(id, name)| json!({"id": id, "name": name}))
+                    .collect::<Vec<_>>(),
+            })),
             "disconnect" | "terminate" => {
                 if let Some(kill) = self.kill.take() {
                     kill.send(()).ok();
@@ -356,17 +365,21 @@ impl Session {
 
     /// Runs the driver inside the REPL's netrepl process, next to the kernel's evaluations.
     async fn attach(&mut self, attach: AttachArguments) -> Result<()> {
+        let project = netrepl::project_of(&match attach.cwd {
+            Some(cwd) => cwd,
+            None => std::env::current_dir()?,
+        });
         let mut repl = if let Some(port) = attach.port {
             let address = format!("{}:{port}", attach.host);
-            Netrepl::attach(&address, "zed-dap")
+            let token = (attach.host == netrepl::HOST)
+                .then(|| netrepl::token_for(&project, port))
+                .flatten()
+                .unwrap_or_default();
+            Netrepl::attach(&address, &format!("{token}zed-dap"))
                 .await
                 .with_context(|| format!("no netrepl at {address}"))?
         } else {
-            let cwd = match attach.cwd {
-                Some(cwd) => cwd,
-                None => std::env::current_dir()?,
-            };
-            Netrepl::attach_recorded(&netrepl::project_of(&cwd))
+            Netrepl::attach_recorded(&project)
                 .await
                 .context("no REPL for this project: start the Janet REPL kernel first")?
         };
@@ -447,16 +460,26 @@ impl Session {
         match message["event"].as_str() {
             Some("stopped") => {
                 self.stopped = true;
+                let thread = message["threadId"].as_i64().unwrap_or(1);
+                let name = message["name"].as_str().unwrap_or("main");
+                self.threads.insert(thread, name.to_string());
+                // Other tasks go on running on the event loop.
                 let mut body = json!({
                     "reason": message["reason"],
-                    "threadId": 1,
-                    "allThreadsStopped": true,
+                    "threadId": thread,
+                    "allThreadsStopped": false,
                 });
                 if let Some(text) = message["text"].as_str() {
                     body["text"] = text.into();
                     body["description"] = text.lines().next().unwrap_or_default().into();
                 }
                 self.event("stopped", body).await
+            }
+            Some("thread") => {
+                self.threads
+                    .remove(&message["threadId"].as_i64().unwrap_or_default());
+                let body = json!({"reason": message["reason"], "threadId": message["threadId"]});
+                self.event("thread", body).await
             }
             Some("breakpoint") => {
                 let breakpoint = json!({

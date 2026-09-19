@@ -1,5 +1,5 @@
 //! The debug adapter end to end: `janet-lsp-plus dap` over stdio, debugging
-//! `fixtures/debug/program.janet` with the real `janet`.
+//! the programs in `fixtures/debug` with the real `janet`.
 
 #![allow(clippy::unwrap_used)]
 
@@ -25,8 +25,14 @@ struct Adapter {
 
 impl Adapter {
     fn start() -> Self {
+        Self::debugging("program.janet")
+    }
+
+    /// An adapter for `fixtures/debug/{name}`.
+    fn debugging(name: &str) -> Self {
         let program = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("../fixtures/debug/program.janet")
+            .join("../fixtures/debug")
+            .join(name)
             .canonicalize()
             .unwrap();
         let mut child = Command::new(env!("CARGO_BIN_EXE_janet-lsp-plus"))
@@ -269,6 +275,46 @@ fn stops_on_entry_and_on_an_uncaught_error() {
 
     adapter.step("continue");
     assert_eq!(adapter.event("exited")["exitCode"], 1);
+    adapter.finish();
+}
+
+#[test]
+fn stops_a_task() {
+    let mut adapter = Adapter::debugging("tasks.janet");
+    adapter.launch(&[4], &[], false);
+    let stopped = adapter.event("stopped");
+    assert_eq!(stopped["reason"], "breakpoint");
+    assert_eq!(stopped["allThreadsStopped"], false);
+    let thread = stopped["threadId"].as_i64().unwrap();
+    assert_ne!(thread, 1);
+    let threads = adapter.request("threads", json!({}));
+    assert_eq!(
+        threads["threads"],
+        json!([{"id": 1, "name": "main"}, {"id": thread, "name": format!("task {thread}")}])
+    );
+    let trace = adapter.request("stackTrace", json!({"threadId": thread}));
+    let frames: Vec<String> = trace["stackFrames"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|frame| format!("{}:{}", frame["name"].as_str().unwrap(), frame["line"]))
+        .collect();
+    assert_eq!(frames, ["work:4", "spawn:8"]);
+    assert_eq!(adapter.locals(), ["x=5"]);
+
+    adapter.request("next", json!({"threadId": thread}));
+    assert_eq!(adapter.event("stopped")["threadId"], thread);
+    assert_eq!(adapter.locals(), ["doubled=10", "x=5"]);
+
+    adapter.request("continue", json!({"threadId": thread}));
+    assert_eq!(
+        adapter.event("thread"),
+        json!({"reason": "exited", "threadId": thread})
+    );
+    assert_eq!(adapter.event("exited")["exitCode"], 0);
+    assert_eq!(adapter.output("stdout"), "worked 10\ndone\n");
+    let threads = adapter.request("threads", json!({}));
+    assert_eq!(threads["threads"], json!([{"id": 1, "name": "main"}]));
     adapter.finish();
 }
 

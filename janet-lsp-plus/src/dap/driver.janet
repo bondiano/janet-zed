@@ -27,6 +27,13 @@
 (var- driver/stack @[])
 (def- driver/refs @[])
 
+# Debug fibers as DAP threads: the main program's is 1, a task's gets an id on its first stop.
+(var- driver/main nil)
+(def- driver/threads @{}) # task fiber -> id
+(var- driver/last-thread 1)
+# ponytail: one stop is served at a time, the others wait on this lock to report theirs.
+(def- driver/serving (ev/lock))
+
 (defn- driver/send [x]
   # The adapter may be gone already.
   (protect (net/write driver/conn (string (json/encode x) "\n"))))
@@ -273,7 +280,7 @@
       (not= :debug (fiber/status f))
       (do
         # A launched program goes on to its next top-level form; stop there.
-        (when (and (= driver/mode :launch) (= :dead (fiber/status f)))
+        (when (and (= driver/mode :launch) (= :dead (fiber/status f)) (= f driver/main))
           (set driver/at-start "step"))
         (set result [value nil]))
       (not arrived) (set result [value "breakpoint"])
@@ -290,9 +297,17 @@
   (when (= driver/mode :launch) (os/exit 0))
   (if (= :debug (fiber/status f)) [(resume f) "breakpoint"] [nil nil]))
 
-(defn- driver/serve
-  "Answers commands about `f`, stopped for `reason`, until one resumes it. Returns [value reason]
-  of that resume."
+(defn- driver/thread
+  "The thread id of `f`, given on its first stop."
+  [f]
+  (cond
+    (= f driver/main) 1
+    (driver/threads f) (driver/threads f)
+    (do (put driver/threads f (++ driver/last-thread)) driver/last-thread)))
+
+(defn- driver/stopped
+  "Reports the stop of `f` and answers commands about it until one resumes it. Returns the name of
+  that command, or :disconnected once the adapter is gone."
   [f reason text]
   (def fresh @{})
   (driver/scan-modules fresh)
@@ -300,27 +315,39 @@
   (set driver/stack (driver/frames f))
   (file/flush stdout)
   (file/flush stderr)
-  (driver/send (merge {:event "stopped" :reason reason} (if text {:text text} {})))
+  (def thread (driver/thread f))
+  (driver/send (merge {:event "stopped" :reason reason :threadId thread
+                       :name (if (one? thread) "main" (string "task " thread))}
+                      (if text {:text text} {})))
   (var result nil)
   (while (nil? result)
     (def command (ev/take driver/commands))
     (if (nil? command)
-      (set result (driver/disconnected f))
+      (set result :disconnected)
       (let [[id name & args] command]
         (if (index-of name [:continue :next :stepIn :stepOut])
           (do
             (driver/send {:id id :body {}})
             (array/clear driver/refs)
             (set driver/stack @[])
-            (set result
-                 (cond
-                   (not= :debug (fiber/status f)) [nil nil]
-                   (= name :continue) [(resume f) "breakpoint"]
-                   (driver/step f name))))
+            (set result name))
           (try
             (driver/send {:id id :body (driver/answer name args)})
             ([err] (driver/send {:id id :error (string err)})))))))
   result)
+
+(defn- driver/serve
+  "Serves the stop of `f` for `reason`, then resumes `f` as the command that ends it asks, outside
+  the lock: the resumed code may wait on a task that stops next. Returns [value reason] of that
+  resume."
+  [f reason text]
+  (ev/acquire-lock driver/serving)
+  (def command (defer (ev/release-lock driver/serving) (driver/stopped f reason text)))
+  (cond
+    (= command :disconnected) (driver/disconnected f)
+    (not= :debug (fiber/status f)) [nil nil]
+    (= command :continue) [(resume f) "breakpoint"]
+    (driver/step f command)))
 
 (defn- driver/trace [f err]
   (def buf @"")
@@ -333,6 +360,7 @@
   [thunk &opt entry]
   (def launch (= driver/mode :launch))
   (def f (fiber/new thunk (if (or driver/uncaught launch) :dei :di)))
+  (set driver/main f)
   (var outcome
     (if-let [reason driver/at-start]
       (do
@@ -352,6 +380,62 @@
       (driver/exit 1))
     (propagate value f))
   value)
+
+### Tasks
+#
+# Tasks the loop runs are root fibers: their :debug signal reaches the loop, which reports it as an
+# error and drops the task. Program code compiled while the debugger is on spawns tasks through
+# these replacements of the root env's bindings, which run each task's body under `driver/task`.
+
+(defn- driver/task
+  "Runs `thunk`, the body of an event loop task, in a debug fiber: a breakpoint stops the task
+  instead of ending it, and so does an error while `uncaught` is on. Errors propagate after the
+  stop, to the loop or the task's supervisor."
+  [thunk]
+  (def f (fiber/new thunk (if driver/uncaught :dei :di)))
+  (var outcome [(resume f) "breakpoint"])
+  (while (= :debug (fiber/status f))
+    (set outcome (driver/serve f (outcome 1) nil)))
+  (when (and (= :error (fiber/status f)) driver/uncaught)
+    (driver/serve f "exception" (driver/trace f (outcome 0))))
+  (when-let [thread (driver/threads f)]
+    (put driver/threads f nil)
+    (driver/send {:event "thread" :reason "exited" :threadId thread}))
+  (if (= :error (fiber/status f)) (propagate (outcome 0) f) (outcome 0)))
+
+(defn- driver/go
+  "`ev/go`, with a task function's body under `driver/task`."
+  [task &opt value supervisor]
+  (ev/go (if (= :function (type task))
+           # `ev/go` passes `value` to a function of one argument.
+           (fn :task [&] (driver/task (if (one? (disasm task :min-arity)) |(task value) task)))
+           task)
+         value
+         supervisor))
+
+(def- driver/tasks
+  {'ev/go @{:value driver/go}
+   'ev/spawn @{:macro true :value (fn :ev/spawn [& body] ~(,driver/go (fn :spawn [&] ,;body)))}
+   'ev/call @{:value (fn :ev/call [f & args] (driver/go (fn :call [&] (f ;args))))}
+   'net/server @{:value (fn :net/server [host port &opt handler & more]
+                          (net/server host port
+                                      (if (= :function (type handler))
+                                        (fn :handler [conn] (driver/task |(handler conn)))
+                                        handler)
+                                      ;more))}})
+
+# The root env's own bindings the replacements hide.
+(def- driver/replaced @{})
+
+(defn- driver/wrap-tasks []
+  (eachk name driver/tasks
+    (put driver/replaced name (in root-env name))
+    (put root-env name (driver/tasks name))))
+
+(defn- driver/unwrap-tasks []
+  (eachp [name binding] driver/replaced
+    (put root-env name binding))
+  (table/clear driver/replaced))
 
 ### Connection
 
@@ -388,6 +472,7 @@
   (put env :current-file path)
   (put env :source path)
   (set driver/env env)
+  (driver/wrap-tasks)
   (when stop-on-entry (set driver/at-start "entry"))
   (def file (file/open path :rb))
   (unless file
@@ -417,6 +502,7 @@
   "Removes the hook and every breakpoint: the REPL goes on as before attaching."
   [env]
   (put env :janet-zed/debugger nil)
+  (driver/unwrap-tasks)
   (set driver/uncaught false)
   (eachp [_ applied] driver/applied
     (eachp [line [source column]] applied
@@ -436,6 +522,7 @@
   (set driver/conn (net/connect "127.0.0.1" port))
   # Functions defined before attaching get breakpoints too.
   (driver/scan-env env @{})
+  (driver/wrap-tasks)
   (put env :janet-zed/debugger
        {:compiled driver/compiled :forget driver/forget :run driver/run})
   (ev/spawn

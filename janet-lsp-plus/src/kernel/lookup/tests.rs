@@ -6,7 +6,8 @@ use janet_check::analysis::canonical;
 fn looks_up_loaded_modules_then_the_repl() {
     // Below the ephemeral range, apart from the dap tests' ports.
     let port = 30_000 + u16::try_from(std::process::id() % 10_000).unwrap();
-    let dir = std::env::temp_dir().join("janet-tooling-lookup-test");
+    let dir =
+        std::env::temp_dir().join(format!("janet-tooling-lookup-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let module = dir.join("made.janet");
     std::fs::write(

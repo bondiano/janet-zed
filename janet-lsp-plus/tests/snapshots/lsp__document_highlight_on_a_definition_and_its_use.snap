@@ -1,0 +1,11 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "format!(\"----- CURSOR\\n{}\\n\\n----- HIGHLIGHTS\\n{}\\n\",\nsession.cursor(\"total-area items\", 2), shown.join(\"\\n\"))"
+---
+----- CURSOR
+                 (total-area items)
+                    ↑
+
+----- HIGHLIGHTS
+src/report.janet 17:18-17:28 read
+src/report.janet 4:6-4:16 write

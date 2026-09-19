@@ -79,6 +79,8 @@ pub struct Stdlib {
     peg: HashMap<String, CoreBinding>,
     /// What jpm and janet-pm add for `project.janet`.
     project: HashMap<String, CoreBinding>,
+    /// The Janet checkout the bindings are located in.
+    source: Option<PathBuf>,
 }
 
 /// Special forms only: what is known without asking `janet`.
@@ -155,7 +157,16 @@ impl Stdlib {
             bindings: specials.chain(rows).collect(),
             peg: peg::specials(source).collect(),
             project: project::vocabulary(installed),
+            source: source.map(Path::to_path_buf),
         }
+    }
+
+    /// Whether `path` is in the Janet checkout: core itself, which compiles against an empty
+    /// environment rather than against core.
+    pub fn is_core_source(&self, path: &Path) -> bool {
+        self.source
+            .as_ref()
+            .is_some_and(|root| path.starts_with(root))
     }
 
     pub fn get(&self, name: &str) -> Option<&CoreBinding> {

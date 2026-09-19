@@ -6,8 +6,9 @@ a REPL wired into the editor, and structural editing.
 - **Syntax:** highlighting, indentation, outline, bracket matching, text objects, and
   injections, all built on [tree-sitter-janet-simple](https://github.com/sogaiu/tree-sitter-janet-simple).
 - **Language server:** diagnostics as you type, completion, hover, signature help,
-  go-to-definition into the stdlib, references, rename, symbols, formatting, and
-  `project.janet` support — see [`janet-lsp-plus`](janet-lsp-plus/README.md).
+  go-to-definition into the stdlib, references, document highlight, rename, document and
+  workspace symbols, formatting, and `project.janet` support — see
+  [`janet-lsp-plus`](janet-lsp-plus/README.md).
 - **Types:** hover, signature help, key completion and inlay hints from the types of a program, with
   optional diagnostics for what they rule out — see [`janet-check`](janet-check/README.md#types).
 - **Code actions:** paredit, threading and quick fixes for unknown symbols — see
@@ -82,8 +83,9 @@ Changing it takes a server restart (`editor: restart language server`).
 
 The REPL kernel of a project listens on `127.0.0.1` and serves only clients that know its token,
 a fresh secret it records next to its port in `~/.cache/janet-zed/repl/<project>/token`, readable
-by you alone. `replPort` and a debug attach with a `port` connect to a netrepl you started yourself
-and send no token.
+by you alone (on Windows, under `%USERPROFILE%`, which only you and administrators may read).
+`replPort` and a debug attach with a `port` send the token only when the port is the one the
+project's kernel recorded; a netrepl you started yourself gets none.
 
 Project-level analysis — [`:lint-as`](janet-check/README.md#library-macros-that-define-names)
 for library macros and [comment directives](janet-check/README.md#comment-directives) — is

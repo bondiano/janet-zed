@@ -10,12 +10,14 @@ use anyhow::{Context, Result, bail, ensure};
 use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
-    DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Documentation,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint,
-    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameParams, SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolKind,
-    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit,
+    DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
+    DocumentSymbolParams, DocumentSymbolResponse, Documentation, GotoDefinitionParams,
+    GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
+    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, ParameterInformation,
+    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
+    SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
+    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    WorkspaceSymbolResponse,
 };
 
 use lsp_types::DocumentFormattingParams;
@@ -389,6 +391,47 @@ fn symbol_kind(definer: &str) -> SymbolKind {
     }
 }
 
+/// How many symbols [`workspace_symbol`] answers with at most: enough for a picker, not the whole
+/// workspace typed out.
+const MAX_WORKSPACE_SYMBOLS: usize = 200;
+
+/// Module-level definitions across the workspace whose name contains `query`, case-insensitively.
+#[allow(deprecated)] // `SymbolInformation::deprecated` has no default.
+pub fn workspace_symbol(
+    state: &State,
+    params: WorkspaceSymbolParams,
+) -> Result<Option<WorkspaceSymbolResponse>> {
+    let query = params.query.to_lowercase();
+    let mut symbols: Vec<SymbolInformation> = state
+        .workspace
+        .paths()
+        .filter_map(|path| state.workspace.file(path))
+        .flat_map(|file| {
+            file.definitions
+                .iter()
+                .filter(|(name, _)| name.to_lowercase().contains(&query))
+                .map(|(name, info)| SymbolInformation {
+                    name: name.clone(),
+                    kind: symbol_kind(&info.definer),
+                    tags: None,
+                    deprecated: None,
+                    location: Location::new(
+                        file.uri.clone(),
+                        file.document.range(info.name.clone()),
+                    ),
+                    container_name: None,
+                })
+        })
+        .collect();
+    symbols.sort_by(|a, b| {
+        a.name
+            .cmp(&b.name)
+            .then_with(|| a.location.uri.as_str().cmp(b.location.uri.as_str()))
+    });
+    symbols.truncate(MAX_WORKSPACE_SYMBOLS);
+    Ok(Some(WorkspaceSymbolResponse::Flat(symbols)))
+}
+
 pub fn code_action(state: &State, params: CodeActionParams) -> Result<Option<CodeActionResponse>> {
     let uri = &params.text_document.uri;
     let doc = state.document(uri)?;
@@ -505,6 +548,37 @@ pub fn references(state: &State, params: ReferenceParams) -> Result<Option<Vec<L
     Ok(Some(locations))
 }
 
+/// Every occurrence of the symbol under the cursor within its own file, for the editor to
+/// highlight as the cursor sits on it. The same targets [`references`] resolves, narrowed to
+/// `params`' document; the declaration is marked as written, the rest as read.
+pub fn document_highlight(
+    state: &State,
+    params: DocumentHighlightParams,
+) -> Result<Option<Vec<DocumentHighlight>>> {
+    let position = params.text_document_position_params;
+    let file = state.file(&position.text_document.uri)?;
+    let Some((_, target)) = resolve(state, &position)? else {
+        return Ok(None);
+    };
+    let declaration = references::declaration(&state.workspace, &target);
+    let highlights = references::occurrences(&state.workspace, &target)
+        .into_iter()
+        .filter(|occurrence| occurrence.file.path == file.path)
+        .map(|occurrence| {
+            let kind = if declaration.as_ref() == Some(&occurrence) {
+                DocumentHighlightKind::WRITE
+            } else {
+                DocumentHighlightKind::READ
+            };
+            DocumentHighlight {
+                range: range_of(&occurrence),
+                kind: Some(kind),
+            }
+        })
+        .collect();
+    Ok(Some(highlights))
+}
+
 pub fn prepare_rename(
     state: &State,
     params: TextDocumentPositionParams,
@@ -518,6 +592,9 @@ pub fn rename(state: &State, params: RenameParams) -> Result<Option<WorkspaceEdi
     ensure!(is_symbol(&new_name), "`{new_name}` is not a Janet symbol");
     let (_, target) = renamable(state, &params.text_document_position)?
         .context("only symbols defined in the workspace can be renamed")?;
+    if let Some(conflict) = references::rename_conflict(&state.workspace, &target, &new_name) {
+        bail!("{conflict}");
+    }
     let changes = references::occurrences(&state.workspace, &target)
         .into_iter()
         .fold(
@@ -551,8 +628,6 @@ fn resolve<'s>(
 
 /// [`resolve`], refusing core bindings, definitions that live in dependencies, names nothing binds
 /// and quoted symbols: renaming them would rewrite whatever is spelled the same.
-// ponytail: no check that the new name collides with or is captured by another binding; add one
-// when a rename is seen to change what a name refers to.
 fn renamable<'s>(
     state: &'s State,
     params: &TextDocumentPositionParams,

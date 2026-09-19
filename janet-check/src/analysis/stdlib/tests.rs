@@ -84,6 +84,15 @@ fn knows_which_names_are_core() {
 }
 
 #[test]
+fn knows_core_sources() {
+    let root = Path::new("/janet");
+    let stdlib = Stdlib::parse("", Some(root));
+    assert!(stdlib.is_core_source(&root.join("src/boot/boot.janet")));
+    assert!(!stdlib.is_core_source(Path::new("/project/main.janet")));
+    assert!(!Stdlib::default().is_core_source(&root.join("src/boot/boot.janet")));
+}
+
+#[test]
 fn loads_from_janet() {
     let stdlib = Stdlib::load("janet", None).unwrap();
     let map = stdlib.get("map").unwrap();

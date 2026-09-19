@@ -313,7 +313,7 @@ impl Workspace {
             return facts;
         }
         for component in self.components([path]) {
-            self.infer_component(&component);
+            self.infer_component(&component, &|| false);
         }
         self.cached(path).unwrap_or_default()
     }
@@ -324,7 +324,7 @@ impl Workspace {
         self.infer_until(paths, &|| false);
     }
 
-    /// [`Self::infer`], stopped once `stop` says so: no component is started after that. What was
+    /// [`Self::infer`], stopped once `stop` says so: no file is started after that. What was
     /// inferred stays cached, so a later call carries on where this one stopped. Whether it
     /// finished.
     pub fn infer_until<'p>(
@@ -341,7 +341,7 @@ impl Workspace {
                         while !stop()
                             && let Some(component) = layer.get(next.fetch_add(1, Ordering::Relaxed))
                         {
-                            self.infer_component(component);
+                            self.infer_component(component, stop);
                         }
                     });
                 }
@@ -417,8 +417,9 @@ impl Workspace {
 
     /// Infers the files of one component of the import graph, whose imports outside it are
     /// inferred already. A cycle is walked twice, every file seeing what the others last made of
-    /// themselves; what the second walk reads differently from the first is `Dynamic`.
-    fn infer_component(&self, members: &[PathBuf]) {
+    /// themselves; what the second walk reads differently from the first is `Dynamic`. Once `stop`
+    /// says so no further file is started, and nothing of the component is cached.
+    fn infer_component(&self, members: &[PathBuf], stop: &(dyn Fn() -> bool + Sync)) {
         if members.iter().all(|path| self.cached(path).is_some()) {
             return;
         }
@@ -430,6 +431,9 @@ impl Workspace {
         let mut first: HashMap<PathBuf, HashMap<String, Annotation>> = HashMap::new();
         for pass in 0..if cyclic { 2 } else { 1 } {
             for path in members {
+                if stop() {
+                    return;
+                }
                 let facts = self.infer_file(path, members, &drafts);
                 if let Some(draft) = drafts.insert(path.clone(), facts)
                     && pass == 1

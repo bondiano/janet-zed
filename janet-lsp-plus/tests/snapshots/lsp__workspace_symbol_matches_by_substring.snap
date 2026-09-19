@@ -1,0 +1,6 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "shown.join(\"\\n\")"
+---
+area src/shapes.janet 29:6-29:10
+total-area src/report.janet 4:6-4:16

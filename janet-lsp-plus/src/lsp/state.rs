@@ -10,7 +10,7 @@ use serde::Deserialize;
 
 use super::diagnostics::Job;
 use crate::kernel::lookup::{self, Repl};
-use crate::kernel::netrepl::project_of;
+use crate::kernel::netrepl::{self, project_of};
 use janet_check::analysis::stdlib::Stdlib;
 use janet_check::analysis::workspace::{self, Workspace, is_project};
 use janet_check::analysis::{SourceFile, canonical, config, path_of, uri_of};
@@ -192,7 +192,13 @@ impl State {
     /// The REPL at the configured port, else the one a kernel recorded for a workspace root.
     fn attach_repl(&self) -> std::io::Result<Repl> {
         if let Some(port) = self.repl_port {
-            return Repl::attach(port, "janet-zed-lsp");
+            let token = self
+                .workspace
+                .roots()
+                .iter()
+                .find_map(|root| netrepl::token_for(&project_of(root), port))
+                .unwrap_or_default();
+            return Repl::attach(port, &format!("{token}janet-zed-lsp"));
         }
         self.workspace
             .roots()
@@ -217,6 +223,10 @@ impl State {
     /// What checking the open buffer at `uri` takes.
     pub fn job(&self, uri: &Uri) -> Option<Job> {
         let buffer = self.open.get(uri)?;
+        // Checked against core, every definition in core's own sources shadows itself.
+        if self.stdlib.is_core_source(&buffer.path) {
+            return None;
+        }
         let file = self.workspace.file(&buffer.path)?;
         let cwd = self.workspace.project_root(&buffer.path)?;
         let declared = self.workspace.unbound(&buffer.path);

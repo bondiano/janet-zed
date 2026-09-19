@@ -162,6 +162,12 @@ pub fn recorded(project: &Path) -> Option<(u16, String)> {
     read_record(&record_dir_under(&ports_dir()?, project))
 }
 
+/// The token `project`'s kernel recorded, when it recorded `port`: a client attaching to that
+/// port by number still gets in, and a server on any other port never sees the token.
+pub fn token_for(project: &Path, port: u16) -> Option<String> {
+    recorded(project).and_then(|(recorded, token)| (recorded == port).then_some(token))
+}
+
 fn read_record(dir: &Path) -> Option<(u16, String)> {
     let read = |name| std::fs::read_to_string(dir.join(name)).ok();
     let port = read("port")?.trim().parse().ok()?;
@@ -188,7 +194,7 @@ fn write_record(ports: &Path, dir: &Path, port: u16, token: &str) -> io::Result<
 
 /// Replaces `file` with `text`, only this user may read, at once: a reader sees the old text or
 /// the new, and kernels starting together each write a file of their own. On Windows the
-/// directory's permissions apply.
+/// profile's permissions apply, see [`ports_dir`].
 fn write_private(file: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
     static WRITTEN: AtomicU64 = AtomicU64::new(0);
@@ -215,8 +221,10 @@ pub fn serves(reply: &str, project: &Path) -> bool {
             .is_some_and(|served| Path::new(served) == project)
 }
 
+/// On Windows under the user profile, whose ACL admits only its owner (and SYSTEM and
+/// administrators), in place of the modes set on Unix. Never under a `HOME` a shell may point elsewhere.
 fn ports_dir() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))?;
+    let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME"))?;
     Some(PathBuf::from(home).join(PORTS))
 }
 

@@ -217,6 +217,89 @@ pub fn declaration<'w>(workspace: &'w Workspace, target: &Target) -> Option<Occu
     }
 }
 
+/// Why renaming `target` to `new_name` would change what some name refers to: a use of the new
+/// name the renamed binding would capture, a use of the target a binding of the new name would
+/// capture, or a definition of the new name beside it. `None` when the rename is safe.
+pub fn rename_conflict(workspace: &Workspace, target: &Target, new_name: &str) -> Option<String> {
+    if matches!(target, Target::Local { name, .. } | Target::Module { name, .. } if name == new_name)
+    {
+        return None;
+    }
+    let own = occurrences(workspace, target);
+    match target {
+        Target::Local { file, binding, .. } => {
+            let source = workspace.file(file)?;
+            let renamed = source.scopes.locals.get(*binding)?;
+            let inner = |other: usize| {
+                let other = &source.scopes.locals[other];
+                other.range.start > renamed.range.start
+                    && renamed.visible.start <= other.visible.start
+                    && other.visible.end <= renamed.visible.end
+            };
+            capture(source, new_name, &renamed.visible, &inner, &own)
+        }
+        Target::Module { file, name } => workspace
+            .file(file)
+            .map(|source| (source, String::new()))
+            .into_iter()
+            .chain(importers(workspace, file, name, MAX_REEXPORTS))
+            .find_map(|(source, prefix)| {
+                let spelled = format!("{prefix}{new_name}");
+                if workspace.definition(&source.path, &spelled).is_some() {
+                    return Some(format!(
+                        "`{spelled}` is already defined in {}",
+                        source.path.display()
+                    ));
+                }
+                capture(source, &spelled, &(0..usize::MAX), &|_| true, &own)
+            }),
+        _ => None,
+    }
+}
+
+/// A capture in `source` by renaming to `spelled` a binding seen over `region`: a symbol spelled so
+/// there that no `inner` local binds, or an occurrence in `own` an `inner` local of that name hides.
+fn capture(
+    source: &SourceFile,
+    spelled: &str,
+    region: &Range<usize>,
+    inner: &dyn Fn(usize) -> bool,
+    own: &[Occurrence],
+) -> Option<String> {
+    let scopes = &source.scopes;
+    let captured = source
+        .symbols
+        .get(spelled)
+        .into_iter()
+        .flatten()
+        .filter(|range| region.start <= range.start && range.end <= region.end)
+        .any(|range| {
+            !scopes
+                .uses
+                .get(&range.start)
+                .is_some_and(|&local| inner(local))
+        });
+    let hidden = own
+        .iter()
+        .filter(|occurrence| occurrence.file.path == source.path)
+        .any(|occurrence| {
+            scopes
+                .visible_at(occurrence.range.start)
+                .iter()
+                .any(|&(local, binding)| binding.name == spelled && inner(local))
+        });
+    let file = source.path.display();
+    match (captured, hidden) {
+        (true, _) => Some(format!(
+            "`{spelled}` in {file} would refer to the renamed binding"
+        )),
+        (_, true) => Some(format!(
+            "a binding of `{spelled}` in {file} would hide the renamed one"
+        )),
+        _ => None,
+    }
+}
+
 /// How many re-exports a name is followed through, so that a cycle of them ends.
 pub(super) const MAX_REEXPORTS: usize = 8;
 

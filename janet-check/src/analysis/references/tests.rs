@@ -37,8 +37,12 @@ const FILES: [(&str, &str); 7] = [
 ];
 
 fn workspace() -> Workspace {
+    workspace_of(&FILES)
+}
+
+fn workspace_of(files: &[(&str, &str)]) -> Workspace {
     let mut workspace = Workspace::new(vec!["/ws".into()], None);
-    for (path, text) in FILES {
+    for &(path, text) in files {
         let uri = format!("file://{path}").parse().unwrap();
         workspace.insert(SourceFile::new(
             path.into(),
@@ -214,4 +218,37 @@ fn macro_definition_the_checker_expanded() {
     workspace.refresh();
     let edited = show_references(&workspace, "/ws/admin.janet", "model/Delivery");
     insta::assert_snapshot!(format!("{checked}\n===== AFTER AN EDIT\n\n{edited}"));
+}
+
+/// Renaming the symbol ending with `needle` in `path` to `new_name`, refused or not.
+fn conflict(workspace: &Workspace, path: &str, needle: &str, new_name: &str) -> Option<String> {
+    let source = workspace.file(Path::new(path)).unwrap();
+    let offset = source.document.text.find(needle).unwrap() + needle.len() - 1;
+    let (_, target) = resolve(workspace, source, offset, |_| false, |_| false).unwrap();
+    rename_conflict(workspace, &target, new_name)
+}
+
+#[test]
+fn rename_that_changes_a_reference_is_refused() {
+    let shapes = "/ws/src/shapes.janet";
+    let ws = workspace();
+    // A use of the new name the renamed parameter would capture.
+    assert!(conflict(&ws, shapes, "[shape", "pi").is_some());
+    // Parameters `[area k]` renamed to `[area area]`: `(* area k)` changes.
+    assert!(conflict(&ws, shapes, "area k", "area").is_some());
+    // A parameter named so hides the renamed definition inside `area`.
+    assert!(conflict(&ws, shapes, "(def pi", "shape").is_some());
+    // Already defined beside it.
+    assert!(conflict(&ws, shapes, "(defn area", "scale").is_some());
+    // A core function the file calls would become the renamed definition.
+    let ws = workspace_of(&[("/ws/a.janet", "(def n 1)\n(print n)\n")]);
+    assert!(conflict(&ws, "/ws/a.janet", "(def n", "print").is_some());
+
+    let ws = workspace();
+    assert_eq!(conflict(&ws, shapes, "area k", "factor"), None);
+    assert_eq!(conflict(&ws, shapes, "(def pi", "tau"), None);
+    assert_eq!(conflict(&ws, shapes, "(def pi", "pi"), None);
+    // An inner binding of the new name that shadows nothing renamed.
+    let ws = workspace_of(&[("/ws/a.janet", "(defn f [x] (let [y 1] y) x)\n")]);
+    assert_eq!(conflict(&ws, "/ws/a.janet", "[x", "y"), None);
 }

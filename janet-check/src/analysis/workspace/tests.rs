@@ -342,13 +342,29 @@ fn stopped_inference_carries_on_where_it_stopped() {
     let paths = ["/ws/a.janet", "/ws/b.janet", "/ws/c.janet", "/ws/d.janet"].map(Path::new);
     assert!(!workspace.infer_until(paths, &|| true));
     assert_eq!(workspace.inferences(), 0);
-    let first = AtomicUsize::new(0);
-    // Lets one component through: the chain is one file per layer.
-    let stop_after_one = || first.fetch_add(1, Ordering::Relaxed) > 0;
-    assert!(!workspace.infer_until(paths, &stop_after_one));
+    // Lets one file through: the chain is one file per layer.
+    assert!(!workspace.infer_until(paths, &|| workspace.inferences() > 0));
     assert_eq!(workspace.inferences(), 1);
     assert!(workspace.infer_until(paths, &|| false));
     assert_eq!(workspace.inferences(), 4);
+}
+
+/// A cycle stopped halfway caches none of its files: each read what the other last made of itself.
+#[test]
+fn a_cycle_stops_between_its_files() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file("/ws/a.janet", "(import ./b)\n(defn f [] 1)"));
+    workspace.insert(file("/ws/b.janet", "(import ./a)\n(defn g [] (a/f))"));
+    workspace.refresh();
+    let paths = ["/ws/a.janet", "/ws/b.janet"].map(Path::new);
+    assert!(!workspace.infer_until(paths, &|| workspace.inferences() > 0));
+    assert_eq!(workspace.inferences(), 1, "stopped after the first file");
+    assert!(workspace.infer_until(paths, &|| false));
+    assert_eq!(
+        workspace.inferences(),
+        5,
+        "the cycle walked twice from the start"
+    );
 }
 
 #[test]
