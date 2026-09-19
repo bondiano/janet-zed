@@ -30,9 +30,15 @@ that is found on `PATH` takes precedence over the build the Zed extension downlo
 - Completion with docs, hover, and signature help, all typed where a type is known.
 - Go-to-definition for locals, imported modules and the standard library (`boot.janet` and the
   C sources), find references, document highlight, and scope-aware rename across the workspace.
-- Document symbols, workspace symbol search, and formatting (spork `fmt`).
+- Document symbols, workspace symbol search, and formatting (spork `fmt`) of the buffer or of the
+  top-level forms a selection touches; a new line is indented as spork `fmt` would indent it.
+- Semantic tokens: macros, functions, special forms, parameters and variables apart, core names
+  marked, and a core name the file shadows marked as what shadows it.
+- Completion of names other workspace modules define, adding the `(import ./x)` they need.
+- Moving or renaming a `.janet` file or a folder rewrites the relative imports it breaks.
 - Code actions: [structural editing](#structural-editing) and quick fixes for unknown symbols
-  (create the function or `def`, ignore the line, or declare the name).
+  (import the module defining it, create the function or `def`, ignore the line, or declare the
+  name).
 - In `project.janet`, the bindings jpm and janet-pm (`spork/declare-cc`) give it, taken from the
   installed tools: completion, hover, go-to-definition into their sources, signature help that
   follows `declare-*` keys, and diagnostics against their real macros.
