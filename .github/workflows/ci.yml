@@ -66,12 +66,21 @@ jobs:
       # spork builds its native modules with MSVC.
       - uses: ilammy/msvc-dev-cmd@v1
         if: runner.os == 'Windows'
-      - name: Install spork
+      - name: Check out spork
         working-directory: ${{ runner.temp }}
         run: |
           git clone https://github.com/janet-lang/spork
           git -C spork checkout "$SPORK_REVISION"
-          ${{ runner.os != 'Windows' && 'sudo' || '' }} janet -e '(bundle/install "spork")'
+      - name: Install spork
+        if: runner.os != 'Windows'
+        working-directory: ${{ runner.temp }}
+        run: sudo janet -e '(bundle/install "spork")'
+      # Not bash: its coreutils `link` shadows MSVC's linker.
+      - name: Install spork (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: janet -e '(bundle/install `spork`)'
 
       # rust-toolchain.toml pins the toolchain; this installs it with its components and targets.
       - run: rustup show
