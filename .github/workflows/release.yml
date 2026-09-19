@@ -13,7 +13,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  check:
+    uses: ./.github/workflows/ci.yml
+
+  version:
+    name: Tag matches the versions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # The extension downloads the release tagged with its own version.
+      - run: |
+          for manifest in extension.toml Cargo.toml janet-check/Cargo.toml janet-lsp-plus/Cargo.toml; do
+            version=$(grep -m1 '^version = ' "$manifest" | cut -d'"' -f2)
+            if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+              echo "::error file=$manifest::version $version, tag $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+
   build:
+    needs: [check, version]
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:

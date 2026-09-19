@@ -4,24 +4,75 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
+  # The release runs it before building anything.
+  workflow_call:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}-check
   cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
+  # The tests run the real `janet` and spork's netrepl. macOS takes them from Homebrew; Linux and
+  # Windows install these, the way spork's own CI does.
+  JANET_VERSION: "1.42.1"
+  SPORK_VERSION: v1.2.0
 
 jobs:
   check:
-    name: Lint and test
-    # The server's tests run the real `janet`; Homebrew has it.
-    runs-on: macos-14
+    name: Lint and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest, windows-latest]
+    defaults:
+      run:
+        shell: bash
     steps:
       - uses: actions/checkout@v4
-      - run: brew install janet just
-      # The REPL kernel and the debugger's attach test run spork's netrepl.
-      - run: jpm install spork
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: just
+
+      - name: Install Janet and spork (macOS)
+        if: runner.os == 'macOS'
+        run: brew install janet && jpm install spork
+
+      # Outside the checkout: the tests check every Janet file of the repository.
+      - name: Install Janet (Linux)
+        if: runner.os == 'Linux'
+        working-directory: ${{ runner.temp }}
+        run: |
+          git clone --depth 1 --branch "v$JANET_VERSION" https://github.com/janet-lang/janet
+          make -C janet -j && sudo make -C janet install
+
+      - name: Install Janet (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ${{ runner.temp }}
+        run: |
+          curl.exe -fSLo janet.msi "https://github.com/janet-lang/janet/releases/download/v$env:JANET_VERSION/janet-$env:JANET_VERSION-windows-x64-installer.msi"
+          Start-Process msiexec.exe -Wait -ArgumentList '/quiet', '/i', 'janet.msi', 'ALLUSERS=1'
+          # The installer sets the variables system-wide; later steps only see what is exported here.
+          foreach ($scope in 'Machine', 'User') {
+            foreach ($name in 'JANET_PATH', 'JANET_HEADERPATH', 'JANET_LIBPATH', 'JANET_BINPATH', 'JANET_MANPATH') {
+              $value = [Environment]::GetEnvironmentVariable($name, $scope)
+              if ($value) { "$name=$value" >> $env:GITHUB_ENV }
+            }
+            [Environment]::GetEnvironmentVariable('Path', $scope) -split ';' |
+              Where-Object { $_ -like '*Janet*' } |
+              ForEach-Object { $_ >> $env:GITHUB_PATH }
+          }
+
+      - name: Install spork
+        if: runner.os != 'macOS'
+        working-directory: ${{ runner.temp }}
+        run: |
+          git clone --depth 1 --branch "$SPORK_VERSION" https://github.com/janet-lang/spork
+          ${{ runner.os == 'Linux' && 'sudo' || '' }} janet -e '(bundle/install "spork")'
+
       # rust-toolchain.toml pins the toolchain; this installs it with its components and targets.
       - run: rustup show
       - run: just check
