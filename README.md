@@ -206,6 +206,22 @@ Run them with `task: spawn`, or from the gutter icon next to `(defn main …)` a
 | `declare-source`, `declare-native`, `declare-executable`, `declare-binscript`, `declare-archive` | jpm declarations |
 | `task`, `rule`, `sh-task`, `post-deps` | jpm tasks and rules |
 
+## Indentation
+
+Zed indents a new line two spaces past the line an open bracket is on, and otherwise keeps the
+line above's indentation. The formatter (`spork/fmt`) agrees on the bodies of `defn`, `let`, `when`
+and the other control forms, and on calls that break the line right after their head. It differs
+on the first new line of:
+
+| Form | Zed | `spork/fmt` |
+| --- | --- | --- |
+| a call with an argument on its first line: `(foo a` | `(` + 2 | under `a` |
+| `[…]`, `{…}` | line start + 2 | one past the bracket |
+| a form that does not start its line: `(def x (let [a 1]` | the line + 2 | the form's `(` + 2 |
+
+Zed's indentation queries have no alignment captures, so on those lines the formatter moves the
+line on save; the lines after it keep the alignment it chose.
+
 ## Limitations
 
 No parinfer: Zed has no on-type editing hook for extensions. For the analysis and the server,
