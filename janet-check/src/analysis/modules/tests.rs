@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::*;
+use crate::test_support::slashed;
 
 const IMPORTER: &str = "/ws/src/main.janet";
 
@@ -37,7 +38,7 @@ fn show_packages(source: &str) -> String {
     let doc = Document::new(source.to_string());
     let found: Vec<_> = packages(&doc, Path::new("/ws"))
         .into_iter()
-        .map(|package| format!("{} loads {}", package.module, package.path.display()))
+        .map(|package| format!("{} loads {}", package.module, slashed(&package.path)))
         .collect();
     format!(
         "----- SOURCE CODE\n{source}\n\n----- PACKAGES\n{}\n",
@@ -71,7 +72,7 @@ fn show_resolution(spec: &str) -> String {
     let resolved = resolution(spec).unwrap_or_else(|| panic!("{spec} does not resolve"));
     format!(
         "----- IMPORT\n{spec} from {IMPORTER}\n\n----- LOADS\n{}\n",
-        resolved.display()
+        slashed(&resolved)
     )
 }
 

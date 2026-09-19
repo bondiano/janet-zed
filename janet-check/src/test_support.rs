@@ -2,6 +2,13 @@
 //! under it.
 
 use std::ops::Range;
+use std::path::Path;
+
+/// `path` with `/` between its parts on every platform, so snapshots of virtual `/ws/…` paths
+/// read the same on Windows.
+pub fn slashed(path: &Path) -> String {
+    path.display().to_string().replace('\\', "/")
+}
 
 /// The text of `marked` without its `|`, and the offset the `|` marks.
 pub fn cursor(marked: &str) -> (usize, String) {

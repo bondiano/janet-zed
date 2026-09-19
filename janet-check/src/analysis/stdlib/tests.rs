@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::slashed;
 
 const DUMP: [&str; 5] = [
     r#"{"name":"map","kind":"function","doc":"(map f ind & inds)\n\nMap.","sm":["boot.janet",1098,1]}"#,
@@ -52,7 +53,7 @@ fn show_bindings(root: Option<&Path>) -> String {
                         .iter()
                         .find_map(|root| at.path.strip_prefix(root).ok())
                         .unwrap_or(&at.path);
-                    format!(" at {}:{}:{}", path.display(), at.line, at.column)
+                    format!(" at {}:{}:{}", slashed(path), at.line, at.column)
                 })
                 .unwrap_or_default();
             format!("{name}: {:?}{signature}{location}", binding.kind)

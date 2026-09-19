@@ -15,7 +15,7 @@ fmt:
 
 # Run the test suites
 test:
-    cargo test -p janet-check -p janet-lsp-plus
+    cargo test --no-fail-fast -p janet-check -p janet-lsp-plus
 
 # Build the Zed extension (Zed builds it too on `zed: install dev extension`)
 build:

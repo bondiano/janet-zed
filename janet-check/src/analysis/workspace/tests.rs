@@ -1,6 +1,7 @@
 use super::*;
 use crate::analysis::config::Config;
 use crate::analysis::stdlib::Stdlib;
+use crate::test_support::slashed;
 
 fn file(path: &str, text: &str) -> SourceFile {
     let uri = format!("file://{path}").parse().unwrap();
@@ -20,7 +21,7 @@ fn show_graph(workspace: &Workspace) -> String {
         .iter()
         .map(|path| {
             let text = &workspace.file(path).unwrap().document.text;
-            format!("-- {}\n{text}", path.display())
+            format!("-- {}\n{text}", slashed(path))
         })
         .collect();
     let edges: Vec<_> = paths
@@ -29,8 +30,8 @@ fn show_graph(workspace: &Workspace) -> String {
             let imports = workspace.imports_of(path).iter().map(move |edge| {
                 format!(
                     "{} imports {} ({} as {:?})",
-                    path.display(),
-                    edge.path.display(),
+                    slashed(path),
+                    slashed(&edge.path),
                     edge.spec,
                     edge.prefix
                 )
@@ -38,8 +39,8 @@ fn show_graph(workspace: &Workspace) -> String {
             let importers = workspace.importers_of(path).iter().map(move |edge| {
                 format!(
                     "{} is imported by {} as {:?}",
-                    path.display(),
-                    edge.path.display(),
+                    slashed(path),
+                    slashed(&edge.path),
                     edge.prefix
                 )
             });
@@ -628,7 +629,7 @@ fn files_at_a_path_follow_the_walk_from_the_roots() {
     let at = |relative: &str| -> Vec<String> {
         janet_files_at(&roots, &root.join(relative))
             .iter()
-            .map(|path| path.strip_prefix(&root).unwrap().display().to_string())
+            .map(|path| slashed(path.strip_prefix(&root).unwrap()))
             .collect()
     };
     assert_eq!(at("a.janet"), ["a.janet"]);

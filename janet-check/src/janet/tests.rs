@@ -1,4 +1,5 @@
 use super::*;
+use crate::test_support::slashed;
 
 const IMPORTED: &str = "(defn g [] (nope))\n";
 
@@ -94,15 +95,16 @@ fn checks_without_running() {
     std::fs::remove_file(&marker).ok();
     let text = format!(
         "(import ./b)\n(defn f [x]\n  (undefined-thing x))\n(def y (spit {:?} \"\"))\n",
-        marker.display().to_string()
+        slashed(&marker)
     );
     let problems = check("janet", &dir.join("a.janet"), &text, &dir, &[], &[]).unwrap();
     assert!(!marker.exists(), "side effects must not run");
 
+    // Janet names files with `/` on Windows too.
     let dirs = [dir.canonicalize().unwrap(), dir.clone()];
     let redact = |text: &str| {
         dirs.iter().fold(text.to_string(), |text, dir| {
-            text.replace(&dir.display().to_string(), "<dir>")
+            text.replace(&slashed(dir), "<dir>")
         })
     };
     insta::assert_snapshot!(redact(&format!(

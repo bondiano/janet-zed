@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use super::*;
 use crate::analysis::config::Config;
 use crate::janet::Binding;
-use crate::test_support::mark;
+use crate::test_support::{mark, slashed};
 
 const FILES: [(&str, &str); 7] = [
     (
@@ -59,7 +59,7 @@ fn workspace_of(files: &[(&str, &str)]) -> Workspace {
 fn show_in(file: &SourceFile, ranges: &[Range<usize>]) -> String {
     format!(
         "-- {}\n{}",
-        file.path.display(),
+        slashed(&file.path),
         mark(&file.document.text, ranges)
     )
 }
@@ -96,8 +96,10 @@ fn show_references(workspace: &Workspace, path: &str, needle: &str) -> String {
         |occurrence| show_in(occurrence.file, &[occurrence.range]),
     );
     format!(
-        "----- SYMBOL\n{}\n\n----- TARGET\n{target:?}\n\n----- REFERENCES\n{}\n\n----- DECLARATION\n{declared}\n",
+        "----- SYMBOL\n{}\n\n----- TARGET\n{}\n\n----- REFERENCES\n{}\n\n----- DECLARATION\n{declared}\n",
         show_in(symbol.file, &[symbol.range]),
+        // Its path with `/`, as `slashed` spells it: `Debug` escapes a Windows `\` as `\\`.
+        format!("{target:?}").replace("\\\\", "/"),
         references.join("\n"),
     )
 }
