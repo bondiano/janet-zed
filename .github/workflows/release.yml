@@ -18,9 +18,9 @@ jobs:
 
   version:
     name: Tag matches the versions
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       # The extension downloads the release tagged with its own version.
       - run: |
           for manifest in extension.toml Cargo.toml janet-check/Cargo.toml janet-lsp-plus/Cargo.toml; do
@@ -48,7 +48,7 @@ jobs:
           # Native, so `ring` and the grammar's C build without a cross toolchain.
           - { target: aarch64-pc-windows-msvc, os: windows-11-arm }
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup target add ${{ matrix.target }}
       - run: cargo build -p janet-lsp-plus --release --locked --target ${{ matrix.target }}
       - name: Package
@@ -58,18 +58,18 @@ jobs:
         if: runner.os == 'Windows'
         shell: pwsh
         run: Compress-Archive -Path target/${{ matrix.target }}/release/janet-lsp-plus.exe -DestinationPath janet-lsp-plus-${{ matrix.target }}.zip
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ${{ matrix.target }}
           path: janet-lsp-plus-${{ matrix.target }}.*
 
   release:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           merge-multiple: true
-      - uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           files: janet-lsp-plus-*
