@@ -19,6 +19,16 @@ pub const PROJECT: &str = "janet-zed/project";
 
 const EVAL: &str = include_str!("eval.janet");
 
+/// What the server sends while it evaluates the kernel's code.
+#[derive(Debug, PartialEq)]
+pub enum Message {
+    /// Output printed so far.
+    Output(String),
+    /// A line of input asked for with this prompt: [`Netrepl::answer`] it.
+    Input(String),
+    Done(Evaluation),
+}
+
 #[derive(Debug, Default, PartialEq)]
 pub struct Evaluation {
     pub value: String,
@@ -37,6 +47,8 @@ pub struct Position {
 pub struct Netrepl {
     stream: TcpStream,
     _server: Option<Child>,
+    /// The client name, unique to the connection: the server finds its stream by it.
+    name: String,
 }
 
 impl Netrepl {
@@ -69,23 +81,46 @@ impl Netrepl {
     }
 
     async fn handshake(stream: TcpStream, server: Option<Child>, name: &str) -> io::Result<Self> {
+        static CONNECTED: AtomicU64 = AtomicU64::new(0);
+        let connected = CONNECTED.fetch_add(1, Ordering::Relaxed);
         let mut repl = Self {
             stream,
             _server: server,
+            name: format!("{name}-{}-{connected}", std::process::id()),
         };
         // A plain first message is the client name, never empty; the server answers with a prompt,
         // or a kernel's server closes the connection when the name lacks its token.
-        repl.send(name.as_bytes()).await?;
+        repl.send(repl.name.clone().as_bytes()).await?;
         repl.recv().await?;
         Ok(repl)
     }
 
-    /// Evaluates `code` in the shared env, compiled at `position` when the kernel found it in a file.
+    /// Evaluates `code` in the shared env, compiled at `position` when the kernel found it in a
+    /// file. Output comes with the evaluation, and input asked for ends at once.
     pub async fn eval(
         &mut self,
         code: &str,
         position: Option<&Position>,
     ) -> io::Result<Evaluation> {
+        self.begin_eval(code, position).await?;
+        let mut output = String::new();
+        loop {
+            match self.next().await? {
+                Message::Output(text) => output.push_str(&text),
+                Message::Input(_) => self.answer("").await?,
+                Message::Done(evaluation) => {
+                    output.push_str(&evaluation.output);
+                    return Ok(Evaluation {
+                        output,
+                        ..evaluation
+                    });
+                }
+            }
+        }
+    }
+
+    /// Starts evaluating `code` as [`Self::eval`] does; [`Self::next`] tells what follows.
+    pub async fn begin_eval(&mut self, code: &str, position: Option<&Position>) -> io::Result<()> {
         // A JSON string is a valid Janet string literal.
         let code = serde_json::to_string(code)?;
         let (source, line, column) = match position {
@@ -96,10 +131,25 @@ impl Netrepl {
             ),
             None => (":zed".to_string(), 1, 1),
         };
-        let reply = self
-            .call(&format!("({EVAL} {code} {source} {line} {column})"))
-            .await?;
-        Ok(parse_reply(&reply))
+        let client = serde_json::to_string(&self.name)?;
+        let form = format!("({EVAL} {code} {source} {line} {column} {client})");
+        self.send(&[&[0xFF], form.as_bytes()].concat()).await
+    }
+
+    /// The next message of the evaluation begun, up to the one that ends it.
+    pub async fn next(&mut self) -> io::Result<Message> {
+        let payload = self.recv().await?;
+        let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+        Ok(match payload.split_first() {
+            Some((0xFF, output)) => Message::Output(text(output)),
+            Some((0xFE, prompt)) => Message::Input(text(prompt)),
+            _ => Message::Done(parse_reply(&text(&payload))),
+        })
+    }
+
+    /// Answers [`Message::Input`] with `line`, its newline included; empty at the end of input.
+    pub async fn answer(&mut self, line: &str) -> io::Result<()> {
+        self.send(line.as_bytes()).await
     }
 
     /// The process id of the server, to interrupt it by.
@@ -276,7 +326,8 @@ fn ports_dir() -> Option<PathBuf> {
 /// A client whose name does not start with `token` is disconnected before its first form
 /// (netrepl makes a taken name unique by appending to it). The token comes first on stdin, not
 /// on the command line other users can list; stderr, where netrepl logs every name, is dropped.
-/// SIGINT cancels the kernel's evaluation in progress, running or waiting.
+/// SIGINT cancels the kernel's evaluation in progress, running or waiting. `getline` asks the
+/// kernel evaluating for a line, and ends the input of anyone else: the server's stdin is the kernel's.
 async fn start_server(
     janet: &str,
     port: u16,
@@ -292,15 +343,27 @@ async fn start_server(
 (ev/thread (fn [] (file/read stdin :all) (os/exit 0)) nil :n)
 (def env (make-env))
 (put env :pretty-format \"%.20Q\")
+(def streams @{{}})
+(put env :janet-zed/streams streams)
+(put env 'getline
+     @{{:doc (get-in root-env ['getline :doc])
+       :value (fn getline [&opt prompt buf _]
+                (default buf @\"\")
+                (if-let [ask (in env :janet-zed/input)]
+                  (buffer/push buf (ask (string (or prompt \"\"))))
+                  buf))}})
 (unless (= :windows (os/which))
   (os/sigaction :int
                 (fn [] (when-let [task (in env :janet-zed/evaluating)] (ev/cancel task \"interrupted\")))
                 true))
 (defn env-of [name stream]
   (if (and (bytes? name) (string/has-prefix? token name))
-    env
+    (do (put streams name stream) env)
     (do (:close stream) @{{}})))
-(netrepl/run-server \"{HOST}\" \"{port}\" env-of)"
+(defn forget [stream]
+  (each name (keys streams)
+    (when (= stream (streams name)) (put streams name nil))))
+(netrepl/run-server \"{HOST}\" \"{port}\" env-of forget)"
     );
     let mut server = Command::new(janet)
         .args(["-e", &serve])
@@ -347,7 +410,7 @@ fn parse_reply(reply: &str) -> Evaluation {
 }
 
 /// Decodes every string literal in a JDN text, in order.
-pub(super) fn jdn_strings(jdn: &str) -> Vec<String> {
+pub(crate) fn jdn_strings(jdn: &str) -> Vec<String> {
     let mut bytes = jdn.bytes();
     let mut strings = Vec::new();
     while bytes.any(|b| b == b'"') {

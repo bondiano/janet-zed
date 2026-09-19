@@ -136,3 +136,47 @@ fn an_interrupt_cancels_the_evaluation() {
     let after = runtime.block_on(repl.eval("(+ 1 2)", None)).unwrap();
     assert_eq!(after.value, "3");
 }
+
+/// Output comes as it is printed, before the evaluation ends, and `getline` asks the kernel.
+#[test]
+fn output_streams_and_getline_asks() {
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let messages = runtime.block_on(async {
+        let mut repl = Netrepl::start("janet", free_port().unwrap(), Path::new("/work/app"), "t")
+            .await
+            .unwrap();
+        repl.begin_eval(
+            r#"(print "a") (ev/sleep 0.2) (print "b") (getline "name? ")"#,
+            None,
+        )
+        .await
+        .unwrap();
+        let mut messages = Vec::new();
+        loop {
+            let message = repl.next().await.unwrap();
+            if matches!(message, Message::Input(_)) {
+                repl.answer("zed\n").await.unwrap();
+            }
+            let done = matches!(message, Message::Done(_));
+            messages.push(message);
+            if done {
+                break messages;
+            }
+        }
+    });
+    assert_eq!(
+        messages,
+        [
+            Message::Output("a\n".to_string()),
+            Message::Output("b\n".to_string()),
+            Message::Input("name? ".to_string()),
+            Message::Done(Evaluation {
+                value: r#"@"zed\n""#.to_string(),
+                ..Evaluation::default()
+            }),
+        ]
+    );
+}

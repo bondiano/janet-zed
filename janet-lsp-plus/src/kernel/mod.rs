@@ -13,18 +13,20 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use jupyter_protocol::{
-    ConnectionInfo, ErrorOutput, ExecuteInput, ExecuteReply, ExecuteResult, ExecutionCount,
-    InterruptReply, JupyterMessage, JupyterMessageContent, KernelInfoReply, LanguageInfo,
+    CompleteReply, ConnectionInfo, ErrorOutput, ExecuteInput, ExecuteReply, ExecuteResult,
+    ExecutionCount, InputRequest, InspectReply, InterruptReply, IsCompleteReply,
+    IsCompleteReplyStatus, JupyterMessage, JupyterMessageContent, KernelInfoReply, LanguageInfo,
     MediaType, ReplyError, ReplyStatus, ShutdownReply, Status, StreamContent,
 };
 use jupyter_zmq_client::{
-    KernelIoPubConnection, KernelShellConnection, create_kernel_control_connection,
-    create_kernel_heartbeat_connection, create_kernel_iopub_connection,
-    create_kernel_shell_connection, create_kernel_stdin_connection, user_data_dir,
+    KernelIoPubConnection, KernelShellConnection, KernelStdinConnection,
+    create_kernel_control_connection, create_kernel_heartbeat_connection,
+    create_kernel_iopub_connection, create_kernel_shell_connection, create_kernel_stdin_connection,
+    user_data_dir,
 };
 use serde_json::json;
 
-use netrepl::{Evaluation, Netrepl};
+use netrepl::{Evaluation, Message, Netrepl, jdn_strings};
 
 use anyhow::Result;
 
@@ -102,12 +104,11 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
     let mut control = create_kernel_control_connection(&info, &session).await?;
     let mut shell = create_kernel_shell_connection(&info, &session).await?;
     let mut iopub = create_kernel_iopub_connection(&info, &session).await?;
-    let _stdin = create_kernel_stdin_connection(&info, &session).await?;
+    let mut stdin = create_kernel_stdin_connection(&info, &session).await?;
 
     tokio::spawn(async move { while heartbeat.single_heartbeat().await.is_ok() {} });
-    // The process of the netrepl server evaluations go to, once connected; 0 before.
-    let server = Arc::new(AtomicU32::new(0));
-    let interrupted = Arc::clone(&server);
+    let mut repl = Repl::new(janet);
+    let interrupted = Arc::clone(&repl.server);
     tokio::spawn(async move {
         while let Ok(request) = control.read().await {
             if let JupyterMessageContent::InterruptRequest(_) = &request.content {
@@ -141,7 +142,6 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
         }
     });
 
-    let mut repl = None;
     let mut count = ExecutionCount::new(0);
     loop {
         let request = shell.read().await?;
@@ -152,16 +152,30 @@ async fn serve(connection_file: &Path, janet: &str) -> Result<()> {
             }
             JupyterMessageContent::ExecuteRequest(execute) => {
                 count.increment();
-                let evaluation = evaluate(&mut repl, &server, janet, &execute.code).await;
-                publish(
-                    &mut iopub,
-                    &mut shell,
-                    &request,
-                    &execute.code,
-                    count,
-                    evaluation,
-                )
-                .await?;
+                let input = ExecuteInput {
+                    code: execute.code.clone(),
+                    execution_count: count,
+                };
+                iopub.send(input.as_child_of(&request)).await?;
+                let mut io = Io {
+                    iopub: &mut iopub,
+                    stdin: execute.allow_stdin.then_some(&mut stdin),
+                    request: &request,
+                };
+                let evaluation = repl.execute(&execute.code, &mut io).await;
+                publish(&mut iopub, &mut shell, &request, count, evaluation).await?;
+            }
+            JupyterMessageContent::CompleteRequest(complete) => {
+                let reply = repl.complete(&complete.code, complete.cursor_pos).await;
+                shell.send(reply.as_child_of(&request)).await?;
+            }
+            JupyterMessageContent::InspectRequest(inspect) => {
+                let reply = repl.inspect(&inspect.code, inspect.cursor_pos).await;
+                shell.send(reply.as_child_of(&request)).await?;
+            }
+            JupyterMessageContent::IsCompleteRequest(is_complete) => {
+                let reply = repl.is_complete(&is_complete.code).await;
+                shell.send(reply.as_child_of(&request)).await?;
             }
             _ => {}
         }
@@ -177,40 +191,223 @@ fn interrupt(pid: u32) -> std::io::Result<()> {
     netrepl::signal(pid, "INT")
 }
 
-/// Evaluates over the cached connection; a broken connection is dropped so the next request
-/// reconnects. The process of a new connection's server goes to `server`.
-async fn evaluate(
-    repl: &mut Option<Netrepl>,
-    server: &AtomicU32,
-    janet: &str,
-    code: &str,
-) -> Evaluation {
-    // Zed starts kernels in the worktree root.
-    let position = std::env::current_dir()
-        .ok()
-        .and_then(|root| snippet::locate(&root, code));
-    let code = if position.is_some() {
-        code.trim()
-    } else {
-        code
-    };
-    let result = match repl {
-        Some(connection) => connection.eval(code, position.as_ref()).await,
-        None => match start(janet).await {
-            Ok(mut connection) => {
-                server.store(connection.pid().await.unwrap_or(0), Ordering::Relaxed);
-                repl.insert(connection).eval(code, position.as_ref()).await
+/// Where an evaluation's output and prompts go: the frontend of `request`, whose stdin is there
+/// when it allows input.
+struct Io<'a> {
+    iopub: &'a mut KernelIoPubConnection,
+    stdin: Option<&'a mut KernelStdinConnection>,
+    request: &'a JupyterMessage,
+}
+
+impl Io<'_> {
+    async fn output(&mut self, text: &str) -> Result<()> {
+        let stream = StreamContent::stdout(text).as_child_of(self.request);
+        Ok(self.iopub.send(stream).await?)
+    }
+
+    /// A line from the frontend, its newline included; empty, the end of input, when it allows none.
+    async fn input(&mut self, prompt: String) -> Result<String> {
+        let Some(stdin) = self.stdin.as_mut() else {
+            return Ok(String::new());
+        };
+        let request = InputRequest {
+            prompt,
+            password: false,
+        };
+        stdin.send(request.as_child_of(self.request)).await?;
+        loop {
+            if let JupyterMessageContent::InputReply(reply) = stdin.read().await?.content {
+                return Ok(format!("{}\n", reply.value));
             }
-            Err(err) => Err(err),
-        },
-    };
-    result.unwrap_or_else(|err| {
-        *repl = None;
-        Evaluation {
-            errors: format!("netrepl: {err}"),
-            ..Evaluation::default()
         }
+    }
+}
+
+/// The project's REPL, connected on first use; a broken connection is dropped so the next
+/// request reconnects.
+struct Repl {
+    connection: Option<Netrepl>,
+    janet: String,
+    /// The process of the server evaluations go to, once connected; 0 before.
+    server: Arc<AtomicU32>,
+}
+
+impl Repl {
+    fn new(janet: &str) -> Self {
+        Self {
+            connection: None,
+            janet: janet.to_string(),
+            server: Arc::new(AtomicU32::new(0)),
+        }
+    }
+
+    async fn connection(&mut self) -> std::io::Result<&mut Netrepl> {
+        if let Some(connection) = self.connection.take() {
+            return Ok(self.connection.insert(connection));
+        }
+        let mut connection = start(&self.janet).await?;
+        self.server
+            .store(connection.pid().await.unwrap_or(0), Ordering::Relaxed);
+        Ok(self.connection.insert(connection))
+    }
+
+    /// Evaluates `code`, its output and prompts going to `io` as they come.
+    async fn execute(&mut self, code: &str, io: &mut Io<'_>) -> Evaluation {
+        // Zed starts kernels in the worktree root.
+        let position = std::env::current_dir()
+            .ok()
+            .and_then(|root| snippet::locate(&root, code));
+        let code = if position.is_some() {
+            code.trim()
+        } else {
+            code
+        };
+        let evaluation = async {
+            let repl = self.connection().await?;
+            repl.begin_eval(code, position.as_ref()).await?;
+            let mut message = repl.next().await?;
+            loop {
+                message = match message {
+                    Message::Output(text) => {
+                        io.output(&text).await?;
+                        repl.next().await?
+                    }
+                    Message::Input(prompt) => tokio::select! {
+                        line = io.input(prompt) => {
+                            repl.answer(&line?).await?;
+                            repl.next().await?
+                        }
+                        // An interrupt ends the evaluation while it waits for the line.
+                        message = repl.next() => message?,
+                    },
+                    Message::Done(evaluation) => return anyhow::Ok(evaluation),
+                }
+            }
+        };
+        evaluation.await.unwrap_or_else(|err| {
+            self.connection = None;
+            Evaluation {
+                errors: format!("netrepl: {err}"),
+                ..Evaluation::default()
+            }
+        })
+    }
+
+    /// The reply of the REPL to `form`, as JDN.
+    async fn call(&mut self, form: &str) -> std::io::Result<String> {
+        let reply = self.connection().await?.call(form).await;
+        if reply.is_err() {
+            self.connection = None;
+        }
+        reply
+    }
+
+    /// The names the REPL has for the symbol before `cursor`.
+    async fn complete(&mut self, code: &str, cursor: usize) -> CompleteReply {
+        let (start, end) = symbol_at(code, cursor, false);
+        let prefix: String = code.chars().skip(start).take(end - start).collect();
+        let form = format!(
+            "(do (def names @{{}}) (var env (curenv))
+               (while env
+                 (eachk name env
+                   (when (and (symbol? name) (string/has-prefix? {} name)) (put names name true)))
+                 (set env (table/getproto env)))
+               (sort (map string (keys names))))",
+            serde_json::Value::from(prefix)
+        );
+        let reply = self.call(&form).await;
+        CompleteReply {
+            matches: reply.as_deref().map(jdn_strings).unwrap_or_default(),
+            cursor_start: start,
+            cursor_end: end,
+            metadata: serde_json::Map::default(),
+            status: reply_status(reply.as_ref()),
+            error: reply_error(reply.err()),
+        }
+    }
+
+    /// The docs of the symbol around `cursor`, as `doc` prints them.
+    async fn inspect(&mut self, code: &str, cursor: usize) -> InspectReply {
+        let (start, end) = symbol_at(code, cursor, true);
+        let name: String = code.chars().skip(start).take(end - start).collect();
+        let name = serde_json::Value::from(name);
+        let form = format!(
+            "(when (and (not (empty? {name})) (dyn (symbol {name})))
+               (def buf @\"\") (with-dyns [:out buf] (doc* (symbol {name}))) (string buf))"
+        );
+        let reply = self.call(&form).await;
+        let doc = reply.as_deref().ok().and_then(|reply| {
+            reply
+                .starts_with("(true")
+                .then(|| jdn_strings(reply).pop())
+                .flatten()
+        });
+        InspectReply {
+            found: doc.is_some(),
+            data: doc
+                .map(|doc| MediaType::Plain(doc.trim_matches('\n').to_string()).into())
+                .unwrap_or_default(),
+            metadata: serde_json::Map::default(),
+            status: reply_status(reply.as_ref()),
+            error: reply_error(reply.err()),
+        }
+    }
+
+    /// Whether `code` is whole forms, as Janet's parser takes it.
+    async fn is_complete(&mut self, code: &str) -> IsCompleteReply {
+        let form = format!(
+            "(let [p (parser/new)] (parser/consume p {}) (parser/status p))",
+            serde_json::Value::from(code)
+        );
+        let (status, indent) = match self.call(&form).await.as_deref() {
+            Ok("(true :root)") => (IsCompleteReplyStatus::Complete, ""),
+            Ok("(true :pending)") => (IsCompleteReplyStatus::Incomplete, "  "),
+            Ok("(true :error)") => (IsCompleteReplyStatus::Invalid, ""),
+            _ => (IsCompleteReplyStatus::Unknown, ""),
+        };
+        IsCompleteReply {
+            status,
+            indent: indent.to_string(),
+        }
+    }
+}
+
+fn reply_status<T>(reply: Result<&T, &std::io::Error>) -> ReplyStatus {
+    if reply.is_ok() {
+        ReplyStatus::Ok
+    } else {
+        ReplyStatus::Error
+    }
+}
+
+fn reply_error(error: Option<std::io::Error>) -> Option<Box<ReplyError>> {
+    error.map(|err| {
+        Box::new(ReplyError {
+            ename: "netrepl".to_string(),
+            evalue: err.to_string(),
+            traceback: vec![],
+        })
     })
+}
+
+/// The span, in characters as Jupyter counts the cursor, of the symbol that ends at `cursor`, or
+/// that holds it when `around`.
+fn symbol_at(code: &str, cursor: usize, around: bool) -> (usize, usize) {
+    let chars: Vec<char> = code.chars().collect();
+    let cursor = cursor.min(chars.len());
+    let is_symbol = |c: &char| !c.is_whitespace() && !"()[]{}\"'`~,;|@".contains(*c);
+    let start = cursor
+        - chars[..cursor]
+            .iter()
+            .rev()
+            .take_while(|c| is_symbol(c))
+            .count();
+    let end = if around {
+        cursor + chars[cursor..].iter().take_while(|c| is_symbol(c)).count()
+    } else {
+        cursor
+    };
+    (start, end)
 }
 
 /// The REPL of the project the kernel runs in: the one another kernel started for it, while that
@@ -227,11 +424,11 @@ async fn start(janet: &str) -> std::io::Result<Netrepl> {
     Ok(connection)
 }
 
+/// Publishes the end of an evaluation whose input and output went out already.
 async fn publish(
     iopub: &mut KernelIoPubConnection,
     shell: &mut KernelShellConnection,
     request: &JupyterMessage,
-    code: &str,
     execution_count: ExecutionCount,
     Evaluation {
         value,
@@ -239,11 +436,6 @@ async fn publish(
         errors,
     }: Evaluation,
 ) -> Result<()> {
-    let input = ExecuteInput {
-        code: code.to_string(),
-        execution_count,
-    };
-    iopub.send(input.as_child_of(request)).await?;
     if !output.is_empty() {
         iopub
             .send(StreamContent::stdout(&output).as_child_of(request))
@@ -322,6 +514,60 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
+
+    #[test]
+    fn the_symbol_at_the_cursor_counts_characters() {
+        let code = "(print (маp inc";
+        let cursor = 10;
+        assert_eq!(symbol_at(code, cursor, false), (8, 10));
+        assert_eq!(symbol_at(code, cursor, true), (8, 11));
+        assert_eq!(symbol_at("(map inc", 4, true), (1, 4));
+        assert_eq!(symbol_at("", 3, true), (0, 0));
+    }
+
+    /// Completion, docs and the parser's verdict come from the REPL.
+    #[test]
+    fn completes_inspects_and_tells_whole_code() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let mut repl = Repl::new("janet");
+        let port = netrepl::free_port().unwrap();
+        repl.connection = Some(
+            runtime
+                .block_on(Netrepl::start("janet", port, Path::new("/work/app"), "t"))
+                .unwrap(),
+        );
+        runtime.block_on(async {
+            let complete = repl.complete("(string/tri", 11).await;
+            assert!(
+                complete.matches.contains(&"string/trim".to_string()),
+                "{complete:?}"
+            );
+            assert_eq!((complete.cursor_start, complete.cursor_end), (1, 11));
+
+            let inspect = repl.inspect("(map inc [1])", 2).await;
+            assert!(inspect.found);
+            let data = serde_json::to_string(&inspect.data).unwrap();
+            assert!(data.contains("(map f x"), "{data}");
+            assert!(!repl.inspect("(nope-nope 1)", 3).await.found);
+
+            let status = |reply: IsCompleteReply| reply.status;
+            assert!(matches!(
+                status(repl.is_complete("(+ 1 2)").await),
+                IsCompleteReplyStatus::Complete
+            ));
+            assert!(matches!(
+                status(repl.is_complete("(+ 1\n").await),
+                IsCompleteReplyStatus::Incomplete
+            ));
+            assert!(matches!(
+                status(repl.is_complete(")").await),
+                IsCompleteReplyStatus::Invalid
+            ));
+        });
+    }
 
     #[test]
     fn the_kernelspec_starts_a_copy_that_outlives_the_server_binary() {
