@@ -1,6 +1,7 @@
 //! Structural editing (paredit, threading macros) and quick fixes as byte-offset text replacements.
 
 mod fixes;
+pub mod indent;
 mod paredit;
 mod threading;
 

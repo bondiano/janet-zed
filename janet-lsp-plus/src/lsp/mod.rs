@@ -5,6 +5,7 @@
 mod diagnostics;
 #[cfg(test)]
 mod fixture;
+mod formatting;
 mod handlers;
 mod imports;
 mod state;
@@ -18,7 +19,6 @@ use lsp_types::notification::{
     DidCloseTextDocument, DidOpenTextDocument, Exit, Notification as LspNotification,
     Progress as LspProgress, PublishDiagnostics,
 };
-use lsp_types::request::Formatting;
 use lsp_types::request::{
     CodeActionRequest, CodeActionResolveRequest, Completion, DocumentHighlightRequest,
     DocumentSymbolRequest, GotoDefinition, HoverRequest, InlayHintRefreshRequest, InlayHintRequest,
@@ -26,15 +26,16 @@ use lsp_types::request::{
     ResolveCompletionItem, Shutdown, SignatureHelpRequest, WorkDoneProgressCreate,
     WorkspaceSymbolRequest,
 };
+use lsp_types::request::{Formatting, OnTypeFormatting, RangeFormatting};
 use lsp_types::request::{SemanticTokensFullRequest, SemanticTokensRangeRequest, WillRenameFiles};
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
-    CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions,
-    DocumentFormattingParams, FileSystemWatcher, GlobPattern, HoverProviderCapability,
-    InitializeParams, NumberOrString, OneOf, ProgressParams, ProgressParamsValue,
-    PublishDiagnosticsParams, Registration, RegistrationParams, RenameOptions, ServerCapabilities,
-    SignatureHelpOptions, TextDocumentSyncKind, Uri, WorkDoneProgress, WorkDoneProgressBegin,
-    WorkDoneProgressCreateParams, WorkDoneProgressEnd, WorkDoneProgressOptions,
+    CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions, FileSystemWatcher,
+    GlobPattern, HoverProviderCapability, InitializeParams, NumberOrString, OneOf, ProgressParams,
+    ProgressParamsValue, PublishDiagnosticsParams, Registration, RegistrationParams, RenameOptions,
+    ServerCapabilities, SignatureHelpOptions, TextDocumentSyncKind, TextEdit, Uri,
+    WorkDoneProgress, WorkDoneProgressBegin, WorkDoneProgressCreateParams, WorkDoneProgressEnd,
+    WorkDoneProgressOptions,
 };
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
@@ -266,6 +267,8 @@ fn capabilities() -> ServerCapabilities {
         }),
         definition_provider: Some(OneOf::Left(true)),
         document_formatting_provider: Some(OneOf::Left(true)),
+        document_range_formatting_provider: Some(OneOf::Left(true)),
+        document_on_type_formatting_provider: Some(formatting::on_type_options()),
         document_symbol_provider: Some(OneOf::Left(true)),
         code_action_provider: Some(CodeActionProviderCapability::Options(CodeActionOptions {
             code_action_kinds: Some(vec![
@@ -543,10 +546,19 @@ fn serve(
 
 /// Answers a request other than shutdown: they only read the state.
 fn answer(connection: &Connection, state: &State, request: Request) -> Result<()> {
-    if request.method == Formatting::METHOD {
-        format_in_background(connection, state, request);
-    } else {
-        connection.sender.send(dispatch(state, request).into())?;
+    match request.method.as_str() {
+        Formatting::METHOD => {
+            format_in_background::<Formatting, _>(connection, state, request, handlers::formatting);
+        }
+        RangeFormatting::METHOD => {
+            format_in_background::<RangeFormatting, _>(
+                connection,
+                state,
+                request,
+                formatting::range,
+            );
+        }
+        _ => connection.sender.send(dispatch(state, request).into())?,
     }
     Ok(())
 }
@@ -635,13 +647,21 @@ fn is_cancelled(queue: &VecDeque<Message>, id: &RequestId) -> bool {
 
 /// Formatting runs `janet`, for up to seconds: answered from a thread of its own, so the requests
 /// behind it are not kept waiting.
-fn format_in_background(connection: &Connection, state: &State, request: Request) {
+fn format_in_background<R, F>(
+    connection: &Connection,
+    state: &State,
+    request: Request,
+    prepare: impl FnOnce(&State, &R::Params) -> Result<F>,
+) where
+    R: LspRequest,
+    F: FnOnce() -> Result<Option<Vec<TextEdit>>> + Send + 'static,
+{
     let id = request.id.clone();
     let failed =
         |code: ErrorCode, message: String| Response::new_err(id.clone(), code as i32, message);
-    let format = match request.extract::<DocumentFormattingParams>(Formatting::METHOD) {
+    let format = match request.extract::<R::Params>(R::METHOD) {
         Err(err) => Err(failed(ErrorCode::InvalidParams, err.to_string())),
-        Ok((_, params)) => handlers::formatting(state, &params)
+        Ok((_, params)) => prepare(state, &params)
             .map_err(|err| failed(ErrorCode::RequestFailed, format!("{err:#}"))),
     };
     let sender = connection.sender.clone();
@@ -696,6 +716,7 @@ fn dispatch(state: &State, request: Request) -> Response {
         InlayHintRequest::METHOD => {
             handle::<InlayHintRequest>(state, request, handlers::inlay_hint)
         }
+        OnTypeFormatting::METHOD => handle::<OnTypeFormatting>(state, request, formatting::on_type),
         WillRenameFiles::METHOD => {
             handle::<WillRenameFiles>(state, request, imports::will_rename_files)
         }

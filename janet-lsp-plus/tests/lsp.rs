@@ -1246,6 +1246,51 @@ fn formats_a_buffer_not_on_disk() {
 }
 
 #[test]
+fn formats_the_forms_a_range_touches_and_indents_a_new_line() {
+    let mut session = Session::start();
+    let source = "(defn f [x]\n(+ x\n1))\n\n(defn g [y]\n(- y\n1))\n\n(map inc\n";
+    let scratch = uri(&session.root.join("scratch.janet"));
+    session.open(&scratch, &format!("{source})\n"));
+    let options = json!({"tabSize": 2, "insertSpaces": true});
+    let edits = session
+        .request(
+            "textDocument/rangeFormatting",
+            json!({
+                "textDocument": {"uri": scratch},
+                "range": {"start": {"line": 5, "character": 0}, "end": {"line": 5, "character": 1}},
+                "options": options,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        edits,
+        json!([{
+            "range": {"start": {"line": 4, "character": 0}, "end": {"line": 6, "character": 3}},
+            "newText": "(defn g [y]\n  (- y\n     1))",
+        }])
+    );
+    let edits = session
+        .request(
+            "textDocument/onTypeFormatting",
+            json!({
+                "textDocument": {"uri": scratch},
+                "position": {"line": 9, "character": 0},
+                "ch": "\n",
+                "options": options,
+            }),
+        )
+        .unwrap();
+    assert_eq!(
+        edits,
+        json!([{
+            "range": {"start": {"line": 9, "character": 0}, "end": {"line": 9, "character": 0}},
+            "newText": "     ",
+        }])
+    );
+    session.finish();
+}
+
+#[test]
 fn hover_and_definition_from_a_running_repl() {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
