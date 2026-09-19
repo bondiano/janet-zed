@@ -182,14 +182,24 @@ pub fn record(project: &Path, port: u16, token: &str) -> io::Result<()> {
 
 fn write_record(ports: &Path, dir: &Path, port: u16, token: &str) -> io::Result<()> {
     std::fs::create_dir_all(dir)?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(ports, std::fs::Permissions::from_mode(0o700))?;
-    }
+    private_dir(ports)?;
     // The token first: a reader that finds the new port finds its token.
     write_private(&dir.join("token"), token)?;
     write_private(&dir.join("port"), &port.to_string())
+}
+
+/// Lets only this user into `dir`.
+#[cfg(unix)]
+fn private_dir(dir: &Path) -> io::Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::set_permissions(dir, std::fs::Permissions::from_mode(0o700))
+}
+
+/// The profile's permissions apply, see [`ports_dir`].
+#[cfg(not(unix))]
+#[allow(clippy::unnecessary_wraps)]
+fn private_dir(_: &Path) -> io::Result<()> {
+    Ok(())
 }
 
 /// Replaces `file` with `text`, only this user may read, at once: a reader sees the old text or

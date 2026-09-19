@@ -365,14 +365,13 @@ fn gone(path: &Path) -> PathBuf {
         .unwrap_or_else(|| canonical(path))
 }
 
-#[cfg(test)]
+#[cfg(all(test, unix))]
 mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::*;
 
     /// A deleted directory under a symlink is named as the walk named what was in it.
-    #[cfg(unix)]
     #[test]
     fn a_deleted_path_resolves_through_a_symlinked_root() {
         let base = std::env::temp_dir().join(format!("janet-zed-gone-{}", std::process::id()));
