@@ -19,14 +19,39 @@ $ cargo install janet-check
 $ janet-check src
 src/shapes.janet:37:19: :radius is not a key: this form has :kind :r
 src/fetch.janet:42:4: host/fetch takes 2 arguments, given 3
-src/main.janet:7:2: unknown symbol undefined-fn
+src/main.janet:7:2: unknown symbol undefined-fn [unknown-symbol]
+src/main.janet:9:12: retries is never used [unused-binding]
 ```
 
 There are no prebuilt archives of it; from a checkout of the repository, `just install` builds
-it and `janet-lsp-plus`. With no arguments it checks the working directory. Directories are walked honoring
-`.gitignore`, and `jpm_tree` is left to module resolution. Output is `path:line:col: message`,
-which the standard errorformat of most editors and CI annotators already parses. The exit
-status is 1 when anything is reported, so it drops into a pre-commit hook or a CI step as is.
+it and `janet-lsp-plus`.
+
+With no arguments it checks the working directory. Directories are walked honoring
+`.gitignore`, and `jpm_tree` is left to module resolution. `--exclude <glob>`, repeatable, skips
+the files a gitignore-style glob matches relative to the working directory: `--exclude
+'vendor/**'`.
+
+The exit status is 0 when nothing is reported, 1 when anything is, and 2 when the check could
+not run: a bad flag, no `.janet` files under the paths, a `janet` that does not start, a config
+that is not JDN. It drops into a pre-commit hook or a CI step as is.
+
+`--format` picks the output:
+
+| Format | Output |
+|---|---|
+| `text` (default) | `path:line:col: message [code]`, which the standard errorformat of most editors and CI annotators already parses |
+| `json` | an array of `{path, start: {line, column}, end, severity, code, message}` |
+| `sarif` | a SARIF 2.1.0 log, for GitHub code scanning and other SARIF viewers |
+| `github` | `::warning file=…,line=…,col=…::message` workflow commands, which annotate a pull request |
+
+Lines and columns are 1-based, and a column counts characters (Unicode scalar values) in every
+format — not bytes, and not the UTF-16 units the language server speaks. The SARIF log says so
+with `columnKind: unicodeCodePoints`. `code` is there when the finding has one: a
+[lint's](#lints), `unknown-symbol`, or `config-error`.
+
+`--stdin --filename <path>` checks the source on standard input as the file at `path`, in that
+file's project, and reports it under that path — for an editor or a formatter hook with an
+unsaved buffer. The file need not exist.
 
 Each file is also compiled by the `janet` on `PATH` (or `--janet <path>`), the way the editor
 flychecks it: unknown symbols, wrong arities, modules that do not resolve. **Compiling runs code**:
@@ -44,6 +69,35 @@ default; `--strict` turns it on too.
 
 A file that does not parse is reported as one `parse error` and nothing else: its types would
 be read out of whatever the parser salvaged, and those are guesses.
+
+## Lints
+
+Code Janet runs, but that is likely a mistake. Each lint is a warning with a stable code, the
+same in the CLI and in the editor, where an unused binding or import is shown faded.
+
+| Code | Reports |
+|---|---|
+| `unused-binding` | A local nothing reads: a `let` or loop binding, a parameter, a `def` in a function body. A name starting with `_` is unused on purpose. |
+| `unused-import` | An `(import …)` none of whose names the file uses: no symbol carries its prefix, `:as` or `:prefix` included. `use`, an `:export`ed import and a `:prefix ""` one are left alone. |
+| `shadowed-core` | A top-level definition of a name the core binds: `(defn map …)`. `:shadow` in its metadata says it is on purpose, as it does to Janet. |
+| `duplicate-definition` | A top-level name defined twice in one file. `varfn` rebinds on purpose. |
+| `unresolved-import` | A relative import, `./x` or `../x`, that no file answers. |
+| `wrong-arity` | A call to a function the file defines with too few or too many arguments: a top-level `defn` with no types written, a nested `defn`, or a `fn` bound by `let` or `def`. |
+| `unreachable-code` | Forms after an `(error …)`, `(errorf …)`, `(break …)` or `(return …)` in the same body. |
+
+Janet's compiler reports an unresolved import and a wrong arity for a top-level function too, so
+those two stand in for it only where it does not run: under `--types-only`, and in the editor
+with `compile` off. A typed function's arity is inference's to check. Parameters of a top-level
+`main`, `&named` options and the functions in a definition's metadata are never unused, and a
+`(comment …)` block is never linted.
+
+A lint is silenced for a line with `# janet-zed: ignore <code> [names…]` (see
+[Comment directives](#comment-directives)), and turned off for the workspace in
+`.janet-zed/config.jdn`:
+
+```janet
+{:disable-lints [:shadowed-core :unused-import]}
+```
 
 ## The library
 
@@ -242,6 +296,10 @@ A library ships its own config instead of asking every application for one. Put 
 ```
 
 Exported configs merge; the workspace's own `.janet-zed/config.jdn` wins over all of them.
+`:disable-lints` is read from the workspace's own only.
+
+`janet-check` validates the workspace's config: one that is not a single JDN struct is an error
+(`config-error`, exit status 2), and a key or a lint code nothing reads is a warning.
 
 Names that no config covers are still found when diagnostics run: a check reports what the
 macros it expanded bound, so a name a macro defines under a different name than the symbol in
@@ -267,8 +325,9 @@ definitions included. `declare` names bindings the host provides.
 
 `ignore` silences one line: the line the comment ends, or the next code line below a comment of
 its own. `ignore-file` silences the whole file. The category comes first — `unknown-symbol` for
-what the compiler could not resolve, `types` for what the written types rule out — and for
-`unknown-symbol` the names after it narrow the directive to those names:
+what the compiler could not resolve, `types` for what the written types rule out, or a
+[lint's code](#lints) — and for `unknown-symbol` and the lints the names after it narrow the
+directive to those names:
 
 ```janet
 # janet-zed: ignore unknown-symbol undefined-function
@@ -285,7 +344,11 @@ A test that passes a wrong argument on purpose, to assert the function rejects i
 (expect-error "kind must be a keyword" |(errors/make "x"))
 ```
 
-Both categories are silenced the same way in the editor and in `janet-check`.
+```janet
+(defn handler [request] :ok) # janet-zed: ignore unused-binding request
+```
+
+Every category is silenced the same way in the editor and in `janet-check`.
 
 ## Limitations
 

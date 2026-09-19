@@ -1,7 +1,8 @@
 //! The binary as a user runs it: relative paths, what is reported, and the exit status.
 
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Output, Stdio};
 
 /// `janet-check` run from the workspace root, so the paths are relative the way a shell gives
 /// them — the form that once found no files at all and exited clean.
@@ -134,7 +135,9 @@ fn a_standalone_file_does_not_read_its_directory() {
 }
 
 /// The fixture project with the installed Janet's whole syspath beside it: over a thousand files,
-/// every one inferred once, a layer of the import graph at a time, and nothing to report.
+/// every one inferred once, a layer of the import graph at a time, and no type to complain about.
+/// The lints are another matter: the libraries installed there are nobody's to keep clean of an
+/// unused binding, so what they find is left out.
 #[test]
 fn a_workspace_with_the_syspath_is_checked_in_seconds() {
     let Some(syspath) = janet_check::test_support::janet_syspath() else {
@@ -147,8 +150,17 @@ fn a_workspace_with_the_syspath_is_checked_in_seconds() {
         &syspath.to_string_lossy(),
     ]);
     let elapsed = started.elapsed();
-    assert_eq!(stdout(&output), "");
-    assert!(output.status.success());
+    let reported = stdout(&output);
+    let typed: Vec<&str> = reported
+        .lines()
+        .filter(|line| {
+            !janet_check::analysis::lints::CODES
+                .iter()
+                .any(|code| line.ends_with(&format!(" [{code}]")))
+        })
+        .collect();
+    assert_eq!(typed, Vec::<&str>::new());
+    assert_ne!(output.status.code(), Some(2));
     // The release budget is the one the plan sets; the debug one is loose, the way the thousand-line
     // one is, since the rest of the suite runs on the same cores.
     let budget = if cfg!(debug_assertions) { 60 } else { 5 };
@@ -225,7 +237,10 @@ fn what_janet_reports_fails_the_check() {
     let reported = stdout(&compiled);
     let lines: Vec<&str> = reported.lines().collect();
     assert_eq!(lines[0], "latin1.janet: stream did not contain valid UTF-8");
-    assert_eq!(lines[1], "main.janet:2:2: unknown symbol undefined-fn");
+    assert_eq!(
+        lines[1],
+        "main.janet:2:2: unknown symbol undefined-fn [unknown-symbol]"
+    );
     assert_eq!(
         lines[2],
         "main.janet:3:1: <function g> expects at most 1 argument, got 3"
@@ -235,9 +250,19 @@ fn what_janet_reports_fails_the_check() {
         "{reported}"
     );
     assert!(!compiled.status.success());
+    // Without Janet, the lints stand in for the arity and the import it would have reported, and
+    // with it they leave both to it.
     assert_eq!(
-        stdout(&types_only),
-        "latin1.janet: stream did not contain valid UTF-8\n"
+        stdout(&types_only).lines().collect::<Vec<_>>(),
+        [
+            "latin1.janet: stream did not contain valid UTF-8",
+            "main.janet:3:1: g takes 1 argument, given 3 [wrong-arity]",
+            "main.janet:4:9: no module ./nope to import [unresolved-import]",
+        ]
+    );
+    assert!(
+        !reported.contains("[wrong-arity]") && !reported.contains("[unresolved-import]"),
+        "{reported}"
     );
 }
 
@@ -295,4 +320,177 @@ fn the_annotated_corpus_strictly() {
         ANNOTATED,
     ]);
     insta::assert_snapshot!(stdout(&output));
+}
+
+/// A fresh directory holding `files`, a project when one of them is `.janet-zed/config.jdn`.
+fn scratch(name: &str, files: &[(&str, &str)]) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("janet-check-{name}-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    for (path, text) in files {
+        let path = root.join(path);
+        std::fs::create_dir_all(path.parent().expect("a parent")).expect("mkdir");
+        std::fs::write(path, text).expect("write");
+    }
+    root
+}
+
+/// `janet-check --types-only args…` run in `root`, with `stdin` on its standard input.
+fn check_in(root: &Path, args: &[&str], stdin: &str) -> Output {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(root)
+        .arg("--types-only")
+        .args(args)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("janet-check runs");
+    child
+        .stdin
+        .take()
+        .expect("a stdin")
+        .write_all(stdin.as_bytes())
+        .expect("stdin written");
+    child.wait_with_output().expect("janet-check finishes")
+}
+
+/// A lint per line, the first after a `𝄞` that is one character, two UTF-16 units and four
+/// bytes: its column is 22, not 23 or 25.
+const LINTED: &str = "(def s \"𝄞\") (defn f [unused] 1)\n(import ./lib)\n";
+
+#[test]
+fn lints_are_reported_with_their_code_and_character_columns() {
+    let root = scratch(
+        "lints",
+        &[("main.janet", LINTED), ("lib.janet", "(defn g [] 1)\n")],
+    );
+    let output = check_in(&root, &["main.janet"], "");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        [
+            "main.janet:1:22: unused is never used [unused-binding]",
+            "main.janet:2:9: nothing imported from ./lib is used [unused-import]",
+        ]
+    );
+    assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn each_format_prints_the_same_findings() {
+    let root = scratch("formats", &[("main.janet", LINTED)]);
+    let formats: Vec<String> = ["json", "sarif", "github"]
+        .iter()
+        .map(|format| stdout(&check_in(&root, &["--format", format, "main.janet"], "")))
+        .collect();
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    let sarif: serde_json::Value = serde_json::from_str(&formats[1]).expect("SARIF is JSON");
+    assert_eq!(sarif["version"], "2.1.0");
+    insta::assert_snapshot!(formats.join("\n"));
+}
+
+#[test]
+fn the_config_turns_lints_off_and_directives_silence_them() {
+    let root = scratch(
+        "config",
+        &[
+            (".janet-zed/config.jdn", "{:disable-lints [:unused-import]}"),
+            (
+                "main.janet",
+                "(import ./nowhere)\n(defn f [a] 1) # janet-zed: ignore unused-binding a\n",
+            ),
+        ],
+    );
+    let output = check_in(&root, &["."], "");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(
+        stdout(&output),
+        "main.janet:1:9: no module ./nowhere to import [unresolved-import]\n"
+    );
+}
+
+/// A key nothing reads is a warning; a config that is not JDN stops the check from running as
+/// configured, which is exit status 2.
+#[test]
+fn a_config_is_validated() {
+    let unknown = scratch(
+        "unknown-key",
+        &[
+            (".janet-zed/config.jdn", "{:lint-as {} :disable [:x]}"),
+            ("main.janet", "(print 1)\n"),
+        ],
+    );
+    let malformed = scratch(
+        "malformed",
+        &[
+            (".janet-zed/config.jdn", "{:lint-as {"),
+            ("main.janet", "(print 1)\n"),
+        ],
+    );
+    let warned = check_in(&unknown, &["."], "");
+    let broken = check_in(&malformed, &["."], "");
+    std::fs::remove_dir_all(&unknown).expect("cleanup");
+    std::fs::remove_dir_all(&malformed).expect("cleanup");
+    assert_eq!(
+        stdout(&warned),
+        ".janet-zed/config.jdn:1:14: unknown key :disable, expected one of :lint-as :disable-lints\n"
+    );
+    assert_eq!(warned.status.code(), Some(1));
+    assert!(
+        stdout(&broken).starts_with(".janet-zed/config.jdn:1:1: not valid JDN [config-error]"),
+        "{}",
+        stdout(&broken)
+    );
+    assert_eq!(broken.status.code(), Some(2));
+}
+
+#[test]
+fn excluded_files_are_not_reported() {
+    let root = scratch(
+        "exclude",
+        &[
+            ("main.janet", "(print 1)\n"),
+            ("vendor/lib.janet", "(defn f [a] 1)\n"),
+        ],
+    );
+    let all = check_in(&root, &["."], "");
+    let excluded = check_in(&root, &["--exclude", "vendor/**", "."], "");
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(all.status.code(), Some(1));
+    assert_eq!(stdout(&excluded), "");
+    assert_eq!(excluded.status.code(), Some(0));
+}
+
+/// The source on standard input is checked as the file it is named, in that file's project: its
+/// import of a sibling resolves, and the file on disk is not read.
+#[test]
+fn stdin_is_checked_as_the_named_file() {
+    let root = scratch(
+        "stdin",
+        &[
+            ("project.janet", "(declare-project :name \"p\")\n"),
+            ("src/lib.janet", "(defn g [] 1)\n"),
+            ("src/main.janet", "(print 1)\n"),
+        ],
+    );
+    let output = check_in(
+        &root,
+        &["--stdin", "--filename", "src/main.janet"],
+        "(import ./lib)\n(defn f [a] (lib/g))\n",
+    );
+    std::fs::remove_dir_all(&root).expect("cleanup");
+    assert_eq!(
+        stdout(&output),
+        "src/main.janet:2:10: a is never used [unused-binding]\n"
+    );
+}
+
+#[test]
+fn a_usage_error_exits_2() {
+    let output = run(&["--format", "xml"]);
+    assert_eq!(output.status.code(), Some(2));
+    let output = run(&["--stdin"]);
+    assert_eq!(output.status.code(), Some(2));
+    let output = run(&["Cargo.toml"]);
+    assert_eq!(output.status.code(), Some(2));
 }
