@@ -106,6 +106,11 @@ impl<'d> Infer<'d> {
     /// told apart from `:boolean` here, so a boolean is left whole.
     pub(super) fn without_nil(&self, ty: &Type) -> Type {
         let resolved = self.resolve(ty);
+        // `a?` of a variable that stands for `T?`, as an `&opt` parameter declared `T?` is: the
+        // `nil` inside comes off too.
+        if let Type::Nullable(inner) = &resolved {
+            return self.as_dynamic_as(ty, self.without_nil(inner));
+        }
         let (_, rest) = narrow::split(&resolved, &nil(), &|name, args| self.expand(name, args));
         self.as_dynamic_as(ty, rest)
     }
@@ -164,11 +169,14 @@ impl<'d> Infer<'d> {
                     break;
                 }
                 [] => {
-                    // Nothing matched, and nothing says what happens then.
-                    if let Some((_, ty, over)) = &dispatched {
-                        self.exhaustive(form, ty, over.as_ref(), &tests);
+                    // Nothing matched: `nil`, unless the clauses name every tag the value can hold.
+                    let covered = match &dispatched {
+                        Some((_, ty, over)) => self.exhaustive(form, ty, over.as_ref(), &tests),
+                        None => false,
+                    };
+                    if !covered {
+                        types.push(nil());
                     }
-                    types.push(nil());
                     break;
                 }
             };
@@ -180,24 +188,28 @@ impl<'d> Infer<'d> {
     /// A `case` or `match` with no default, over a static closed type that lists every tag its
     /// value can hold, whose clauses name none of some of them: `case over Shape misses :rect`.
     /// A clause that is anything but a tag may match what the tags do not, and ends the check.
-    /// Only when [`Mode`] asks for it.
-    fn exhaustive(&mut self, form: Node<'d>, ty: &Type, over: Option<&Type>, clauses: &[Node<'d>]) {
-        if !self.record || !self.mode.exhaustive() {
-            return;
-        }
+    /// Reported only when [`Mode`] asks for it. Answers whether the clauses name every tag, in
+    /// which case nothing falls through to `nil`.
+    fn exhaustive(
+        &mut self,
+        form: Node<'d>,
+        ty: &Type,
+        over: Option<&Type>,
+        clauses: &[Node<'d>],
+    ) -> bool {
         let ty = self.zonk(ty, INFER_DEPTH);
         if matches!(ty, Type::Dynamic(_)) {
-            return;
+            return false;
         }
         let Some((key, tags)) = self.tagset(&ty) else {
-            return;
+            return false;
         };
         let Some(covered) = clauses
             .iter()
             .map(|clause| self.tags(*clause, key.as_deref()))
             .collect::<Option<Vec<_>>>()
         else {
-            return;
+            return false;
         };
         let missing: Vec<String> = tags
             .iter()
@@ -205,7 +217,10 @@ impl<'d> Infer<'d> {
             .map(|tag| format!(":{tag}"))
             .collect();
         if missing.is_empty() {
-            return;
+            return true;
+        }
+        if !self.record || !self.mode.exhaustive() {
+            return false;
         }
         let head = self
             .forms(form)
@@ -214,6 +229,7 @@ impl<'d> Infer<'d> {
         let over = self.settled(over.unwrap_or(&ty));
         let message = format!("{head} over {over} misses {}", missing.join(" "));
         self.complain(form.byte_range(), message);
+        false
     }
 
     /// The tags a dispatch over `ty` has to name, and the key it reads them at: found once a pass
@@ -304,8 +320,9 @@ impl<'d> Infer<'d> {
                     break;
                 }
                 [] => {
-                    self.exhaustive(form, &matched, None, &patterns);
-                    types.push(nil());
+                    if !self.exhaustive(form, &matched, None, &patterns) {
+                        types.push(nil());
+                    }
                     break;
                 }
             };

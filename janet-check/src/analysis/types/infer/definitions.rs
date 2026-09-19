@@ -182,27 +182,36 @@ impl<'d> Infer<'d> {
 
     /// A table or array literal under a name is filled in later: `@{:port nil}` holds whatever a
     /// `put` gives it, which its first contents say nothing about. It stays a table or an array;
-    /// what it holds is a guess, and a table may gain keys.
-    fn fillable(&self, node: Node<'d>, value: Type) -> Type {
+    /// what it holds is a guess, and a table may gain keys. Each slot is a variable standing for
+    /// its first contents, so a `put` widens it rather than being held to them.
+    fn fillable(&mut self, node: Node<'d>, value: Type) -> Type {
         match (node.kind(), value) {
             (TABLE, Type::Table(shape)) => Type::Table(Fields {
                 fields: shape
                     .fields
                     .iter()
-                    .map(|(key, ty)| (key.clone(), dynamic(ty.clone())))
+                    .map(|(key, ty)| (key.clone(), self.slot(ty)))
                     .collect(),
                 rest: Some(self.row()),
             }),
             (TABLE, Type::Dict { key, value, .. }) => Type::Dict {
                 key,
-                value: Arc::new(dynamic(Arc::unwrap_or_clone(value))),
+                value: Arc::new(self.slot(&value)),
                 mutable: true,
             },
-            (ARRAY, Type::Array(items)) => {
-                Type::Array(items.iter().cloned().map(dynamic).collect())
+            // Any element may be put anywhere, so one slot stands for every element.
+            (ARRAY, Type::Array(items)) if !items.is_empty() => {
+                Type::Array([self.slot(&unions(items.to_vec()))].into())
             }
             (_, value) => value,
         }
+    }
+
+    /// A place a `put` can change: a variable holding `ty` for now, read as a guess.
+    fn slot(&mut self, ty: &Type) -> Type {
+        let fresh = self.fresh();
+        self.unify(&fresh, ty);
+        dynamic(fresh)
     }
 
     /// [`Self::arities`] of what a definition writes as types: its metadata, and the value of a

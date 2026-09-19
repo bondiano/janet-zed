@@ -245,7 +245,17 @@ impl<'d> Infer<'d> {
         };
         let ty = self.body(rest);
         let Some(index) = self.local_of(*place) else {
-            self.expr(*place);
+            // `(set (t :k) v)` is a `put`: the place is what the key holds, and holds `v` too.
+            // `(set counter v)` of a top-level `var` widens it as it would a local.
+            let inside = self.expr(*place);
+            let slot = if place.kind() == syntax::SYMBOL {
+                self.module.get(self.text(*place)).cloned()
+            } else {
+                Some(inside)
+            };
+            if let Some(slot) = slot {
+                self.unify(&slot, &ty);
+            }
             return ty;
         };
         let widest = self

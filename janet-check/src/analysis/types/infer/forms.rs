@@ -181,6 +181,16 @@ impl<'d> Infer<'d> {
         if self.current.as_deref() == Some(name) {
             return self.module.get(name).cloned().unwrap_or_else(any);
         }
+        // A table or an array is one place however often it is named: what a `put` through one
+        // use gives it, every other use holds. Only a value that cannot change is copied.
+        if let Some(ty) = self.module.get(name)
+            && matches!(
+                self.resolve(ty),
+                Type::Table(_) | Type::Array(_) | Type::Dict { mutable: true, .. }
+            )
+        {
+            return ty.clone();
+        }
         let known = self
             .module
             .get(name)

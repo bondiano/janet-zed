@@ -2151,3 +2151,87 @@ fn fibers_channels_and_objects_written_the_usual_way_are_quiet() {
     let (_, _, facts) = infer_in(source, &HashMap::new(), STRICT);
     assert!(facts.findings.is_empty(), "{:?}", facts.findings);
 }
+
+/// Strictly held findings of `source`, by message.
+fn strict_messages(source: &str) -> Vec<String> {
+    let (_, _, facts) = infer_in(source, &HashMap::new(), STRICT);
+    facts
+        .findings
+        .iter()
+        .map(|finding| finding.message.clone())
+        .collect()
+}
+
+/// An `&opt` parameter declared `T?` is `T` once an `or` has given it a default: the `nil` the
+/// declaration writes comes off with the one leaving it out adds.
+#[test]
+fn an_optional_parameter_declared_nullable_is_defaulted_by_or() {
+    let source = "(defn f {:params [:number?] :ret :number} [&opt x] (or x 0))
+(defn g {:params [:number?] :ret {:n :number}} [&opt x] {:n (or x 0)})
+";
+    assert_eq!(strict_messages(source), Vec::<String>::new());
+}
+
+/// A top-level table or array literal holds what is put in it later, through `put` and through
+/// `set` of a key, not only what it was written with: `@{:port nil}` given a port is a table of
+/// a port.
+#[test]
+fn a_mutable_literal_holds_what_is_put_in_it_later() {
+    let source = r#"(defn serve {:params [@{:port :number}] :ret :nil} [cfg] nil)
+(defn names {:params [@[:string]] :ret :nil} [xs] nil)
+(defn pair {:params [@{:a :number :b :string}] :ret :nil} [t] nil)
+(def cfg @{:port nil})
+(put cfg :port 8080)
+(serve cfg)
+(def set-cfg @{:port nil})
+(set (set-cfg :port) 8080)
+(serve set-cfg)
+(def xs @[nil nil])
+(put xs 0 "a")
+(put xs 1 "b")
+(names xs)
+(def t @{:a 1 :b 2})
+(put t :b "now a string")
+(pair t)
+"#;
+    assert_eq!(strict_messages(source), Vec::<String>::new());
+    let wrong = r#"(defn serve {:params [@{:port :number}] :ret :nil} [cfg] nil)
+(def cfg @{:port "80"})
+(serve cfg)
+"#;
+    assert_eq!(
+        strict_messages(wrong),
+        ["serve takes @{:port :number} here, given @{:port :string & r}"],
+        "what it holds is still held to the declaration"
+    );
+}
+
+/// A top-level `var` holds what a `set` gives it, as a local one does.
+#[test]
+fn a_top_level_var_holds_what_it_is_set_to() {
+    let source = r#"(defn takes {:params [:string] :ret :nil} [s] nil)
+(var greeting nil)
+(set greeting "hi")
+(takes greeting)
+"#;
+    assert_eq!(strict_messages(source), Vec::<String>::new());
+}
+
+/// A `case` or `match` without a default that names every tag of its closed value cannot fall
+/// through to `nil`; one that misses a tag can.
+#[test]
+fn a_dispatch_naming_every_tag_does_not_fall_through_to_nil() {
+    let source = "(def Shape :typedef (or {:kind :circle :r :number} {:kind :rect :w :number}))
+(def Parsed :typedef (or [:ok :number] [:err :string]))
+(defn area {:params [Shape] :ret :number} [s] (case (s :kind) :circle (s :r) :rect (s :w)))
+(defn age {:params [Parsed] :ret :number} [r] (match r [:ok n] n [:err _] 0))
+(defn part {:params [Shape] :ret :number} [s] (case (s :kind) :circle (s :r)))
+";
+    assert_eq!(
+        strict_messages(source),
+        [
+            "case over Shape misses :rect",
+            "part returns :number?, declared :number"
+        ]
+    );
+}

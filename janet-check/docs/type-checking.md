@@ -14,7 +14,10 @@ write types; this says what the checker makes of them. Paths are relative to `sr
 3. **Zero false positives over one more true positive.** Any position that holds a union, a
    variable or `:any` ends a check. The test
    `nothing_written_the_usual_way_is_complained_about` runs every file of the fixture project and
-   of the installed Janet's packages and requires silence.
+   of the installed Janet's packages and requires silence. That corpus writes almost no types,
+   so `the_annotated_corpus_runs_and_is_not_complained_about` holds `fixtures/types/annotated`,
+   idiomatic Janet annotated throughout that runs under `janet`, to the same silence, and keeps
+   what strict mode says of it in a snapshot.
 4. **Inference never fails.** Where two types cannot both be right, the result is their union,
    not an error. A file always comes out typed, however vaguely.
 5. **A keystroke's budget.** One file of a thousand lines infers in under 5 ms in a release build
@@ -154,7 +157,7 @@ A type is static when someone wrote it or it follows from written types and lite
 | The result of narrowing a static local | static |
 | A parameter, the result of a function without a signature; a `\|(…)`'s result | `Dynamic` |
 | A `var` | `Dynamic`: a `set` anywhere can put anything in it |
-| A key of a table, an element of an array | `Dynamic`: what was put in last |
+| A key of a table, an element of an array | `Dynamic`: what was put in it, first contents and every `put` and `set` since |
 | A key, element or destructured part of a `Dynamic` value; a call of a `Dynamic` callee | `Dynamic` |
 
 `resolve` looks through `Dynamic` as it looks through a bound variable, so a key read, a call and a
@@ -196,7 +199,9 @@ besides the known ones. A row is bound to a `Struct` of the keys it turned out t
 
 Every top-level type is generalised implicitly: reading a module name or a known name
 instantiates it (`instantiate`), replacing every variable with a fresh one, so two calls of
-`(defn ident [x] x)` do not glue their arguments together. Inside its own definition a name is
+`(defn ident [x] x)` do not glue their arguments together. A top-level table or array is the
+exception, as a reference is in ML: it is one place, so every use of its name is the same type,
+and what a `put` through one use gives it the others hold. Inside its own definition a name is
 *not* instantiated: a recursive call constrains the one type, which is what makes recursion
 settle rather than walk off.
 
@@ -260,12 +265,12 @@ call of its head.
 | `(get-in x [k…] d)` | Each key read in turn | |
 | `(put x k v)` | `x`; the key's type unified with `v`, so a put adds keys to an open form | |
 | `(do …)`, `(upscope …)`, `(prompt …)` | The last form | |
-| `(set x v)` | `v` | The local widens to what it was before any narrowing, unioned with `v` |
+| `(set x v)` | `v` | The local, or a top-level `var`, widens to what it was before any narrowing, unioned with `v`; `(set (t :k) v)` is `(put t :k v)` |
 | `(if c a b)` | `(or a b)`; `nil` joins when there is no `b` | `a` is narrowed by `c`, `b` by its negation |
 | `(when c …)` | `(or body :nil)` | The body is narrowed by `c` |
 | `(cond t b … d)` | The union of the bodies; `nil` when there is no default | Each body narrowed by its test; each later clause by the tests before it failing |
-| `(case v k b …)` | The union of the bodies | Each body narrowed as `(= v k)` would, each later clause by the keys before it failing |
-| `(match v p b …)` | The union of the bodies | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
+| `(case v k b …)` | The union of the bodies; `nil` joins when there is no default, unless the keys name every tag of a static closed `v` | Each body narrowed as `(= v k)` would, each later clause by the keys before it failing |
+| `(match v p b …)` | The union of the bodies; `nil` as for `case` | Pattern names bind what they take apart (below); a local `v` is narrowed by the pattern, each later clause by the literal patterns before it failing |
 | `(and …)` | The last argument, and what each one before it can stop at: its `nil` and `:boolean` members, nothing for one always true | Each argument narrowed by the ones before it holding |
 | `(or …)` | Each argument but the last without `nil`, and the last | Each argument narrowed by the ones before it failing |
 | `(while …)`, `(for …)`, `(each …)`, `(loop …)` | `:nil` | `for` binds a number; `each` and `:in` bind the collection's element; `:range` binds a number; `:iterate` binds the value without `nil`; `:keys` and `:pairs` bind `:any`. A fiber's element is what it yields, so `(each x (generate …))` takes the loop's body |
