@@ -137,7 +137,7 @@ fn a_standalone_file_does_not_read_its_directory() {
 /// every one inferred once, a layer of the import graph at a time, and nothing to report.
 #[test]
 fn a_workspace_with_the_syspath_is_checked_in_seconds() {
-    let Ok(syspath) = janet_check::analysis::modules::syspath("janet") else {
+    let Some(syspath) = janet_check::test_support::janet_syspath() else {
         return;
     };
     let started = std::time::Instant::now();

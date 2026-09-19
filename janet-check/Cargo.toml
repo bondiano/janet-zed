@@ -45,3 +45,5 @@ cc = "1.4.6"
 
 [dev-dependencies]
 insta = "1.48.0"
+# The CLI tests share the library's test helpers.
+janet-check = { path = ".", features = ["test-support"] }

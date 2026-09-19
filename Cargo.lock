@@ -785,6 +785,7 @@ dependencies = [
  "dunce",
  "ignore",
  "insta",
+ "janet-check",
  "lsp-types",
  "serde",
  "serde_json",
