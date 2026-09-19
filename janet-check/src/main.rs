@@ -128,7 +128,9 @@ fn check(
     workspace.refresh();
     workspace.infer(files.iter().map(PathBuf::as_path));
 
-    let here = std::env::current_dir().ok();
+    // Canonical as `files` are: on Windows the working directory may be spelled with 8.3 short
+    // names (`RUNNER~1`) the files it holds are not.
+    let here = std::env::current_dir().ok().map(|here| canonical(&here));
     let mut worker = janet.map(Worker::new);
     let mut clean = true;
     for path in &files {
