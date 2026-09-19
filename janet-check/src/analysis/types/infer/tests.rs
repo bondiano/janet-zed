@@ -317,7 +317,7 @@ fn a_thousand_lines_are_inferred_in_milliseconds() {
 fn nothing_in_a_janet_file_makes_inference_panic() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut sources: Vec<PathBuf> = walk(&root.join("fixtures"));
-    if let Ok(syspath) = crate::analysis::modules::syspath("janet") {
+    if let Some(syspath) = crate::test_support::janet_syspath() {
         sources.extend(walk(&syspath));
     }
     assert!(sources.len() > 5, "there are Janet files to read");
@@ -667,7 +667,7 @@ fn nothing_written_the_usual_way_is_complained_about() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut sources: Vec<PathBuf> = walk(&root.join("fixtures/project"));
     sources.extend(walk(&root.join("fixtures/exports")));
-    if let Ok(syspath) = crate::analysis::modules::syspath("janet") {
+    if let Some(syspath) = crate::test_support::janet_syspath() {
         sources.extend(walk(&syspath));
     }
     assert!(sources.len() > 20, "there is a corpus to read");
@@ -982,7 +982,7 @@ fn zz_slowest_corpus_files() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
     let mut sources: Vec<PathBuf> = walk(&root.join("fixtures/project"));
     sources.extend(walk(&root.join("fixtures/exports")));
-    if let Ok(syspath) = crate::analysis::modules::syspath("janet") {
+    if let Some(syspath) = crate::test_support::janet_syspath() {
         sources.extend(walk(&syspath));
     }
     let mut times: Vec<(std::time::Duration, String)> = sources
