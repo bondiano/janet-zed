@@ -133,7 +133,7 @@ impl Facts {
 }
 
 /// The type a literal wears on its face.
-fn literal(doc: &Document, node: Node) -> Option<Type> {
+pub(crate) fn literal(doc: &Document, node: Node) -> Option<Type> {
     Some(match node.kind() {
         "num_lit" => atom("number"),
         syntax::STRING | "long_str_lit" => atom("string"),

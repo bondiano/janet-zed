@@ -1,0 +1,15 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "format!(\"----- SOURCE\\n{source}\\n----- HINTS\\n{}\\n\\n----- OFF\\n{off}\\n\",\nshown.join(\"\\n\"))"
+---
+----- SOURCE
+(defn half [x] (/ x 2))
+(def total (half 10))
+(def port 8080)
+
+----- HINTS
+0:14 kind 1 "-> :number"
+1:10 kind 1 ": :number"
+
+----- OFF
+null

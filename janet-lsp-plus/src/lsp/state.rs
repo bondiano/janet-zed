@@ -70,6 +70,8 @@ pub struct State {
     /// What `types.diagnostics` is set to, from `initializationOptions` and every
     /// `didChangeConfiguration` after it.
     pub reporting: Reporting,
+    /// What `types.hints` is set to: whether inferred types are given as inlay hints.
+    pub hints: bool,
     /// Workspace files nobody has open that last had type diagnostics published, so the marks
     /// come off again when a finding goes away.
     pub published: HashSet<Uri>,
@@ -95,6 +97,7 @@ impl State {
             repl_port,
             repl: RefCell::new(None),
             reporting,
+            hints: true,
             published: HashSet::new(),
         };
         state.rescan();

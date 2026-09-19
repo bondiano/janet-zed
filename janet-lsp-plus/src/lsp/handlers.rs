@@ -11,11 +11,11 @@ use lsp_types::{
     CodeAction, CodeActionKind, CodeActionOrCommand, CodeActionParams, CodeActionResponse,
     CompletionItem, CompletionItemKind, CompletionParams, CompletionResponse, Diagnostic,
     DocumentSymbol, DocumentSymbolParams, DocumentSymbolResponse, Documentation,
-    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, Location,
-    MarkupContent, MarkupKind, ParameterInformation, ParameterLabel, Position,
-    PrepareRenameResponse, Range, ReferenceParams, RenameParams, SignatureHelp,
-    SignatureHelpParams, SignatureInformation, SymbolKind, TextDocumentPositionParams, TextEdit,
-    Uri, WorkspaceEdit,
+    GotoDefinitionParams, GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint,
+    InlayHintKind, InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
+    RenameParams, SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolKind,
+    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit,
 };
 
 use lsp_types::DocumentFormattingParams;
@@ -25,12 +25,12 @@ use super::state::State;
 use crate::editing;
 use crate::kernel::lookup;
 use janet_check::analysis::definitions::{Definition, definitions};
-use janet_check::analysis::modules;
 use janet_check::analysis::references::{self, Occurrence, Target};
 use janet_check::analysis::stdlib::SourceLocation;
 use janet_check::analysis::symbols::{self, CandidateKind, Origin, Parameters};
 use janet_check::analysis::types;
 use janet_check::analysis::{SourceFile, canonical, uri_of};
+use janet_check::analysis::{hints, modules};
 use janet_check::janet;
 use janet_check::syntax::{self, Document};
 
@@ -216,6 +216,30 @@ pub fn hover(state: &State, params: HoverParams) -> Result<Option<Hover>> {
         contents: HoverContents::Markup(markdown(value)),
         range,
     }))
+}
+
+/// The types inference read where nothing written says them, in the range asked for.
+pub fn inlay_hint(state: &State, params: InlayHintParams) -> Result<Option<Vec<InlayHint>>> {
+    if !state.hints {
+        return Ok(None);
+    }
+    let file = state.file(&params.text_document.uri)?;
+    let doc = &file.document;
+    let range = doc.offset(params.range.start)..doc.offset(params.range.end);
+    let hints = hints::hints(&state.workspace, &file.path, &range)
+        .into_iter()
+        .map(|hint| InlayHint {
+            position: doc.position(hint.at),
+            label: InlayHintLabel::String(hint.label),
+            kind: Some(InlayHintKind::TYPE),
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(hint.padded),
+            padding_right: None,
+            data: None,
+        })
+        .collect();
+    Ok(Some(hints))
 }
 
 pub fn completion(state: &State, params: CompletionParams) -> Result<Option<CompletionResponse>> {

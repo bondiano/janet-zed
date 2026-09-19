@@ -1,0 +1,11 @@
+---
+source: janet-check/src/analysis/hints/tests.rs
+expression: "show(\"(defn half [x] (/ x 2))\n(def total (half 10))\n(defn greet [name]\n  (let [line (string \\\"hi \\\" name) n (length line)]\n    (var width (+ n 1))\n    line))\n(map (fn [x] (+ x 1)) [1 2])\n\")"
+---
+(defn half [x] ‹-> :number› (/ x 2))
+(def total‹: :number› (half 10))
+(defn greet [name] ‹-> :string›
+  (let [line‹: :string› (string "hi " name) n‹: :number› (length line)]
+    (var width‹: :number› (+ n 1))
+    line))
+(map (fn [x] ‹-> :number› (+ x 1)) [1 2])

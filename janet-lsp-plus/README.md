@@ -55,8 +55,9 @@ Sent through the client's LSP configuration; both are optional.
   "janet_source": "~/src/janet",
   // Report what the written types rule out: "off" (default), "hint" or "warning".
   // `strict` also holds unions and inferred types to them; `exhaustive` (implied by `strict`)
-  // reports a `case` or `match` without a default that misses a tag.
-  "types": { "diagnostics": "hint", "strict": false, "exhaustive": false }
+  // reports a `case` or `match` without a default that misses a tag. `hints` (default true)
+  // gives inferred types as inlay hints.
+  "types": { "diagnostics": "hint", "strict": false, "exhaustive": false, "hints": true }
 }
 ```
 
@@ -67,6 +68,11 @@ know. Signature help instantiates what the arguments already written pin down: a
 `(map (fn [x] |) [1 2 3])` the lambda's `x` is `:number`. Completion offers the keys of a form
 it knows the shape of — after `(request :`, inside `(get-in request [:params :`, and in a
 destructuring `{:` — and the values of an `(enum …)` argument.
+
+Inlay hints show what inference read where nothing written says it: the type after a name
+`def`, `var` or `let` binds to something other than a literal, and the result after the
+parameters of a `defn` or `fn` whose `:ret` nobody wrote. `:any` and bare type variables are
+left out. In Zed, turn on `inlay_hints.enabled`; `types.hints: false` turns them off here.
 
 Types mark nothing up by default. `types.diagnostics` turns what `janet-check` reports into
 diagnostics at the severity you name, alongside what the compiler reports, under the same

@@ -2,6 +2,7 @@
 
 pub mod config;
 pub mod definitions;
+pub mod hints;
 pub mod ignores;
 pub mod modules;
 pub mod peg;

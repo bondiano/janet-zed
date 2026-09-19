@@ -1781,3 +1781,42 @@ fn a_failed_check_says_so() {
         "{found:?}"
     );
 }
+
+#[test]
+fn inlay_hints_show_inferred_types_until_turned_off() {
+    let mut session = Session::start();
+    let source = "(defn half [x] (/ x 2))\n(def total (half 10))\n(def port 8080)\n";
+    let scratch = uri(&session.root.join("src/hinted.janet"));
+    session.open(&scratch, source);
+    let params = json!({
+        "textDocument": {"uri": scratch},
+        "range": {"start": {"line": 0, "character": 0}, "end": {"line": 3, "character": 0}},
+    });
+    let hints = session
+        .request("textDocument/inlayHint", params.clone())
+        .unwrap();
+    let shown: Vec<String> = hints
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|hint| {
+            format!(
+                "{}:{} kind {} {}",
+                hint["position"]["line"],
+                hint["position"]["character"],
+                hint["kind"],
+                hint["label"]
+            )
+        })
+        .collect();
+    session.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"types": {"hints": false}}}),
+    );
+    let off = session.request("textDocument/inlayHint", params).unwrap();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE\n{source}\n----- HINTS\n{}\n\n----- OFF\n{off}\n",
+        shown.join("\n")
+    ));
+    session.finish();
+}

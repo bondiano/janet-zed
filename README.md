@@ -8,7 +8,7 @@ a REPL wired into the editor, and structural editing.
 - **Language server:** diagnostics as you type, completion, hover, signature help,
   go-to-definition into the stdlib, references, rename, symbols, formatting, and
   `project.janet` support — see [`janet-lsp-plus`](janet-lsp-plus/README.md).
-- **Types:** hover, signature help and key completion from the types of a program, with
+- **Types:** hover, signature help, key completion and inlay hints from the types of a program, with
   optional diagnostics for what they rule out — see [`janet-check`](janet-check/README.md#types).
 - **Code actions:** paredit, threading and quick fixes for unknown symbols — see
   [structural editing](janet-lsp-plus/README.md#structural-editing).
@@ -47,8 +47,9 @@ All settings are optional. Put them in `settings.json`:
         // Report what the types rule out: "off" (default), "hint" or "warning".
         // `strict` also reports a union a member of which does not fit, and a type inference
         // guessed that cannot fit at all. `exhaustive` (implied by `strict`) reports a `case` or
-        // `match` without a default that misses a tag of a closed union.
-        "types": { "diagnostics": "hint", "strict": false, "exhaustive": false },
+        // `match` without a default that misses a tag of a closed union. `hints` (default true)
+        // shows inferred types as inlay hints, once Zed's `inlay_hints.enabled` is on.
+        "types": { "diagnostics": "hint", "strict": false, "exhaustive": false, "hints": true },
         // Compile open files with `janet` for unknown symbols and wrong arities (default true).
         // This runs the project's code: see "Trust" below.
         "compile": true,

@@ -16,8 +16,8 @@ use lsp_types::notification::{
 use lsp_types::request::Formatting;
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-    PrepareRenameRequest, References, RegisterCapability, Rename, Request as LspRequest,
-    ResolveCompletionItem, Shutdown, SignatureHelpRequest,
+    InlayHintRequest, PrepareRenameRequest, References, RegisterCapability, Rename,
+    Request as LspRequest, ResolveCompletionItem, Shutdown, SignatureHelpRequest,
 };
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
@@ -100,6 +100,8 @@ struct Types {
     /// Reports a `case` or `match` without a default that misses a tag. Implied by `strict`.
     #[serde(default)]
     exhaustive: bool,
+    /// Shows inferred types as inlay hints. On unless set to `false`.
+    hints: Option<bool>,
 }
 
 impl Types {
@@ -108,6 +110,10 @@ impl Types {
             strict: self.strict,
             exhaustive: self.exhaustive,
         }
+    }
+
+    fn hints(&self) -> bool {
+        self.hints.unwrap_or(true)
     }
 }
 
@@ -201,6 +207,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
         types.diagnostics,
     );
     state.watching = watching;
+    state.hints = types.hints();
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),
@@ -233,6 +240,7 @@ fn capabilities() -> ServerCapabilities {
             ..CodeActionOptions::default()
         })),
         references_provider: Some(OneOf::Left(true)),
+        inlay_hint_provider: Some(OneOf::Left(true)),
         rename_provider: Some(OneOf::Right(RenameOptions {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
@@ -507,6 +515,9 @@ fn dispatch(state: &State, request: Request) -> Response {
             handle::<PrepareRenameRequest>(state, request, handlers::prepare_rename)
         }
         Rename::METHOD => handle::<Rename>(state, request, handlers::rename),
+        InlayHintRequest::METHOD => {
+            handle::<InlayHintRequest>(state, request, handlers::inlay_hint)
+        }
         method => {
             tracing::debug!(method, "unhandled request");
             Response::new_err(
@@ -610,6 +621,7 @@ fn sync(
                 return Ok(false);
             };
             let (reporting, mode) = (types.diagnostics, types.mode());
+            state.hints = types.hints();
             tracing::debug!(?reporting, ?mode, "configured");
             if state.reporting != reporting || state.workspace.mode() != mode {
                 state.reporting = reporting;
