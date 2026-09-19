@@ -311,7 +311,7 @@
   [ind])
 
 (defn apply
-  {:params [:function :any] :ret :any}
+  {:params [:function :any] :ret :any} # whatever `f` answers
   "(apply f & args)\n\nApplies a function f to a variable number of arguments. Each element in args is used as an argument to f, except the last element in args, which is expected to be an array or a tuple. Each element in this last argument is then also pushed as an argument to f."
   [f & args])
 
@@ -701,7 +701,7 @@
   [x])
 
 (defn cancel
-  {:params [:fiber :any] :ret :any}
+  {:params [:fiber :any] :ret :any} # the signal value, as `resume` answers it
   "(cancel fiber err)\n\nResume a fiber but have it immediately raise an error. This lets a programmer unwind a pending fiber. Returns the same result as resume."
   [fiber err])
 
@@ -726,7 +726,7 @@
   [c])
 
 (defn cli-main
-  {:params [(or [:string] @[:string])] :ret :any}
+  {:params [(or [:string] @[:string])] :ret :any} # whatever the script or the REPL leaves as its exit value
   "(cli-main args)\n\nEntrance for the Janet CLI tool. Call this function with the command line\narguments as an array or tuple of strings to invoke the CLI interface."
   [args])
 
@@ -871,7 +871,7 @@
   [fun &opt pc])
 
 (defn debugger
-  {:params [:fiber :number?] :ret :any}
+  {:params [:fiber :number?] :ret :any} # the value the debug REPL is left with
   "(debugger fiber &opt level)\n\nRun a repl-based debugger on a fiber. Optionally pass in a level  to differentiate nested debuggers."
   [fiber &opt level])
 
@@ -996,7 +996,7 @@
   [str &opt width indent colorize])
 
 (defn doc-of
-  {:params [:any] :ret :string}
+  {:params [:any] :ret :nil}
   "(doc-of x)\n\nSearches all loaded modules in module/cache for a given binding and prints out its documentation.\nThis does a search by value instead of by name. Returns nil."
   [x])
 
@@ -1291,12 +1291,12 @@
   [stream data &opt timeout])
 
 (defn eval
-  {:params [:any (or :struct :table :nil)] :ret :any}
+  {:params [:any (or :struct :table :nil)] :ret :any} # whatever the form evaluates to
   "(eval form &opt env)\n\nEvaluates a form in the current environment. If more control over the\nenvironment is needed, use `run-context`. Optionally pass in an `env` table with available bindings."
   [form &opt env])
 
 (defn eval-string
-  {:params [(or :string :buffer) (or :struct :table :nil)] :ret :any}
+  {:params [(or :string :buffer) (or :struct :table :nil)] :ret :any} # whatever the last form evaluates to
   "(eval-string str &opt env)\n\nEvaluates a string in the current environment. If more control over the\nenvironment is needed, use `run-context`. Optionally pass in an `env` table with available bindings."
   [str &opt env])
 
@@ -1606,7 +1606,7 @@
   [i start stop & body])
 
 (defn freeze
-  {:params [:any] :ret :any}
+  {:params [:any] :ret :any} # a copy of `x`, of another kind when mutable: an array freezes to a tuple
   "(freeze x)\n\nFreeze an object (make it immutable) and do a deep copy, making\nchild values also immutable. Closures, fibers, and abstract types\nwill not be recursively frozen, but all other types will."
   [x])
 
@@ -1896,12 +1896,12 @@
   [head & body])
 
 (defn macex
-  {:params [:any :function?] :ret :any}
+  {:params [:any :function?] :ret :any} # the form, expanded
   "(macex x &opt on-binding)\n\nExpand macros completely.\n`on-binding` is an optional callback for whenever a normal symbolic binding\nis encountered. This allows macros to easily see all bindings used by their\narguments by calling `macex` on their contents. The binding itself is also\nreplaced by the value returned by `on-binding` within the expanded macro."
   [x &opt on-binding])
 
 (defn macex1
-  {:params [:any :function?] :ret :any}
+  {:params [:any :function?] :ret :any} # the form, expanded once
   "(macex1 x &opt on-binding)\n\nExpand macros in a form, but do not recursively expand macros.\nSee `macex` docs for info on `on-binding`."
   [x &opt on-binding])
 
@@ -2216,7 +2216,7 @@
   [& args])
 
 (defn max-of
-  {:params [(or [:number] @[:number])] :ret :number}
+  {:params [(or [:number] @[:number])] :ret :number?}
   "(max-of args)\n\nReturns the numeric maximum of the argument sequence."
   [args])
 
@@ -2251,7 +2251,7 @@
   [& args])
 
 (defn min-of
-  {:params [(or [:number] @[:number])] :ret :number}
+  {:params [(or [:number] @[:number])] :ret :number?}
   "(min-of args)\n\nReturns the numeric minimum of the argument sequence."
   [args])
 
@@ -2306,7 +2306,7 @@
   nil)
 
 (defn module/value
-  {:params [(or :struct :table) :symbol :boolean?] :ret :any}
+  {:params [(or :struct :table) :symbol :boolean?] :ret :any} # whatever the binding holds
   "(module/value module sym &opt private)\n\nGiven a module table, get the value bound to a symbol `sym`. If `private` is\ntruthy, will also resolve private module symbols. If no binding is found, will return\nnil."
   [module sym &opt private])
 
@@ -2426,7 +2426,7 @@
   [stream data &opt timeout])
 
 (defn next
-  {:params [:any :any] :ret :any}
+  {:params [:any :any] :ret :any} # a key of `ds`, or nil past the last
   "(next ds &opt key)\n\nGets the next key in a data structure. Can be used to iterate through the keys of a data structure in an unspecified order. Keys are guaranteed to be seen only once per iteration if the data structure is not mutated during iteration. If key is nil, next returns the first key. If next returns nil, there are no more keys to iterate through."
   [ds &opt key])
 
@@ -2711,7 +2711,7 @@
   [x])
 
 (defn parse
-  {:params [(or :string :buffer)] :ret :any}
+  {:params [(or :string :buffer)] :ret :any} # the value read
   "(parse str)\n\nParse a string and return the first value. For complex parsing, such as for a repl with error handling,\nuse the parser api."
   [str])
 
@@ -2836,7 +2836,7 @@
   [x])
 
 (defn postwalk
-  {:params [(fn [:any] :any) :any] :ret :any}
+  {:params [(fn [:any] :any) :any] :ret :any} # whatever `f` answers for the whole form
   "(postwalk f form)\n\nDo a post-order traversal of a data structure and call `(f x)`\non every visitation."
   [f form])
 
@@ -2846,7 +2846,7 @@
   [x])
 
 (defn prewalk
-  {:params [(fn [:any] :any) :any] :ret :any}
+  {:params [(fn [:any] :any) :any] :ret :any} # the form, rebuilt from what `f` answers
   "(prewalk f form)\n\nSimilar to `postwalk`, but do pre-order traversal."
   [f form])
 
@@ -2926,7 +2926,7 @@
   [n & body])
 
 (defn repl
-  {:params [:function? :function? (or :struct :table :nil) :abstract? :function?] :ret :any}
+  {:params [:function? :function? (or :struct :table :nil) :abstract? :function?] :ret :any} # the `:exit-value` the environment is left with
   "(repl &opt chunks onsignal env parser read)\n\nRun a repl. The first parameter is an optional function to call to\nget a chunk of source code that should return nil for end of file.\nThe second parameter is a function that is called when a signal is\ncaught. One can provide an optional environment table to run\nthe repl in, as well as an optional parser or read function to pass\nto `run-context`."
   [&opt chunks onsignal env parser read])
 
@@ -2961,7 +2961,7 @@
   nil)
 
 (defn run-context
-  {:params [(or :struct :table)] :ret :any}
+  {:params [(or :struct :table)] :ret :any} # the `:exit-value` the environment is left with
   "(run-context opts)\n\nRun a context. This evaluates expressions in an environment,\nand encapsulates the parsing, compilation, and evaluation.\nReturns `(in environment :exit-value environment)` when complete.\n`opts` is a table or struct of options. The options are as follows:\n\n  * `:chunks` -- callback to read into a buffer - default is getline\n\n  * `:on-parse-error` -- callback when parsing fails - default is bad-parse\n\n  * `:env` -- the environment to compile against - default is the current env\n\n  * `:source` -- source path for better errors (use keywords for non-paths) - default\n    is `:<anonymous>`\n\n  * `:on-compile-error` -- callback when compilation fails - default is bad-compile\n\n  * `:on-compile-warning` -- callback for any linting error - default is warn-compile\n\n  * `:evaluator` -- callback that executes thunks. Signature is (evaluator thunk source\n    env where)\n\n  * `:on-status` -- callback when a value is evaluated - default is debug/stacktrace.\n\n  * `:fiber-flags` -- what flags to wrap the compilation fiber with. Default is :ia.\n\n  * `:expander` -- an optional function that is called on each top level form before\n    being compiled.\n\n  * `:parser` -- provide a custom parser that implements the same interface as Janet's\n    built-in parser.\n\n  * `:read` -- optional function to get the next form, called like `(read env source)`.\n    Overrides all parsing."
   [opts])
 
@@ -3301,12 +3301,12 @@
   [pred ind])
 
 (defn thaw
-  {:params [:any] :ret :any}
+  {:params [:any] :ret :any} # a copy of `ds`, of another kind when immutable: a struct thaws to a table
   "(thaw ds)\n\nThaw an object (make it mutable) and do a deep copy, making\nchild values also mutable. Closures, fibers, and abstract\ntypes will not be recursively thawed, but all other types will."
   [ds])
 
 (defn thaw-keep-keys
-  {:params [:any] :ret :any}
+  {:params [:any] :ret :any} # a copy of `ds`, of another kind when immutable: a struct thaws to a table
   "(thaw-keep-keys ds)\n\nSimilar to `thaw`, but do not modify table or struct keys."
   [ds])
 
@@ -3436,7 +3436,7 @@
   [name init])
 
 (defn walk
-  {:params [(fn [:any] :any) :any] :ret :any}
+  {:params [(fn [:any] :any) :any] :ret :any} # whatever `f` answers
   "(walk f form)\n\nIterate over the values in ast and apply `f`\nto them. Collect the results in a data structure. If ast is not a\ntable, struct, array, or tuple,\nreturns form."
   [f form])
 
@@ -3506,7 +3506,7 @@
   [to fmt & xs])
 
 (defn yield
-  {:params [:any] :ret :any}
+  {:params [:any] :ret :any} # whatever the fiber is resumed with
   "(yield &opt x)\n\nYield a value to a parent fiber. When a fiber yields, its execution is paused until another thread resumes it. The fiber will then resume, and the last yield call will return the value that was passed to resume."
   [&opt x])
 

@@ -615,8 +615,8 @@ fn spork_declares_every_binding_of_its_modules() {
 
 /// What the core declares a call answers against what the installed Janet answers: each sample is
 /// run, and the type Janet reports for its value has to fit the declared `:ret`. A result declared
-/// narrower than Janet's is a false finding at every call. Without Janet there is nothing to
-/// compare against and the test says so rather than failing.
+/// narrower than Janet's is a false finding at every call. These are the calls samples of the
+/// declared parameters cannot make: of the world outside, or of a value only one argument reaches.
 #[test]
 fn core_results_fit_what_the_installed_janet_answers() {
     const CALLS: [&str; 27] = [
@@ -648,9 +648,7 @@ fn core_results_fit_what_the_installed_janet_answers() {
         r#"(peg/match "a" "a")"#,
         "(fiber/status (fiber/new (fn [] 1)))",
     ];
-    let installed = std::process::Command::new("janet").arg("-v").output();
-    if installed.is_err() {
-        eprintln!("janet is not installed: nothing to compare against");
+    if crate::test_support::janet_syspath().is_none() {
         return;
     }
     let script = CALLS.iter().fold(String::new(), |mut script, call| {
@@ -666,31 +664,259 @@ fn core_results_fit_what_the_installed_janet_answers() {
     )
     .expect("every sample runs");
     assert_eq!(answered.lines().count(), CALLS.len(), "{answered}");
+    let wrong: Vec<String> = CALLS
+        .iter()
+        .zip(answered.lines())
+        .filter_map(|(call, answer)| {
+            let name = call[1..].split([' ', ')']).next().unwrap_or_default();
+            misdeclared(name, answer).map(|wrong| format!("{call}: {wrong}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
+}
+
+/// Why the type Janet reported for what `name` returned does not fit its declared `:ret`.
+fn misdeclared(name: &str, answer: &str) -> Option<String> {
     let expand = |name: &str, _: &[Type]| match core().binding(name) {
         Some(Annotation::Typedef(ty, _)) => Some(ty.clone()),
         _ => None,
     };
-    for (call, answer) in CALLS.iter().zip(answered.lines()) {
-        let name = call[1..].split([' ', ')']).next().unwrap_or_default();
-        let Some(Annotation::Function(signature)) = core().binding(name) else {
-            panic!("{name} is not a call")
-        };
-        // An abstract type answers with its own name, `core/process`; the type language calls
-        // every one of them `:abstract`.
-        let atom = if is_atom(answer) { answer } else { "abstract" };
-        assert_ne!(
-            fit::fit(
-                &Type::Keyword(atom.into()),
-                &signature.ret,
-                &infer::Subst::default(),
-                &expand,
-                false,
-            ),
-            fit::Fit::No,
-            "{call} answers :{answer}, but {name} is declared to answer {}",
+    let Some(Annotation::Function(signature)) = core().binding(name) else {
+        panic!("{name} is not a call")
+    };
+    // An abstract type answers with its own name, `core/process`; the type language calls every
+    // one of them `:abstract`.
+    let atom = if is_atom(answer) { answer } else { "abstract" };
+    let answered = fit::fit(
+        &Type::Keyword(atom.into()),
+        &signature.ret,
+        &infer::Subst::default(),
+        &expand,
+        false,
+    );
+    (answered == fit::Fit::No).then(|| {
+        format!(
+            "answers :{answer}, but {name} is declared to answer {}",
             signature.ret
-        );
+        )
+    })
+}
+
+/// Janet source for a value of `ty`, or `None` for a type no sample is written for.
+fn sample(ty: &Type, edge: bool) -> Option<String> {
+    let all = |items: &[Type]| -> Option<String> {
+        items
+            .iter()
+            .map(|ty| sample(ty, edge))
+            .collect::<Option<Vec<_>>>()
+            .map(|items| items.join(" "))
+    };
+    let fields = |fields: &Fields| -> Option<String> {
+        fields
+            .fields
+            .iter()
+            .map(|(key, ty)| Some(format!("{key} {}", sample(ty, edge)?)))
+            .collect::<Option<Vec<_>>>()
+            .map(|fields| fields.join(" "))
+    };
+    Some(match ty {
+        Type::Keyword(name) => match name.as_str() {
+            "number" if edge => "0".to_string(),
+            "number" => "1".to_string(),
+            // Whatever takes anything mostly takes something to look into.
+            "any" if edge => "{}".to_string(),
+            "any" => "@[1 2]".to_string(),
+            "string" if edge => "\"\"".to_string(),
+            "array" if edge => "@[]".to_string(),
+            "tuple" if edge => "[]".to_string(),
+            "string" => "\"a\"".to_string(),
+            "buffer" => "@\"a\"".to_string(),
+            "keyword" => ":a".to_string(),
+            "symbol" => "'a".to_string(),
+            "boolean" => "true".to_string(),
+            "nil" => "nil".to_string(),
+            "function" => "(fn [& _] 1)".to_string(),
+            "cfunction" => "length".to_string(),
+            "fiber" => "(fiber/new (fn [] 1))".to_string(),
+            "array" => "@[1 2]".to_string(),
+            "tuple" => "[1 2]".to_string(),
+            "table" => "@{:a 1}".to_string(),
+            "struct" => "{:a 1}".to_string(),
+            "abstract" => "(parser/new)".to_string(),
+            "pointer" | "never" => return None,
+            literal => format!(":{literal}"),
+        },
+        Type::Var(_) => "1".to_string(),
+        Type::Nullable(inner) | Type::Dynamic(inner) => sample(inner, edge)?,
+        Type::Tuple(items) if edge && items.len() == 1 => "[]".to_string(),
+        Type::Array(items) if edge && items.len() == 1 => "@[]".to_string(),
+        Type::Tuple(items) => format!("[{}]", all(items)?),
+        Type::Array(items) => format!("@[{}]", all(items)?),
+        Type::Struct(shape) => format!("{{{}}}", fields(shape)?),
+        Type::Table(shape) => format!("@{{{}}}", fields(shape)?),
+        Type::Dict {
+            key,
+            value,
+            mutable,
+        } => format!(
+            "{}{{{} {}}}",
+            if *mutable { "@" } else { "" },
+            sample(key, edge)?,
+            sample(value, edge)?
+        ),
+        Type::Or(items) | Type::Open(items) => items.iter().find_map(|ty| sample(ty, edge))?,
+        Type::Enum(values) => format!(":{}", values.first()?),
+        Type::Fn(signature) => format!("(fn [& _] {})", sample(&signature.ret, edge)?),
+        Type::Named { name, .. } => match core().binding(name) {
+            Some(Annotation::Typedef(ty, _)) => sample(ty, edge)?,
+            _ => return None,
+        },
+    })
+}
+
+/// The modules whose functions answer without touching the world outside the process, and so can
+/// be called on samples.
+const PURE_MODULES: [&str; 13] = [
+    "", "array", "buffer", "fiber", "int", "keyword", "math", "parser", "peg", "string", "struct",
+    "symbol", "table",
+];
+
+/// Unprefixed functions that read, write, wait, exit or reach into the running program.
+const IMPURE: [&str; 33] = [
+    "cancel",
+    "cli-main",
+    "debug",
+    "debugger",
+    "debugger-on-status",
+    "dofile",
+    "eflush",
+    "flush",
+    "flycheck",
+    "gccollect",
+    "gcinterval",
+    "gcsetinterval",
+    "getline",
+    "import*",
+    "load-image",
+    "make-image",
+    "native",
+    "propagate",
+    "quit",
+    "repl",
+    "require",
+    "resume",
+    "run-context",
+    "sandbox",
+    "setdyn",
+    "signal",
+    "slurp",
+    "spit",
+    "trace",
+    "untrace",
+    "xprin",
+    "xprinf",
+    "yield",
+];
+
+/// Every pure core function whose `:ret` says something, called on samples of the types it
+/// declares it takes, at each arity it declares: the type Janet reports for each result has to fit
+/// the declared `:ret`. A call the samples make fail says nothing and is left out; one that
+/// answers with what the declaration rules out is a false finding waiting at every call site.
+#[test]
+fn core_results_fit_what_janet_answers_on_samples() {
+    if crate::test_support::janet_syspath().is_none() {
+        return;
     }
+    let stdlib = stdlib::Stdlib::load("janet", None).unwrap();
+    let calls: Vec<(String, String)> = core_entries()
+        .into_iter()
+        .filter(|entry| !entry.peg && !IMPURE.contains(&entry.name.as_str()))
+        .filter(|entry| {
+            let module = entry.name.rsplit_once('/').map_or("", |(module, _)| module);
+            PURE_MODULES.contains(&module)
+        })
+        .filter(|entry| {
+            stdlib.get(&entry.name).is_some_and(|binding| {
+                matches!(binding.kind, CoreKind::Cfunction | CoreKind::Function)
+            })
+        })
+        .filter_map(|entry| match entry.declared {
+            Some(Annotation::Function(signature)) if !signature.ret.is_any() => {
+                Some((entry.name, signature))
+            }
+            _ => None,
+        })
+        // Once with plain samples and once with the edges: zero, and what is empty.
+        .flat_map(|(name, signature)| {
+            [false, true].into_iter().flat_map(move |edge| {
+                let fixed: Vec<String> = signature
+                    .params
+                    .iter()
+                    .map_while(|ty| sample(ty, edge))
+                    .collect();
+                let required = signature.params.len() - signature.optional;
+                // A variadic call is sampled with one rest argument, as such calls are written:
+                // `(max)` answers nil, and declaring `max` nullable for it would make every
+                // `(max a b)` a strict finding.
+                let rest = signature.rest.as_ref().and_then(|ty| sample(ty, edge));
+                let full = fixed.len() == signature.params.len();
+                let variadic = full && signature.rest.is_some();
+                let arities = (required..=fixed.len())
+                    .filter(|arity| !(variadic && *arity == fixed.len()))
+                    .map(|arity| fixed[..arity].join(" "));
+                let with_rest = rest
+                    .filter(|_| full)
+                    .map(|rest| format!("{} {rest}", fixed.join(" ")));
+                let name = name.clone();
+                arities
+                    .chain(with_rest)
+                    .map(move |args| (name.clone(), args.trim().to_string()))
+                    .collect::<Vec<_>>()
+            })
+        })
+        .collect();
+    // Each call runs in a fiber that catches every signal, with its output kept from ours, and is
+    // made through `apply` so that the compiler does not hold the samples to the arity.
+    let script = calls.iter().enumerate().fold(
+        String::from(
+            "(defn check [i f args]\n  \
+               (def fiber (fiber/new (fn [] (with-dyns [:out @\"\" :err @\"\"] (apply f args))) :a))\n  \
+               (def result (resume fiber))\n  \
+               (when (= (fiber/status fiber) :dead) (print i \" \" (type result))))\n",
+        ),
+        |mut script, (index, (name, args))| {
+            writeln!(script, "(check {index} {name} [{args}])").expect("writing to a string");
+            script
+        },
+    );
+    let answered = crate::janet::run(
+        "janet",
+        &script,
+        "",
+        None,
+        std::time::Duration::from_secs(30),
+    )
+    .expect("the samples run");
+    let answers: Vec<(usize, &str)> = answered
+        .lines()
+        .filter_map(|line| {
+            let (index, answer) = line.split_once(' ')?;
+            Some((index.parse().ok()?, answer))
+        })
+        .collect();
+    assert!(
+        answers.len() * 2 > calls.len(),
+        "under half of {} calls answered:\n{answered}",
+        calls.len()
+    );
+    let wrong: Vec<String> = answers
+        .iter()
+        .filter_map(|(index, answer)| {
+            let (name, args) = &calls[*index];
+            misdeclared(name, answer).map(|wrong| format!("({name} {args}): {wrong}"))
+        })
+        .collect();
+    assert!(wrong.is_empty(), "{}", wrong.join("\n"));
 }
 
 /// Only what is static and disjoint is `No`: atoms by kind, forms by a key both have, keywords
