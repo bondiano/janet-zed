@@ -759,7 +759,7 @@
 # -- spork/stream ------------------------------------------------------------------------------
 
 (defn spork/stream/lines
-  {:params [:abstract (or :string :buffer)] :ret :fiber} # TODO: a `&named` value is taken as `:any`
+  {:params [:abstract (or :string :buffer)] :ret :fiber}
   "A fiber yielding each line of a stream, split by `separator`, `\\n` by default."
   [stream &named separator])
 (defn spork/stream/make-stdin {:params [] :ret :abstract} "A readable stream on /dev/stdin." [])

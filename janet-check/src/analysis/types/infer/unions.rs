@@ -337,6 +337,12 @@ fn rename(ty: &Type, names: &[(Var, Type)]) -> Type {
             narrows: signature.narrows.clone(),
             bounds: signature.bounds.clone(),
             expands: signature.expands,
+            optional: signature.optional,
+            named: signature
+                .named
+                .iter()
+                .map(|(name, ty)| (name.clone(), rename(ty, names)))
+                .collect(),
         })),
         Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
         Type::Keyword(_) | Type::Enum(_) => ty.clone(),

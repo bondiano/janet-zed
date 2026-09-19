@@ -255,6 +255,12 @@ impl Infer<'_> {
                 narrows: signature.narrows.clone(),
                 bounds: Vec::new(),
                 expands: signature.expands,
+                optional: signature.optional,
+                named: signature
+                    .named
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), self.rename(ty, fresh)))
+                    .collect(),
             })),
             Type::Named { name, args } => Type::named(name.clone(), all(args, self, fresh).into()),
             Type::Keyword(_) | Type::Enum(_) => ty.clone(),
@@ -409,6 +415,8 @@ impl Infer<'_> {
                     narrows: a.narrows.clone().or_else(|| b.narrows.clone()),
                     bounds: Vec::new(),
                     expands: a.expands,
+                    optional: a.optional,
+                    named: a.named.clone(),
                 }))
             }
             (Type::Enum(values), Type::Keyword(value))
@@ -585,6 +593,12 @@ pub(super) fn zonk(subst: &Subst, ty: &Type, depth: usize) -> Type {
             narrows: signature.narrows.as_ref().map(deeper),
             bounds: signature.bounds.clone(),
             expands: signature.expands,
+            optional: signature.optional,
+            named: signature
+                .named
+                .iter()
+                .map(|(name, ty)| (name.clone(), deeper(ty)))
+                .collect(),
         })),
         Type::Named { name, args } => Type::named(name.clone(), all(args).into()),
         Type::Keyword(_) | Type::Enum(_) => ty.clone(),

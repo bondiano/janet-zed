@@ -30,8 +30,9 @@ impl<'d> Infer<'d> {
     }
 
     /// A macro takes its arguments as forms: a bare symbol where it writes `:symbol` is that
-    /// symbol, however the name it spells is bound. Every other argument keeps its value's type,
-    /// which is what a macro that splices it into code evaluates.
+    /// symbol, however the name it spells is bound, and the name's local learns nothing from the
+    /// call. Every other argument keeps its value's type, which is what a macro that splices it
+    /// into code evaluates and what its `:ret` reads; none is held to `:params` (`inspect`).
     fn as_forms(&mut self, head: Node<'d>, callee: &Type, args: &[Node<'d>], types: &mut [Type]) {
         let signature = match self.written_annotation(head) {
             Some(Annotation::Function(signature)) => signature,
@@ -74,17 +75,16 @@ impl<'d> Infer<'d> {
             return;
         };
         let called = self.text(head);
-        let takes = signature.params.len();
+        let core = types::core().binding(called).is_some();
         // Janet's own compiler counts the arguments of what it binds. Only a name it never sees
-        // — a host's, declared in a `*.d.janet` — needs anyone else to. The name is what is
-        // marked, not the arguments: from there go-to-definition reaches the declaration that
-        // set the count.
-        if signature.rest.is_none() && args.len() > takes && types::core().binding(called).is_none()
-        {
-            let given = args.len();
-            let arguments = if takes == 1 { "argument" } else { "arguments" };
-            let message = format!("{called} takes {takes} {arguments}, given {given}");
-            self.complain(head.byte_range(), message);
+        // — a host's, declared in a `*.d.janet` — needs anyone else to.
+        if !core {
+            self.count(head, &signature, args);
+        }
+        // A macro takes its arguments as forms: what they would evaluate to is not what it is
+        // given, so only their count is held to its declaration.
+        if signature.expands {
+            return;
         }
         // Only what is static is held against the declaration: a literal, and what follows from
         // literals and written types. What inference guessed is `Dynamic`, and a guess is no
@@ -97,7 +97,6 @@ impl<'d> Infer<'d> {
         //
         // A variable is held to what the first static argument pins it to: `(same 1 "x")` against
         // `[a a]` wants `:number` for `"x"`.
-        let core = types::core().binding(called).is_some();
         let pins = if core {
             HashMap::new()
         } else {
@@ -130,10 +129,7 @@ impl<'d> Infer<'d> {
             // they say a number (`(file/read f :line)`) and an integer box where they say a
             // number. Against those only a literal of a plain atom is held.
             let ruled_out = if core {
-                literal(self.doc, *arg).is_some_and(|literal| {
-                    matches!((literal_atom(declared), literal_atom(&literal)),
-                        (Some(wanted), Some(given)) if wanted != given)
-                })
+                self.literal_ruled_out(*arg, declared)
             } else {
                 self.rules_out(actual, declared)
             };
@@ -146,6 +142,7 @@ impl<'d> Infer<'d> {
                 self.complain(arg.byte_range(), message);
             }
         }
+        self.options(called, core, &signature, args, types);
         // `:where {a :number}`: what a variable is pinned to must fit its bound. The finding
         // sits on the first argument written with the variable.
         for (var, bound) in &signature.bounds {
@@ -162,6 +159,105 @@ impl<'d> Infer<'d> {
                 self.complain(at.byte_range(), message);
             }
         }
+    }
+
+    /// The number of arguments against what the signature takes: more than its parameters when
+    /// it has no rest, fewer than the ones before `&opt`. A splice gives any number, so only the
+    /// arguments besides it are counted, and fewer is no finding. The name is what is marked,
+    /// not the arguments: from there go-to-definition reaches the declaration that set the count.
+    fn count(&mut self, head: Node<'d>, signature: &Signature, args: &[Node<'d>]) {
+        let called = self.text(head);
+        let given = args.iter().filter(|arg| arg.kind() != "splice_lit").count();
+        let spliced = given < args.len();
+        let takes = signature.params.len();
+        let required = takes.saturating_sub(signature.optional);
+        let message = if signature.rest.is_none() && given > takes {
+            let most = if signature.optional > 0 {
+                "at most "
+            } else {
+                ""
+            };
+            format!("{called} takes {most}{}, given {given}", arguments(takes))
+        } else if !spliced && given < required {
+            let least = if signature.rest.is_some() || signature.optional > 0 {
+                "at least "
+            } else {
+                ""
+            };
+            format!(
+                "{called} takes {least}{}, given {given}",
+                arguments(required)
+            )
+        } else {
+            return;
+        };
+        self.complain(head.byte_range(), message);
+    }
+
+    /// `(f x :sep ",")` against `[x &named sep]`: each option's name is one the declaration
+    /// writes, and its value fits the type written for it. The pairs start after the positional
+    /// parameters; a key that is not a literal keyword, or a splice, leaves the rest unpaired.
+    fn options(
+        &mut self,
+        called: &str,
+        core: bool,
+        signature: &Signature,
+        args: &[Node<'d>],
+        types: &[Type],
+    ) {
+        let positional = signature.params.len();
+        if signature.named.is_empty()
+            || args
+                .iter()
+                .take(positional)
+                .any(|arg| arg.kind() == "splice_lit")
+        {
+            return;
+        }
+        let pairs: Vec<_> = args.iter().zip(types).skip(positional).collect();
+        for pair in pairs.chunks(2) {
+            let (key, _) = pair[0];
+            if key.kind() != KEYWORD {
+                return;
+            }
+            let name = &self.text(*key)[1..];
+            let Some((_, declared)) = signature.named.iter().find(|(named, _)| named == name)
+            else {
+                let names: Vec<String> = signature
+                    .named
+                    .iter()
+                    .map(|(named, _)| format!(":{named}"))
+                    .collect();
+                let message = format!("{called} takes no :{name}; it takes {}", names.join(" "));
+                self.complain(key.byte_range(), message);
+                continue;
+            };
+            let [_, (value, actual)] = pair else {
+                return;
+            };
+            if value.kind() == "splice_lit" {
+                return;
+            }
+            let ruled_out = if core {
+                self.literal_ruled_out(**value, declared)
+            } else {
+                self.rules_out(actual, declared)
+            };
+            if ruled_out {
+                let given = self.settled(actual);
+                let message = format!("{called} takes {declared} for :{name}, given {given}");
+                self.complain(value.byte_range(), message);
+            }
+        }
+    }
+
+    /// Whether `arg` is a literal of an atom other than the one `declared` is exactly: all that
+    /// is held against the core's declarations.
+    fn literal_ruled_out(&self, arg: Node<'d>, declared: &Type) -> bool {
+        literal(self.doc, arg).is_some_and(|literal| {
+            matches!((literal_atom(declared), literal_atom(&literal)),
+                (Some(wanted), Some(given)) if wanted != given)
+        })
     }
 
     /// What the first static argument for each variable of `signature` binds it to. The arguments
@@ -380,6 +476,14 @@ fn never_a_function(ty: &Type) -> bool {
         | Type::Or(_)
         | Type::Open(_)
         | Type::Dynamic(_) => false,
+    }
+}
+
+/// `1 argument`, `2 arguments`.
+fn arguments(count: usize) -> String {
+    match count {
+        1 => "1 argument".to_string(),
+        count => format!("{count} arguments"),
     }
 }
 

@@ -1880,3 +1880,114 @@ fn a_tagged_tuple_is_held_to_every_tag_when_asked() {
         "the default mode lets it pass"
     );
 }
+
+/// A call given fewer arguments than the parameters before `&opt`, `&`, `&keys` or `&named` is
+/// told, as one given more than a signature without a rest takes: only against a written
+/// signature a name the core does not bind. A splice gives any number, so a call with one is
+/// never too short, and only the arguments besides it count towards too long.
+#[test]
+fn too_few_arguments_are_told_where_the_signature_is_written() {
+    let defs = "(defn two {:params [:number :number] :ret :number} [x y] x)\n\
+                (defn opt {:params [:number :string] :ret :number} [x &opt s] x)\n\
+                (defn more {:params [:number :number] :ret :number} [x & xs] x)\n\
+                (defn kw {:params [:number :any] :ret :number} [x &keys o] x)\n\
+                (defn nm {:params [:number :string] :ret :number} [x &named s] x)\n\
+                (defmacro mac {:params [:symbol :any] :ret :nil} [n v] nil)\n\
+                (defn bare [a b] a)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(told("(two 1)\n"), ["two takes 2 arguments, given 1"]);
+    assert_eq!(told("(opt)\n"), ["opt takes at least 1 argument, given 0"]);
+    assert_eq!(
+        told("(opt 1 \"a\" 2)\n"),
+        ["opt takes at most 2 arguments, given 3"]
+    );
+    assert_eq!(
+        told("(more)\n"),
+        ["more takes at least 1 argument, given 0"]
+    );
+    assert_eq!(told("(kw)\n"), ["kw takes at least 1 argument, given 0"]);
+    assert_eq!(told("(nm)\n"), ["nm takes at least 1 argument, given 0"]);
+    assert_eq!(told("(mac x)\n"), ["mac takes 2 arguments, given 1"]);
+    let silent = [
+        "(two 1 2)\n",
+        "(opt 1)\n",
+        "(more 1)\n",
+        "(kw 1 :a 2)\n",
+        "(nm 1 :s \"a\")\n",
+        "(defn f [xs] (two ;xs))\n",
+        "(defn f [xs] (two 1 ;xs))\n",
+        "(defn f [xs] (two 1 2 ;xs))\n",
+        "(apply two [1])\n",
+        "(bare 1)\n",
+        "(string/join)\n",
+    ];
+    for calls in silent {
+        assert!(told(calls).is_empty(), "{calls}");
+    }
+}
+
+/// `-?>` and `-?>>` stop at `nil`: each step is given the value before it besides `nil`, and
+/// the whole is `nil` too only where a value before the last step can be.
+#[test]
+fn a_thread_that_stops_at_nil_passes_what_is_not_nil() {
+    let source = "(defn maybe {:params [] :ret :string?} [] nil)\n\
+                  (defn up {:params [:string] :ret :string} [s] s)\n\
+                  (defn f []\n  \
+                    (def sure (-?> \"x\" up))\n  \
+                    (def first_ (-?> (maybe) up))\n  \
+                    (def last_ (-?>> (maybe) (up)))\n  \
+                    (def plain (-> (maybe) up)))\n";
+    let (_, scopes, facts) = alone(source);
+    assert_eq!(local(&scopes, &facts, "sure"), ":string");
+    assert_eq!(local(&scopes, &facts, "plain"), ":string");
+    assert_eq!(local(&scopes, &facts, "first_"), ":string?");
+    assert_eq!(local(&scopes, &facts, "last_"), ":string?");
+}
+
+/// The options a `&named` parameter takes are the names it writes, each value held to the type
+/// written for it; in the body each is that type or `nil`. A computed key or a splice leaves the
+/// pairs after it unread.
+#[test]
+fn named_options_are_held_to_what_params_writes_for_them() {
+    let defs =
+        "(defn nm {:params [:number :string :boolean] :ret :nil} [x &named sep strict] nil)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert_eq!(
+        told("(nm 1 :sepp \",\")\n"),
+        ["nm takes no :sepp; it takes :sep :strict"]
+    );
+    assert_eq!(
+        told("(nm 1 :sep 5)\n"),
+        ["nm takes :string for :sep, given :number"]
+    );
+    assert_eq!(
+        told("(dofile \"x\" :envv @{})\n"),
+        ["dofile takes no :envv; it takes :exit :env :source :expander :evaluator :read :parser"]
+    );
+    let silent = [
+        "(nm 1 :sep \",\" :strict true)\n",
+        "(nm 1)\n",
+        "(defn f [v] (nm 1 :sep v))\n",
+        "(defn f [k] (nm 1 k 5 :sepp 1))\n",
+        "(defn f [o] (nm 1 ;o))\n",
+        "(defn f [o] (nm ;o :sepp 1))\n",
+        "(dofile \"x\" :exit true)\n",
+    ];
+    for calls in silent {
+        assert!(told(calls).is_empty(), "{calls}");
+    }
+    let (_, scopes, facts) =
+        alone("(defn g {:params [:number :string] :ret :any} [x &named sep] sep)\n");
+    assert_eq!(local(&scopes, &facts, "sep"), ":string?");
+}
+
+/// A macro is handed its arguments as forms, so what they would evaluate to is not held to its
+/// `:params`; only their count is.
+#[test]
+fn a_macro_is_not_held_to_what_its_arguments_evaluate_to() {
+    let defs = "(defmacro m {:params [:string :number] :ret :nil} [a b] nil)\n";
+    let told = |calls: &str| messages(&format!("{defs}{calls}"));
+    assert!(told("(m 1 \"x\")\n").is_empty());
+    assert!(told("(def s 5)\n(m s (+ 1 2))\n").is_empty());
+    assert_eq!(told("(m 1)\n"), ["m takes 2 arguments, given 1"]);
+}

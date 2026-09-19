@@ -261,8 +261,9 @@ struct Entry {
 }
 
 /// The positions nobody has written a type for yet. A wrong type made `:any` raises it: a result
-/// Janet does not return is a false finding, which is worse than none.
-const ANY_POSITIONS: usize = 452;
+/// Janet does not return is a false finding, which is worse than none. Each `&named` option is a
+/// position of its own.
+const ANY_POSITIONS: usize = 457;
 
 fn core_entries() -> Vec<Entry> {
     let doc = Document::new(CORE.to_string());
@@ -320,8 +321,19 @@ fn any_positions(declared: &Annotation) -> usize {
         }
     }
     fn signature_positions(signature: &Signature) -> usize {
+        // The rest of a signature with `&named` options is the tail they are passed in, which
+        // is `:any` to whatever counts positions: it is the options that are typed.
+        let rest = match &signature.rest {
+            Some(rest) if signature.named.is_empty() => types(rest),
+            _ => 0,
+        };
         signature.params.iter().map(types).sum::<usize>()
-            + signature.rest.as_ref().map_or(0, types)
+            + rest
+            + signature
+                .named
+                .iter()
+                .map(|(_, ty)| types(ty))
+                .sum::<usize>()
             + types(&signature.ret)
             + signature.throws.iter().map(types).sum::<usize>()
     }
@@ -821,9 +833,9 @@ fn an_applied_type_expands_with_its_arguments() {
     );
 }
 
-/// The names after `&named` are one tail to a signature, so a hover shows them however many.
+/// Each name after `&named` is shown with the type written for its value.
 #[test]
-fn named_parameters_are_shown_as_one_tail() {
+fn named_parameters_are_shown_with_their_types() {
     let Some(Annotation::Function(signature)) = annotations(
         "(defn f {:params [:keyword :string? :keyword?] :ret :nil} [k &named of from] nil)",
     )
@@ -833,6 +845,6 @@ fn named_parameters_are_shown_as_one_tail() {
     };
     assert_eq!(
         signature.render("f", "[k &named of from]").as_deref(),
-        Some("(f k: :keyword &named of from) -> :nil")
+        Some("(f k: :keyword &named of: :string? from: :keyword?) -> :nil")
     );
 }

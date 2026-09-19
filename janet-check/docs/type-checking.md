@@ -72,8 +72,10 @@ The atoms are `nil boolean number string buffer keyword symbol function cfunctio
 table tuple struct abstract pointer any never`. Any other keyword is a value.
 
 `Fn` carries a `Signature`: `params`, `rest` (the rest parameter's element type), `ret`,
-`throws` (error values the body raises) and `narrows` (for a predicate: what its first argument
-is where it answers truly, `:any` for a predicate that tells a branch nothing).
+`throws` (error values the body raises), `narrows` (for a predicate: what its first argument
+is where it answers truly, `:any` for a predicate that tells a branch nothing), `optional` (how
+many of the last `params` come after `&opt`) and `named` (each `&named` option and the type of
+its value).
 
 ### Normal forms
 
@@ -103,7 +105,9 @@ skipping `r`, which every row is printed as. A variable that occurs once says no
 | `(def Name :typedef T)` | `Typedef(T)` |
 
 `:params` lists one type per parameter, in order. When the parameter vector has `&` or `&keys`,
-the last declared type belongs to the rest parameter. A `:params` vector whose length does not
+the last declared type belongs to the rest parameter. The names after `&opt` are `optional`. Each
+name after `&named` is an option: its type is what its value takes, and the options together are a
+rest of `:any` to anything that counts positions. A `:params` vector whose length does not
 match the parameter vector is ignored, never shown, never checked against. A metadata struct
 without any of the four keys (`{:private true}`) declares nothing; `{:params []}` declares a
 function of no arguments.
@@ -266,6 +270,7 @@ call of its head.
 | `(errorf …)` | `:never` | `:string` raised |
 | `(assertf x …)` | `x` without `nil` | `:string` raised |
 | `(-> v s…)`, `(->> v s…)` | Each step applied with `v` as the first / last argument | |
+| `(-?> v s…)`, `(-?>> v s…)` | As `->` / `->>`, each step given the value before it without `nil`; `nil` joins the last step's type when a value before it can be `nil` | |
 | `(as-> v n s…)` | Each step with `n` bound to the value so far | |
 | `(with-syms [a …] …)` | The body | Each name is `:symbol` |
 | `(label n …)` | The body | `n` is `:any` |
@@ -279,12 +284,14 @@ above the call — is read as a call to that, as Janet compiles it. The compiler
 Parameters: each is a fresh variable, unified with the declared type when the declaration has as
 many entries as the vector has names, and with `:any` for each when it writes no `:params`. `&`
 and `&keys` make the rest parameter, whose pattern is bound to `[element]`; `&named` makes a rest of
-`:any` after the parameters before it, whatever names follow it, and binds each name to one value; a parameter after `&opt` is `T?`,
-since a call may leave it out.
+`:any` after the parameters before it, and binds each name to its declared type or `nil`
+(`Dynamic` `:any` without a declaration); a parameter after `&opt` is `T?`, since a call may leave
+it out.
 
 A macro's body answers the code of its expansion, so its `:ret` is held only at the call. Its
-arguments are held to `:params` as values, but for a bare symbol where it writes `:symbol`: that is
-the symbol, however the name it spells is bound.
+arguments are forms: only their count is held to its declaration, never what they would evaluate
+to. They still reach its `:params` for `:ret` to read, but for a bare symbol where it writes
+`:symbol`: that is the symbol, however the name it spells is bound, and its local learns nothing.
 Destructuring patterns say what the value must hold: `{:a x}` unifies the value with
 `{:a fresh & row}`, `[x y]` with `[fresh fresh]`, and each name is bound to its fresh.
 
@@ -430,8 +437,10 @@ else `Known::written`. Its checks, each stopping at the first doubt:
 | Finding | Raised when | Not raised when |
 | --- | --- | --- |
 | `f is T, not a function` | `f` is declared `:type T` or `:typedef T`, `T` can never be a function, and the call has any number of arguments but one | One argument: that is a read. `T` is `:nil`, `:any`, `:never`, `:function`, a variable, a union, a nullable or a named type |
-| `f takes N arguments, given M` | The signature has no rest parameter and `M > N` | `f` is a core binding: Janet's own compiler counts those |
-| `f takes T here, given U` | `fit(U, T)` is `No`, `U` the argument's static type. Rest positions are held to the rest parameter's type | `U` is `Dynamic`, a variable or a union. A splice comes at or before the position. `f` is a core binding and the position is a rest position: `*` is also PEG's sequence. `f` is a core binding and the argument is not a literal of an atom (below) |
+| `f takes N arguments, given M` | The signature has no rest parameter and `M > N` (`at most N` with `&opt`); or `M` is fewer than the parameters before `&opt`, `&`, `&keys` or `&named` (`at least N` when a call may give more). `M` counts the arguments besides a splice | `f` is a core binding: Janet's own compiler counts those. A splice and too few: it may hold the rest. `(apply f …)`: that is a call of `apply` |
+| `f takes T here, given U` | `fit(U, T)` is `No`, `U` the argument's static type. Rest positions are held to the rest parameter's type | `f` is a macro: its arguments are forms. `U` is `Dynamic`, a variable or a union. A splice comes at or before the position. `f` is a core binding and the position is a rest position: `*` is also PEG's sequence. `f` is a core binding and the argument is not a literal of an atom (below) |
+| `f takes no :k; it takes :a :b` | `f` declares `&named a b` and a literal keyword in the option pairs after the positional arguments names none of them | A key before it is not a literal keyword, or a splice comes before it: the pairs cannot be told apart |
+| `f takes T for :k, given U` | As `f takes T here`, for the value after the option `:k` | As `f takes T here` |
 | `x is U, declared T` | `x` is a `def` or `var` written `{:type T}` and `fit(U, T)` is `No` for its value's type `U`; marked on the value. The name is `T` whether or not | `{:as-type T}`: a cast, never checked. A declaration: a `*.d.janet` file or a `(comment :declare …)` block, where the `nil` stands in for the host's value |
 | `f returns U, declared T` | `f` declares `:ret T`, its body is not empty, and `fit(U, T)` is `No` for the type `U` of its last form; marked on that form | The last form is `Dynamic`, a variable or a union |
 | `Name takes N type arguments, given M` | A `(Name …)` written in a definition's metadata or in the value of a `:typedef` names a typedef, in the file or around it, of `N` parameters, and `M` is neither `N` nor zero; marked on the whole form. A declaration, a `*.d.janet` file or a `(comment :declare …)` block, is told this one alone. It is the one kind error the language has: only a typedef takes type arguments, and each is a type | A bare `Name`: that is `Name` of `:any` everywhere. A capitalised head that names no typedef. A call in the code of a value or a body, which is not a type |
@@ -515,10 +524,9 @@ Marked `ponytail:` in the source, each with its ceiling:
 - `int?`, `odd?`, `empty?` narrow `:any`: the type language cannot hold the difference.
 - Library macros that bind locals leave their symbols to name matching.
 - Dependencies outside the workspace are read once and never watched.
-- The arguments of a macro are held to its `:params` as values, but for a bare symbol where it
-  writes `:symbol`: typing every argument as the form it is would need the core's macros declared
-  so too.
-- The values of `&named` are not held to what `:params` writes for their names.
+- The arguments of a macro are held to nothing but their count: typing every argument as the form
+  it is would need the core's macros declared so too.
+- The steps of a threading form are applied, not inspected: a step's arguments are never told.
 
 ## Glossary
 

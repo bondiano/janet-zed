@@ -203,6 +203,11 @@ pub struct Signature {
     /// A macro's: its arguments are forms, so a bare symbol given where `:symbol` is written is
     /// the symbol, not the value it would name.
     pub expands: bool,
+    /// How many of the last `params` a call may leave out: those after `&opt`.
+    pub optional: usize,
+    /// `&named a b`: each option's name, without the colon, and the type its value takes. A call
+    /// passes them as keyword–value pairs after `params`, the tail `rest` stands for as `:any`.
+    pub named: Vec<(SmolStr, Type)>,
 }
 
 /// What the metadata of one definition declares.
@@ -510,8 +515,14 @@ impl Signature {
         if declared != 0 && declared != taken {
             return None;
         }
-        // The rest parameter's type stands for every argument from its position on.
-        let mut types = self.params.iter().chain(self.rest.iter().cycle());
+        // The rest parameter's type stands for every argument from its position on; each name
+        // after `&named` takes the type written for it.
+        let named = self.named.iter().map(|(_, ty)| ty);
+        let mut types = self
+            .params
+            .iter()
+            .chain(named)
+            .chain(self.rest.iter().cycle());
         Some(
             forms
                 .iter()
@@ -578,6 +589,12 @@ impl Signature {
                 .cloned()
                 .collect(),
             expands: self.expands,
+            optional: self.optional,
+            named: self
+                .named
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.substituted(bound)))
+                .collect(),
         }
     }
 
@@ -629,7 +646,12 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
             return None;
         }
     }
-    let (params, variadic) = split_rest(doc, definition.params, written);
+    let Split {
+        params,
+        rest: variadic,
+        optional,
+        named,
+    } = split_rest(doc, definition.params, written);
     let throws = declared(":throws")?;
     let ret = match entries.get(":ret") {
         Some(node) => Type::parse(doc, *node)?,
@@ -657,6 +679,8 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
             narrows,
             bounds,
             expands: definition.definer.starts_with("defmacro"),
+            optional,
+            named,
         }))
     })
 }
@@ -671,31 +695,52 @@ pub fn declared(metadata: &str) -> Option<Annotation> {
     annotation(&doc, &definition)
 }
 
+/// What a parameter vector makes of the types `:params` writes, one per name.
+struct Split {
+    params: Vec<Type>,
+    rest: Option<Type>,
+    optional: usize,
+    named: Vec<(SmolStr, Type)>,
+}
+
 /// `[a & rest]`: the last declared type belongs to the rest parameter, which stands for every
-/// argument from its position on rather than for one of them.
-fn split_rest(
-    doc: &Document,
-    vector: Option<Node>,
-    mut params: Vec<Type>,
-) -> (Vec<Type>, Option<Type>) {
+/// argument from its position on rather than for one of them. `&opt` makes the parameters after
+/// it ones a call may leave out, and `&named a b` takes its names as keyword-value pairs, in any
+/// order and any of them: a tail of anything to count, each value of the type written for it.
+fn split_rest(doc: &Document, vector: Option<Node>, mut params: Vec<Type>) -> Split {
     let forms = vector.map(syntax::forms).unwrap_or_default();
-    // `&named a b` takes its names as keyword-value pairs, in any order and any of them: a tail
-    // of anything, after the parameters before it.
-    // ponytail: the values of `&named` are not held to what `:params` writes for their names.
-    if let Some(at) = forms.iter().position(|form| doc.text_of(*form) == "&named") {
-        let positional = forms[..at]
-            .iter()
-            .filter(|form| !MARKERS.contains(&doc.text_of(**form)))
-            .count();
-        params.truncate(positional);
-        return (params, Some(Type::Keyword("any".into())));
-    }
-    let variadic = forms
+    let text = |form: &Node| doc.text_of(*form);
+    let named_at = forms.iter().position(|form| text(form) == "&named");
+    let positional = &forms[..named_at.unwrap_or(forms.len())];
+    let optional = positional
         .iter()
-        .any(|form| matches!(doc.text_of(*form), "&" | "&keys"));
-    match variadic.then(|| params.pop()).flatten() {
-        Some(rest) => (params, Some(rest)),
-        None => (params, None),
+        .skip_while(|form| text(form) != "&opt")
+        .take_while(|form| !matches!(text(form), "&" | "&keys"))
+        .filter(|form| !MARKERS.contains(&text(form)))
+        .count();
+    if let Some(at) = named_at {
+        let taken = positional
+            .iter()
+            .filter(|form| !MARKERS.contains(&text(form)))
+            .count();
+        let values = params.split_off(taken.min(params.len()));
+        let names = forms[at + 1..]
+            .iter()
+            .filter(|form| !MARKERS.contains(&text(form)));
+        return Split {
+            params,
+            rest: Some(Type::Keyword("any".into())),
+            optional,
+            named: names.map(|form| text(form).into()).zip(values).collect(),
+        };
+    }
+    let variadic = forms.iter().any(|form| matches!(text(form), "&" | "&keys"));
+    let rest = variadic.then(|| params.pop()).flatten();
+    Split {
+        params,
+        rest,
+        optional,
+        named: Vec::new(),
     }
 }
 
@@ -961,6 +1006,8 @@ fn call(doc: &Document, node: Node) -> Option<Type> {
                     narrows: None,
                     bounds: Vec::new(),
                     expands: false,
+                    optional: 0,
+                    named: Vec::new(),
                 })))
             }
             _ => None,

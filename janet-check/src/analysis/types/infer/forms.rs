@@ -9,6 +9,7 @@ use tree_sitter::Node;
 use super::definitions::declared_type;
 use super::unions::{any, atom, dynamic, never, nil, unions};
 use super::{ARRAY, Infer, KEYWORD, STRUCT, TABLE, TUPLE, literal};
+use crate::analysis::types::fit::Fit;
 use crate::analysis::types::{Fields, Signature, Type};
 use crate::syntax;
 
@@ -202,6 +203,8 @@ impl<'d> Infer<'d> {
             narrows: None,
             bounds: Vec::new(),
             expands: false,
+            optional: 0,
+            named: Vec::new(),
         }))
     }
 
@@ -295,8 +298,10 @@ impl<'d> Infer<'d> {
             "get" | "in" => self.get(args),
             "get-in" | "in-in" => self.get_in(args),
             "put" => self.put(args),
-            "->" | "-?>" => self.thread(args, true),
-            "->>" | "-?>>" => self.thread(args, false),
+            "->" => self.thread(args, true, false),
+            "->>" => self.thread(args, false, false),
+            "-?>" => self.thread(args, true, true),
+            "-?>>" => self.thread(args, false, true),
             "as->" | "as?->" => self.as_(args),
             "quote" | "quasiquote" => match args.first() {
                 Some(quoted) => self.data(*quoted),
@@ -311,15 +316,26 @@ impl<'d> Infer<'d> {
     }
 
     /// `(-> value (f a) …)`: the value becomes the call's first argument, `->>` its last.
-    fn thread(&mut self, args: &[Node<'d>], first: bool) -> Type {
+    /// `-?>` and `-?>>` stop at `nil`: each step is given what the one before answered besides
+    /// `nil`, and the whole is `nil` too where a value before the last step can be.
+    fn thread(&mut self, args: &[Node<'d>], first: bool, at_nil: bool) -> Type {
         let Some((value, steps)) = args.split_first() else {
             return nil();
         };
         let mut threaded = self.expr(*value);
+        let mut stopped = false;
         for step in steps {
+            if at_nil {
+                stopped |= self.fits(&nil(), &threaded) != Fit::No;
+                threaded = self.without_nil(&threaded);
+            }
             threaded = self.step(*step, threaded, first);
         }
-        threaded
+        if stopped {
+            unions(vec![threaded, nil()])
+        } else {
+            threaded
+        }
     }
 
     fn step(&mut self, step: Node<'d>, value: Type, first: bool) -> Type {

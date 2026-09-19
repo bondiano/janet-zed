@@ -270,7 +270,7 @@ impl<'d> Infer<'d> {
         body: &[Node<'d>],
         declared: Option<&Signature>,
     ) -> Type {
-        let (params, variadic) = self.parameters(vector, declared);
+        let (params, variadic, optional) = self.parameters(vector, declared);
         self.raised.push(Vec::new());
         let ret = self.body(body);
         let throws = self.raised.pop().unwrap_or_default();
@@ -287,14 +287,19 @@ impl<'d> Infer<'d> {
             narrows: None,
             bounds: Vec::new(),
             expands: false,
+            optional,
+            named: declared
+                .map(|signature| signature.named.clone())
+                .unwrap_or_default(),
         }))
     }
 
+    /// The parameters, the rest parameter, and how many a call may leave out.
     fn parameters(
         &mut self,
         vector: Node<'d>,
         declared: Option<&Signature>,
-    ) -> (Vec<Type>, Option<Type>) {
+    ) -> (Vec<Type>, Option<Type>, usize) {
         let forms = self.forms(vector);
         // What follows `&named` is one tail to a caller, as `split_rest` reads it.
         let named_at = forms.iter().position(|form| self.text(*form) == "&named");
@@ -311,15 +316,22 @@ impl<'d> Infer<'d> {
         let mut rest = None;
         let mut variadic = false;
         let mut optional = false;
+        let mut left_out = 0;
         if let Some(at) = named_at {
             rest = Some(
                 declared
                     .and_then(|signature| signature.rest.clone())
                     .unwrap_or_else(any),
             );
-            // Each name is one option's value, there or not.
+            // Each name is one option's value, there or not: what its declaration writes, or
+            // `nil` when a call leaves it out.
             for form in forms[at + 1..].iter().copied() {
-                self.pattern(form, dynamic(any()));
+                let name = self.text(form);
+                let written = declared.and_then(|signature| {
+                    let (_, ty) = signature.named.iter().find(|(named, _)| named == name)?;
+                    Some(unions(vec![ty.clone(), nil()]))
+                });
+                self.pattern(form, written.unwrap_or_else(|| dynamic(any())));
             }
         }
         for form in forms[..named_at.unwrap_or(forms.len())].iter().copied() {
@@ -351,6 +363,7 @@ impl<'d> Infer<'d> {
             };
             // A call that leaves an `&opt` parameter out leaves it `nil`.
             let param = if optional && !variadic {
+                left_out += 1;
                 unions(vec![param, nil()])
             } else {
                 param
@@ -365,7 +378,7 @@ impl<'d> Infer<'d> {
                 params.push(param);
             }
         }
-        (params, rest)
+        (params, rest, left_out)
     }
 }
 
