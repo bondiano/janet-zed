@@ -1,0 +1,12 @@
+---
+source: janet-lsp-plus/src/editing/fixes/tests.rs
+expression: (comb|ine string/join join)
+---
+----- BEFORE FIX
+(combine string/join join)
+     ↑
+
+----- AFTER FIX: Create function `combine`
+(defn combine [join arg2])
+
+(combine string/join join)

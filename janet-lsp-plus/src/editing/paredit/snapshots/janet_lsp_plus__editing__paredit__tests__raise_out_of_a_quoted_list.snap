@@ -1,5 +1,5 @@
 ---
-source: src/editing/paredit/tests.rs
+source: janet-lsp-plus/src/editing/paredit/tests.rs
 expression: "(foo '(bar| x))"
 ---
 ----- BEFORE ACTION
@@ -7,4 +7,4 @@ expression: "(foo '(bar| x))"
           ↑
 
 ----- AFTER ACTION: Raise
-(foo bar)
+(foo 'bar)

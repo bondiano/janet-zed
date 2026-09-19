@@ -3,6 +3,7 @@
 use tree_sitter::Node;
 
 use super::{Action, Context, Edit};
+use janet_check::analysis::{definitions, stdlib::SPECIAL_FORMS};
 use janet_check::syntax::{self, Document};
 
 #[derive(Clone, Copy)]
@@ -96,7 +97,14 @@ fn split_call<'d>(doc: &Document, node: Node<'d>, style: Style) -> Option<(Strin
     }
     let mut forms = syntax::forms(node);
     let head = doc.text_of(*forms.first()?);
-    if forms.len() < 2 || head == Style::First.symbol() || head == Style::Last.symbol() {
+    // A definition or special form takes a binding or a body, not a value to thread.
+    let is_special = definitions::core(head).is_some()
+        || SPECIAL_FORMS.iter().any(|(special, _)| *special == head);
+    if forms.len() < 2
+        || is_special
+        || head == Style::First.symbol()
+        || head == Style::Last.symbol()
+    {
         return None;
     }
     let threaded = match style {

@@ -1,0 +1,10 @@
+---
+source: janet-lsp-plus/src/editing/paredit/tests.rs
+expression: (f |x)
+---
+----- BEFORE ACTION
+(f x)
+   ↑
+
+----- AFTER ACTION: Wrap with { }
+(f {x})

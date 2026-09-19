@@ -147,7 +147,7 @@ fn wrap_a_selection_cutting_through_a_string() {
 
 #[test]
 fn wrap_one_form_in_a_struct() {
-    assert_no_action!("Wrap with { }", "(f |x)");
+    assert_action!("Wrap with { }", "(f |x)");
 }
 
 #[test]

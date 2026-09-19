@@ -24,7 +24,6 @@ pub(super) fn actions(cx: &Context) -> Vec<Action> {
     ]
     .into_iter()
     .flatten()
-    .chain(wrap(cx))
     .collect()
 }
 
@@ -124,17 +123,19 @@ fn barf_backward(cx: &Context) -> Option<Action> {
     })
 }
 
-/// `(a (|b c))` → `(a b)`
+/// `(a (|b c))` → `(a b)`; the parent's reader macros stay: `(a '(|b c))` → `(a 'b)`.
 fn raise(cx: &Context) -> Option<Action> {
     let form = syntax::outer(cx.form?);
     let parent = form
         .parent()
         .filter(|parent| syntax::is_collection(*parent))?;
+    let outer = syntax::outer(parent);
+    let macros = &cx.doc.text[outer.start_byte()..parent.start_byte()];
     Some(Action {
         title: "Raise".to_string(),
         edits: vec![Edit::replace(
-            syntax::outer(parent).byte_range(),
-            cx.doc.text_of(form),
+            outer.byte_range(),
+            &format!("{macros}{}", cx.doc.text_of(form)),
         )],
     })
 }
@@ -149,7 +150,7 @@ fn splice(cx: &Context) -> Option<Action> {
 }
 
 /// Wraps the form under the cursor, or selected sibling forms.
-fn wrap(cx: &Context) -> Vec<Action> {
+pub(super) fn wraps(cx: &Context) -> Vec<Action> {
     let range = if cx.selection.is_empty() {
         cx.form.map(|form| syntax::outer(form).byte_range())
     } else {

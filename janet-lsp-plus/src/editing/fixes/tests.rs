@@ -57,6 +57,11 @@ fn create_function_names_arguments_that_are_not_new_symbols() {
 }
 
 #[test]
+fn create_function_names_a_qualified_argument_by_its_last_segment() {
+    assert_fixes!("(comb|ine string/join join)");
+}
+
+#[test]
 fn define_in_a_defn_body() {
     assert_fixes!("(defn f [x]\n  (print x)\n  (+ x |y))\n");
 }

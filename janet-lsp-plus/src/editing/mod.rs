@@ -73,17 +73,30 @@ pub fn actions(doc: &Document, selection: Range<usize>) -> Vec<Action> {
             .copied()
             .find(|node| syntax::is_collection(*node) && syntax::is_inside(*node, offset)),
     };
+    let valid = |actions: Vec<Action>| {
+        actions
+            .into_iter()
+            .filter(|action| is_valid(&apply(&doc.text, &action.edits)))
+            .collect::<Vec<_>>()
+    };
+    let rewrites = valid(threading::actions(&context));
+    let edits = valid(paredit::actions(&context));
+    // `{x}` is left for the value still to type: a wrap only has to parse.
+    let wraps = paredit::wraps(&context)
+        .into_iter()
+        .filter(|action| parses(&apply(&doc.text, &action.edits)))
+        .collect();
     // On `(` or right after `)` the cursor picks the form itself: rewriting it comes first.
     let groups = if context.form.is_some_and(syntax::is_collection) {
-        [threading::actions(&context), paredit::actions(&context)]
+        [rewrites, edits, wraps]
     } else {
-        [paredit::actions(&context), threading::actions(&context)]
+        [edits, wraps, rewrites]
     };
-    groups
-        .into_iter()
-        .flatten()
-        .filter(|action| is_valid(&apply(&doc.text, &action.edits)))
-        .collect()
+    groups.into_iter().flatten().collect()
+}
+
+fn parses(text: &str) -> bool {
+    syntax::parse(text).is_some_and(|tree| !tree.root_node().has_error())
 }
 
 fn is_valid(text: &str) -> bool {

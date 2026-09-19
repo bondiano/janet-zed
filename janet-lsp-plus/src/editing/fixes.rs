@@ -112,21 +112,23 @@ fn is_head(list: Node, symbol: Node) -> bool {
 fn create_function(doc: &Document, call: Node, name: &str) -> Action {
     let forms = syntax::forms(call);
     let args = &forms[1..];
-    let params: Vec<String> = args
+    // `string/join` names its parameter `join`: a parameter cannot be qualified.
+    let params = args
         .iter()
         .enumerate()
-        .map(|(index, arg)| {
-            let text = doc.text_of(*arg);
-            let is_new = args[..index]
-                .iter()
-                .all(|earlier| doc.text_of(*earlier) != text);
-            if arg.kind() == syntax::SYMBOL && is_new {
-                text.to_string()
+        .fold(Vec::<String>::new(), |mut params, (index, arg)| {
+            let name = doc.text_of(*arg).rsplit('/').next().unwrap_or_default();
+            let param = if arg.kind() == syntax::SYMBOL
+                && !name.is_empty()
+                && !params.iter().any(|earlier| earlier == name)
+            {
+                name.to_string()
             } else {
                 format!("arg{}", index + 1)
-            }
-        })
-        .collect();
+            };
+            params.push(param);
+            params
+        });
     let at = above_comments(doc, top_level(call));
     Action {
         title: format!("Create function `{name}`"),

@@ -1,6 +1,11 @@
 use crate::editing::tests::{assert_action, assert_no_action};
 
 #[test]
+fn thread_last_skips_a_definition() {
+    assert_no_action!("Thread last (->>)", "(d|ef y (f (g x)))");
+}
+
+#[test]
 fn thread_first_nested_calls() {
     assert_action!("Thread first (->)", "|(f (g (h x) a) b)");
 }
