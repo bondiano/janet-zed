@@ -554,7 +554,7 @@ fn code_actions(state: &State, uri: &Uri, range: Range) -> Result<Vec<CodeAction
 
 /// The symbol at `offset`, when the diagnostics last published for `uri` call it unknown. By name
 /// rather than range, so it survives edits made since the check.
-fn unknown_symbol<'d>(
+pub(super) fn unknown_symbol<'d>(
     state: &'d State,
     uri: &Uri,
     doc: &'d Document,

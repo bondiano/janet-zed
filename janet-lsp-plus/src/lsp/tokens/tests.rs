@@ -3,22 +3,7 @@
 use std::path::Path;
 
 use super::*;
-use janet_check::analysis::config::Config;
-
-fn workspace_of(files: &[(&str, &str)]) -> Workspace {
-    let mut workspace = Workspace::new(vec!["/ws".into()], None);
-    for &(path, text) in files {
-        let uri = format!("file://{path}").parse().unwrap();
-        workspace.insert(SourceFile::new(
-            path.into(),
-            uri,
-            text.to_string(),
-            &Config::default(),
-        ));
-    }
-    workspace.refresh();
-    workspace
-}
+use crate::lsp::fixture::workspace_of;
 
 /// Every token of `path`, one per line: its text, its type and its modifiers.
 fn show(files: &[(&str, &str)], path: &str) -> String {

@@ -1,0 +1,134 @@
+#![allow(clippy::unwrap_used)]
+
+use super::*;
+use crate::editing::apply;
+use crate::lsp::fixture::workspace_of;
+
+const FILES: [(&str, &str); 5] = [
+    (
+        "/ws/src/shapes.janet",
+        "(defn area [s] s)\n(defn- secret [] 1)\n",
+    ),
+    ("/ws/src/geo/init.janet", "(def origin [0 0])\n"),
+    (
+        "/ws/lib/text.janet",
+        "(defn pad [s] s)\n(defn area-label [] \"\")\n",
+    ),
+    ("/ws/src/types.d.janet", "(defn declared-area [s] s)\n"),
+    (
+        "/ws/src/report.janet",
+        "# Reports.\n\n(defn total [xs] (map area xs))\n",
+    ),
+];
+
+fn file<'w>(workspace: &'w Workspace, path: &str) -> &'w SourceFile {
+    workspace.file(Path::new(path)).unwrap()
+}
+
+#[test]
+fn specs_are_relative_to_the_importing_file() {
+    let from = Path::new("/ws/src/report.janet");
+    let spec = |to: &str| spec_of(from, Path::new(to), None).unwrap();
+    assert_eq!(spec("/ws/src/shapes.janet"), "./shapes");
+    assert_eq!(spec("/ws/src/geo/init.janet"), "./geo");
+    assert_eq!(spec("/ws/src/a/b.janet"), "./a/b");
+    assert_eq!(spec("/ws/lib/text.janet"), "../lib/text");
+    let rooted = spec_of(
+        from,
+        Path::new("/ws/lib/text.janet"),
+        Some(Path::new("/ws")),
+    );
+    assert_eq!(rooted.unwrap(), "/lib/text");
+}
+
+#[test]
+fn completes_names_of_modules_not_imported_with_their_import() {
+    let workspace = workspace_of(&FILES);
+    let report = file(&workspace, "/ws/src/report.janet");
+    let mut completions: Vec<String> = candidates(&workspace, report, "are")
+        .into_iter()
+        .map(|(item, edit)| {
+            let imported = apply(&report.document.text, &[edit]);
+            format!("{}\n{imported}", item.label)
+        })
+        .collect();
+    completions.sort();
+    assert_eq!(
+        completions,
+        [
+            "shapes/area\n# Reports.\n\n(import ./shapes)\n\n(defn total [xs] (map area xs))\n",
+            "text/area-label\n# Reports.\n\n(import ../lib/text)\n\n(defn total [xs] (map area xs))\n",
+        ]
+    );
+    assert!(candidates(&workspace, report, "secr").is_empty());
+    assert!(candidates(&workspace, report, "declared").is_empty());
+    assert!(candidates(&workspace, report, "").is_empty());
+}
+
+#[test]
+fn an_import_goes_after_the_last_one_or_at_the_top() {
+    let workspace = workspace_of(&[
+        ("/ws/a.janet", "(import ./b)\n(use ./c)\n\n(def x 1)\n"),
+        ("/ws/d.janet", "(def x 1)\n"),
+        ("/ws/e.janet", "\"Module doc.\"\n(def x 1)\n"),
+    ]);
+    let imported = |path: &str| {
+        let file = file(&workspace, path);
+        apply(&file.document.text, &[import_edit(file, "./z")])
+    };
+    assert_eq!(
+        imported("/ws/a.janet"),
+        "(import ./b)\n(use ./c)\n(import ./z)\n\n(def x 1)\n"
+    );
+    assert_eq!(imported("/ws/d.janet"), "(import ./z)\n\n(def x 1)\n");
+    assert_eq!(
+        imported("/ws/e.janet"),
+        "\"Module doc.\"\n\n(import ./z)\n(def x 1)\n"
+    );
+}
+
+#[test]
+fn a_file_importing_from_the_root_is_offered_rooted_imports() {
+    let workspace = workspace_of(&[
+        ("/ws/src/a.janet", "(import /lib/b)\n(c/f)\n"),
+        ("/ws/lib/b.janet", ""),
+        ("/ws/lib/c.janet", "(defn f [] 1)\n"),
+    ]);
+    let a = file(&workspace, "/ws/src/a.janet");
+    let fixes: Vec<String> = fixes(&workspace, a, "c/f", 17..20)
+        .into_iter()
+        .map(|fix| format!("{}\n{}", fix.title, apply(&a.document.text, &fix.edits)))
+        .collect();
+    assert_eq!(
+        fixes,
+        ["Import `/lib/c` for `c/f`\n(import /lib/b)\n(import /lib/c)\n(c/f)\n"]
+    );
+}
+
+#[test]
+fn an_unknown_name_is_imported_or_qualified_under_its_alias() {
+    let workspace = workspace_of(&[
+        ("/ws/shapes.janet", "(defn area [s] s)\n"),
+        ("/ws/geo.janet", "(defn area [s] s)\n(defn dist [] 0)\n"),
+        ("/ws/main.janet", "(import ./geo :as g)\n(area 1)\n(dist)\n"),
+    ]);
+    let main = file(&workspace, "/ws/main.janet");
+    let fixed = |name: &str| -> Vec<String> {
+        let at = main.document.text.find(&format!("({name}")).unwrap() + 1;
+        fixes(&workspace, main, name, at..at + name.len())
+            .into_iter()
+            .map(|fix| format!("{}\n{}", fix.title, apply(&main.document.text, &fix.edits)))
+            .collect()
+    };
+    assert_eq!(
+        fixed("area"),
+        [
+            "Use `g/area`\n(import ./geo :as g)\n(g/area 1)\n(dist)\n",
+            "Import `./shapes` for `shapes/area`\n(import ./geo :as g)\n(import ./shapes)\n(shapes/area 1)\n(dist)\n",
+        ]
+    );
+    assert_eq!(
+        fixed("dist"),
+        ["Use `g/dist`\n(import ./geo :as g)\n(area 1)\n(g/dist)\n"]
+    );
+}

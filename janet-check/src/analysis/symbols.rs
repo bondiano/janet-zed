@@ -630,7 +630,7 @@ fn core_candidate(name: &str, binding: &CoreBinding, origin: Origin) -> Candidat
     }
 }
 
-fn module_candidate(label: &str, file: &Path, name: &str, definition: &DefInfo) -> Candidate {
+pub fn module_candidate(label: &str, file: &Path, name: &str, definition: &DefInfo) -> Candidate {
     let kind = match definition.definer.as_str() {
         "defmacro" | "defmacro-" => CandidateKind::Macro,
         "defn" | "defn-" | "varfn" => CandidateKind::Function,

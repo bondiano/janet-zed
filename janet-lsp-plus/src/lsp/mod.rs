@@ -3,7 +3,10 @@
 //! rename.
 
 mod diagnostics;
+#[cfg(test)]
+mod fixture;
 mod handlers;
+mod imports;
 mod state;
 mod tokens;
 
@@ -659,7 +662,7 @@ fn dispatch(state: &State, request: Request) -> Response {
     match request.method.as_str() {
         GotoDefinition::METHOD => handle::<GotoDefinition>(state, request, handlers::definition),
         HoverRequest::METHOD => handle::<HoverRequest>(state, request, handlers::hover),
-        Completion::METHOD => handle::<Completion>(state, request, handlers::completion),
+        Completion::METHOD => handle::<Completion>(state, request, imports::completion),
         ResolveCompletionItem::METHOD => {
             handle::<ResolveCompletionItem>(state, request, handlers::completion_resolve)
         }
@@ -670,7 +673,7 @@ fn dispatch(state: &State, request: Request) -> Response {
             handle::<DocumentSymbolRequest>(state, request, handlers::document_symbol)
         }
         CodeActionRequest::METHOD => {
-            handle::<CodeActionRequest>(state, request, handlers::code_action)
+            handle::<CodeActionRequest>(state, request, imports::code_action)
         }
         CodeActionResolveRequest::METHOD => {
             handle::<CodeActionResolveRequest>(state, request, handlers::code_action_resolve)
