@@ -14,10 +14,11 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  # The tests run the real `janet` and spork's netrepl. macOS takes them from Homebrew; Linux and
-  # Windows install these, the way spork's own CI does.
+  # The tests run the real `janet` and spork's netrepl, installed the way spork's own CI does.
+  # The same Janet everywhere: core signatures in the snapshots come from its docstrings.
   JANET_VERSION: "1.42.1"
-  SPORK_VERSION: v1.2.0
+  # `netrepl/run-server` is newer than spork's last tag, v1.2.0.
+  SPORK_REVISION: 0667f96b74de52747ffe5e19e185563ebf53816b
 
 jobs:
   check:
@@ -36,13 +37,9 @@ jobs:
         with:
           tool: just
 
-      - name: Install Janet and spork (macOS)
-        if: runner.os == 'macOS'
-        run: brew install janet && jpm install spork
-
       # Outside the checkout: the tests check every Janet file of the repository.
-      - name: Install Janet (Linux)
-        if: runner.os == 'Linux'
+      - name: Install Janet (macOS, Linux)
+        if: runner.os != 'Windows'
         working-directory: ${{ runner.temp }}
         run: |
           git clone --depth 1 --branch "v$JANET_VERSION" https://github.com/janet-lang/janet
@@ -66,12 +63,15 @@ jobs:
               ForEach-Object { $_ >> $env:GITHUB_PATH }
           }
 
+      # spork builds its native modules with MSVC.
+      - uses: ilammy/msvc-dev-cmd@v1
+        if: runner.os == 'Windows'
       - name: Install spork
-        if: runner.os != 'macOS'
         working-directory: ${{ runner.temp }}
         run: |
-          git clone --depth 1 --branch "$SPORK_VERSION" https://github.com/janet-lang/spork
-          ${{ runner.os == 'Linux' && 'sudo' || '' }} janet -e '(bundle/install "spork")'
+          git clone https://github.com/janet-lang/spork
+          git -C spork checkout "$SPORK_REVISION"
+          ${{ runner.os != 'Windows' && 'sudo' || '' }} janet -e '(bundle/install "spork")'
 
       # rust-toolchain.toml pins the toolchain; this installs it with its components and targets.
       - run: rustup show
