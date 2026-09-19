@@ -170,7 +170,8 @@ The examples use macOS keys; on Linux and Windows, replace `cmd-alt-e` with `ctr
 On Linux and Windows `ctrl-c` copies, so choose another prefix there.
 
 `cmd-alt-e` is `editor::SelectEnclosingSymbol`. It selects the enclosing outline item,
-which is any top-level `def`, `defn`, `defmacro`, `var` and so on.
+which is any top-level `def`, `defn`, `defmacro`, `var` and so on, one inside a top-level
+`(comment …)`, `(upscope …)` or `(compwhen …)`, or a judge `(deftest …)`.
 
 Structural editing actions are under `cmd-.` (`ctrl-.` on Linux and Windows). Zed's own
 `editor::SelectLargerSyntaxNode`, `editor::MoveToEnclosingBracket`,
