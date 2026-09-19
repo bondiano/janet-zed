@@ -17,6 +17,10 @@ fmt:
 test:
     cargo test --no-fail-fast -p janet-check -p janet-lsp-plus
 
+# The speed tests in the build users run: the debug budgets are loose, the release ones are the plan's
+speed:
+    cargo test --release -p janet-check -- inferred_in_milliseconds costs_no_more_than_its_lines checked_in_seconds
+
 # Build the Zed extension (Zed builds it too on `zed: install dev extension`)
 build:
     cargo build -p janet-zed --target wasm32-wasip2 --release
@@ -27,4 +31,4 @@ install:
     cargo install --path janet-lsp-plus --locked
 
 # Everything CI runs
-check: lint test
+check: lint test speed
