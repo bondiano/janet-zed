@@ -80,6 +80,11 @@ direnv can set per project. Open only projects you would run, or set `"compile":
 server then runs nothing of the project's, and reports only what the types rule out.
 Changing it takes a server restart (`editor: restart language server`).
 
+The REPL kernel of a project listens on `127.0.0.1` and serves only clients that know its token,
+a fresh secret it records next to its port in `~/.cache/janet-zed/repl/<project>/token`, readable
+by you alone. `replPort` and a debug attach with a `port` connect to a netrepl you started yourself
+and send no token.
+
 Project-level analysis — [`:lint-as`](janet-check/README.md#library-macros-that-define-names)
 for library macros and [comment directives](janet-check/README.md#comment-directives) — is
 documented in `janet-check`.

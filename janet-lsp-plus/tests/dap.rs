@@ -280,8 +280,9 @@ fn attaches_to_the_repl() {
         .enable_all()
         .build()
         .unwrap();
+    // No token: any client is served, as by a netrepl the user started, which `port` attaches to.
     let mut repl = runtime
-        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .block_on(Netrepl::start("janet", port, Path::new("."), ""))
         .unwrap();
 
     let mut adapter = Adapter::start();

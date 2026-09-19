@@ -22,7 +22,7 @@ fn looks_up_loaded_modules_then_the_repl() {
         .build()
         .unwrap();
     let mut shared = runtime
-        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .block_on(Netrepl::start("janet", port, Path::new("."), "token"))
         .unwrap();
     // Relative to the REPL's directory, as `module/cache` then keys it.
     let code = format!(
@@ -32,7 +32,7 @@ fn looks_up_loaded_modules_then_the_repl() {
     let loaded = runtime.block_on(shared.eval(&code, None)).unwrap();
     assert_eq!(loaded.errors, "");
 
-    let mut repl = Repl::attach(port).unwrap();
+    let mut repl = Repl::attach(port, "token").unwrap();
     let mut lookup = |candidates: &[(&Path, &str)]| {
         let candidates: Vec<_> = candidates
             .iter()

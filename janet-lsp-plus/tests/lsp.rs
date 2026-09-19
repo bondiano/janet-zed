@@ -1056,7 +1056,7 @@ fn hover_and_definition_from_a_running_repl() {
         .unwrap();
     let port = repl_port(1);
     let mut repl = runtime
-        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .block_on(Netrepl::start("janet", port, Path::new("."), ""))
         .unwrap();
     let mut session = Session::start_with_repl(port);
     // Sent as the REPL kernel sends code it finds in a file: from line 2 of `src/shapes.janet`.
@@ -1096,7 +1096,7 @@ fn hover_types_a_running_repl_declares() {
         .unwrap();
     let port = repl_port(2);
     let mut repl = runtime
-        .block_on(Netrepl::start("janet", port, Path::new(".")))
+        .block_on(Netrepl::start("janet", port, Path::new("."), ""))
         .unwrap();
     let mut session = Session::start_with_repl(port);
     // The REPL knows both names; only one of them is written down in the buffer.

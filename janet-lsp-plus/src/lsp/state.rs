@@ -189,7 +189,7 @@ impl State {
     /// The REPL at the configured port, else the one a kernel recorded for a workspace root.
     fn attach_repl(&self) -> std::io::Result<Repl> {
         if let Some(port) = self.repl_port {
-            return Repl::attach(port);
+            return Repl::attach(port, "janet-zed-lsp");
         }
         self.workspace
             .roots()

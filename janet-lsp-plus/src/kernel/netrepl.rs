@@ -10,7 +10,7 @@ use tokio::net::TcpStream;
 use tokio::process::{Child, Command};
 
 pub const HOST: &str = "127.0.0.1";
-/// Under the user's home: the port files of the REPL kernels, one per project.
+/// Under the user's home: the port and token files of the REPL kernels, one pair per project.
 const PORTS: &str = ".cache/janet-zed/repl";
 /// Bound in a kernel's netrepl server to the project it serves, so that a port file left behind
 /// by a dead kernel does not lead to another project's REPL once that one takes the port.
@@ -40,18 +40,19 @@ pub struct Netrepl {
 
 impl Netrepl {
     /// Starts a netrepl server with `janet` on `port` and connects to it. Never to a server
-    /// already listening there: whoever holds the port would see every evaluation.
-    pub async fn start(janet: &str, port: u16, project: &Path) -> io::Result<Self> {
+    /// already listening there: whoever holds the port would see every evaluation. The server
+    /// serves only clients named with `token`.
+    pub async fn start(janet: &str, port: u16, project: &Path, token: &str) -> io::Result<Self> {
         drop(std::net::TcpListener::bind((HOST, port))?);
-        let (stream, server) = start_server(janet, port, project).await?;
-        Self::handshake(stream, Some(server), "zed").await
+        let (stream, server) = start_server(janet, port, project, token).await?;
+        Self::handshake(stream, Some(server), &format!("{token}zed")).await
     }
 
-    /// Connects as client `name` to the REPL a kernel recorded for `project`.
-    pub async fn attach_recorded(project: &Path, name: &str) -> io::Result<Self> {
-        let port = recorded_port(project)
+    /// Connects to the REPL a kernel recorded for `project`, with the token it recorded.
+    pub async fn attach_recorded(project: &Path) -> io::Result<Self> {
+        let (port, token) = recorded(project)
             .ok_or_else(|| io::Error::other("no REPL kernel recorded for this project"))?;
-        let mut repl = Self::attach(&format!("{HOST}:{port}"), name).await?;
+        let mut repl = Self::attach(&format!("{HOST}:{port}"), &format!("{token}zed")).await?;
         let reply = repl.call(PROJECT).await?;
         if !serves(&reply, project) {
             return Err(io::Error::other(format!(
@@ -71,7 +72,8 @@ impl Netrepl {
             stream,
             _server: server,
         };
-        // A plain first message is the client name; the server answers with a prompt.
+        // A plain first message is the client name, never empty; the server answers with a prompt,
+        // or a kernel's server closes the connection when the name lacks its token.
         repl.send(name.as_bytes()).await?;
         repl.recv().await?;
         Ok(repl)
@@ -138,39 +140,64 @@ pub fn project_of(dir: &Path) -> PathBuf {
         .map_or_else(|| dir.clone(), Path::to_path_buf)
 }
 
-/// Where the REPL of `project` records its port, under `ports`: at the project's own path, so
-/// that the terminal task finds it from `$ZED_WORKTREE_ROOT` alone.
-fn port_file_under(ports: &Path, project: &Path) -> PathBuf {
+/// A fresh secret for a REPL server: whoever reads it may run code there.
+pub fn new_token() -> io::Result<String> {
+    let mut bytes = [0; 16];
+    getrandom::fill(&mut bytes).map_err(io::Error::other)?;
+    Ok(u128::from_le_bytes(bytes).to_string())
+}
+
+/// Where the REPL of `project` keeps its `port` and `token` files, under `ports`: at the
+/// project's own path, so that the terminal task finds them from `$ZED_WORKTREE_ROOT` alone.
+fn record_dir_under(ports: &Path, project: &Path) -> PathBuf {
     // On Windows `C:\x` becomes `C\x`, relative, as the terminal task spells it too.
     let project = project.to_string_lossy().replace(':', "");
-    ports
-        .join(project.trim_start_matches(['/', '\\']))
-        .join("port")
+    ports.join(project.trim_start_matches(['/', '\\']))
 }
 
-/// The port the REPL of `project` recorded, if one has. It may be stale: check what answers.
-pub fn recorded_port(project: &Path) -> Option<u16> {
-    read_port(&port_file_under(&ports_dir()?, project))
+/// The port and token the REPL of `project` recorded, if one has. It may be stale: check what
+/// answers.
+pub fn recorded(project: &Path) -> Option<(u16, String)> {
+    read_record(&record_dir_under(&ports_dir()?, project))
 }
 
-fn read_port(file: &Path) -> Option<u16> {
-    std::fs::read_to_string(file).ok()?.trim().parse().ok()
+fn read_record(dir: &Path) -> Option<(u16, String)> {
+    let read = |name| std::fs::read_to_string(dir.join(name)).ok();
+    let port = read("port")?.trim().parse().ok()?;
+    Some((port, read("token")?.trim().to_string()))
 }
 
-/// Records `port` as the REPL of `project`, readable by this user only.
-pub fn record_port(project: &Path, port: u16) -> io::Result<()> {
+/// Records `port` and `token` as the REPL of `project`, readable by this user only.
+pub fn record(project: &Path, port: u16, token: &str) -> io::Result<()> {
     let ports = ports_dir().ok_or_else(|| io::Error::other("no home directory"))?;
-    write_port(&ports, &port_file_under(&ports, project), port)
+    write_record(&ports, &record_dir_under(&ports, project), port, token)
 }
 
-fn write_port(ports: &Path, file: &Path, port: u16) -> io::Result<()> {
-    std::fs::create_dir_all(file.parent().unwrap_or(ports))?;
+fn write_record(ports: &Path, dir: &Path, port: u16, token: &str) -> io::Result<()> {
+    std::fs::create_dir_all(dir)?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(ports, std::fs::Permissions::from_mode(0o700))?;
     }
-    std::fs::write(file, port.to_string())
+    write_private(&dir.join("token"), token)?;
+    std::fs::write(dir.join("port"), port.to_string())
+}
+
+/// Writes `text` to a new `file` only this user may read; on Windows the directory's permissions
+/// apply.
+fn write_private(file: &Path, text: &str) -> io::Result<()> {
+    use std::io::Write;
+    // A token an earlier kernel left may be readable by others: replace the file, not its text.
+    match std::fs::remove_file(file) {
+        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
+        _ => {}
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(file)?.write_all(text.as_bytes())
 }
 
 /// Whether a REPL's `reply` to [`PROJECT`] names `project`.
@@ -187,21 +214,43 @@ fn ports_dir() -> Option<PathBuf> {
 }
 
 /// Serves netrepl on `port` until the kernel's end of stdin closes, so a killed kernel leaves no orphan.
-async fn start_server(janet: &str, port: u16, project: &Path) -> io::Result<(TcpStream, Child)> {
+/// A client whose name does not start with `token` is disconnected before its first form
+/// (netrepl makes a taken name unique by appending to it). The token comes first on stdin, not
+/// on the command line other users can list; stderr, where netrepl logs every name, is dropped.
+async fn start_server(
+    janet: &str,
+    port: u16,
+    project: &Path,
+    token: &str,
+) -> io::Result<(TcpStream, Child)> {
     // A JSON string is a valid Janet string literal.
     let project = serde_json::to_string(&project.to_string_lossy())?;
     let serve = format!(
         "(import spork/netrepl)
 (def {PROJECT} {project})
+(def token (string/trim (file/read stdin :line)))
 (ev/thread (fn [] (file/read stdin :all) (os/exit 0)) nil :n)
-(netrepl/run-server-single \"{HOST}\" \"{port}\")"
+(def env (make-env))
+(put env :pretty-format \"%.20Q\")
+(defn env-of [name stream]
+  (if (and (bytes? name) (string/has-prefix? token name))
+    env
+    (do (:close stream) @{{}})))
+(netrepl/run-server \"{HOST}\" \"{port}\" env-of)"
     );
     let mut server = Command::new(janet)
         .args(["-e", &serve])
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .kill_on_drop(true)
         .spawn()?;
+    server
+        .stdin
+        .as_mut()
+        .ok_or_else(|| io::Error::other("no stdin for the netrepl server"))?
+        .write_all(format!("{token}\n").as_bytes())
+        .await?;
     for _ in 0..50 {
         if let Some(status) = server.try_wait()? {
             return Err(io::Error::other(format!(

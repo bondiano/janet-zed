@@ -32,23 +32,24 @@ pub struct Repl {
 }
 
 impl Repl {
-    pub fn attach(port: u16) -> io::Result<Self> {
+    /// Attaches as client `name`: a kernel's REPL serves only a name that starts with its token.
+    pub fn attach(port: u16, name: &str) -> io::Result<Self> {
         let address: SocketAddr = format!("{HOST}:{port}").parse().map_err(io::Error::other)?;
         let stream = TcpStream::connect_timeout(&address, CONNECT_TIMEOUT)?;
         stream.set_read_timeout(Some(READ_TIMEOUT))?;
         stream.set_write_timeout(Some(READ_TIMEOUT))?;
         let mut repl = Self { stream };
         // A plain first message is the client name; the server answers with a prompt.
-        repl.send(b"janet-zed-lsp")?;
+        repl.send(name.as_bytes())?;
         repl.recv()?;
         Ok(repl)
     }
 
     /// Attaches to the REPL a kernel recorded for `project`, when that is what answers there.
     pub fn attach_recorded(project: &Path) -> io::Result<Self> {
-        let port = netrepl::recorded_port(project)
+        let (port, token) = netrepl::recorded(project)
             .ok_or_else(|| io::Error::other("no REPL kernel recorded for this project"))?;
-        let mut repl = Self::attach(port)?;
+        let mut repl = Self::attach(port, &format!("{token}lsp"))?;
         repl.send(&[&[0xFF], netrepl::PROJECT.as_bytes()].concat())?;
         let reply = String::from_utf8_lossy(&repl.recv()?).into_owned();
         if !netrepl::serves(&reply, project) {

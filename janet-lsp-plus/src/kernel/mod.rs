@@ -176,12 +176,13 @@ async fn evaluate(repl: &mut Option<Netrepl>, janet: &str, code: &str) -> Evalua
 /// one runs, else a netrepl server of its own on a free port, recorded for the project.
 async fn start(janet: &str) -> std::io::Result<Netrepl> {
     let project = netrepl::project_of(&std::env::current_dir()?);
-    if let Ok(connection) = Netrepl::attach_recorded(&project, "zed").await {
+    if let Ok(connection) = Netrepl::attach_recorded(&project).await {
         return Ok(connection);
     }
     let port = netrepl::free_port()?;
-    let connection = Netrepl::start(janet, port, &project).await?;
-    netrepl::record_port(&project, port)?;
+    let token = netrepl::new_token()?;
+    let connection = Netrepl::start(janet, port, &project, &token).await?;
+    netrepl::record(&project, port, &token)?;
     Ok(connection)
 }
 

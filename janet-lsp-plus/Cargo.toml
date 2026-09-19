@@ -9,6 +9,7 @@ publish = true
 [dependencies]
 anyhow = "1.0.104"
 crossbeam-channel = "0.5"
+getrandom = "0.4.3"
 janet-check = { version = "0.3.0", path = "../janet-check", default-features = false }
 jupyter-protocol = "2.0.2"
 jupyter-zmq-client = { version = "1.0.1", default-features = false, features = ["ring", "tokio-runtime"] }

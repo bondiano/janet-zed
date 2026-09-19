@@ -30,20 +30,31 @@ fn failure() {
     assert_reply!(r#"(false "oops")"#);
 }
 
-/// A port is recorded at the project's own path under the port files, and read back from there.
+/// A port and its token are recorded at the project's own path under the port files, the token
+/// readable by this user only, and read back from there.
 #[test]
-fn a_recorded_port_is_read_back_from_the_project_path() {
+fn a_record_is_read_back_from_the_project_path() {
     let ports = std::env::temp_dir().join(format!("janet-zed-ports-{}", std::process::id()));
-    let project = Path::new("/work/app");
-    let file = port_file_under(&ports, project);
-    write_port(&ports, &file, 41_234).unwrap();
-    let read = read_port(&file);
+    let dir = record_dir_under(&ports, Path::new("/work/app"));
+    write_record(&ports, &dir, 41_234, "secret").unwrap();
+    let read = read_record(&dir);
+    #[cfg(unix)]
+    let mode = {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(dir.join("token"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777
+    };
     std::fs::remove_dir_all(&ports).unwrap();
-    assert_eq!(file, ports.join("work/app/port"));
-    assert_eq!(read, Some(41_234));
+    assert_eq!(dir, ports.join("work/app"));
+    assert_eq!(read, Some((41_234, "secret".to_string())));
+    #[cfg(unix)]
+    assert_eq!(mode, 0o600);
     assert_eq!(
-        port_file_under(&ports, Path::new("C:\\work")),
-        ports.join("C\\work/port")
+        record_dir_under(&ports, Path::new("C:\\work")),
+        ports.join("C\\work")
     );
 }
 
@@ -57,9 +68,9 @@ fn a_directory_belongs_to_the_project_around_it() {
 }
 
 /// A kernel never connects to a server someone else started on its port, and a server answers
-/// with the project it serves.
+/// with the project it serves, to its token's holders only.
 #[test]
-fn a_server_is_its_own_and_names_its_project() {
+fn a_server_is_its_own_and_serves_its_token() {
     let taken = std::net::TcpListener::bind((HOST, 0)).unwrap();
     let port = taken.local_addr().unwrap().port();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -69,16 +80,28 @@ fn a_server_is_its_own_and_names_its_project() {
     let project = Path::new("/work/app");
     assert!(
         runtime
-            .block_on(Netrepl::start("janet", port, project))
+            .block_on(Netrepl::start("janet", port, project, "secret"))
             .is_err()
     );
     drop(taken);
-    let reply = runtime.block_on(async {
-        let mut repl = Netrepl::start("janet", free_port().unwrap(), project)
+    let port = free_port().unwrap();
+    let address = format!("{HOST}:{port}");
+    let (reply, second, stranger) = runtime.block_on(async {
+        let mut repl = Netrepl::start("janet", port, project, "secret")
             .await
             .unwrap();
-        repl.call(PROJECT).await.unwrap()
+        let reply = repl.call(PROJECT).await.unwrap();
+        // netrepl renames a second client of the same name, which keeps the token in front.
+        let mut second = Netrepl::attach(&address, "secret").await.unwrap();
+        let second = second.call("(+ 1 2)").await.unwrap();
+        let stranger = match Netrepl::attach(&address, "zed").await {
+            Ok(mut stranger) => stranger.call("(+ 1 2)").await,
+            Err(err) => Err(err),
+        };
+        (reply, second, stranger)
     });
     assert!(serves(&reply, project), "{reply}");
     assert!(!serves(&reply, Path::new("/work/other")));
+    assert_eq!(second, "(true 3)");
+    assert!(stranger.is_err(), "{stranger:?}");
 }

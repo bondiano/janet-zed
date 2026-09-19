@@ -366,7 +366,7 @@ impl Session {
                 Some(cwd) => cwd,
                 None => std::env::current_dir()?,
             };
-            Netrepl::attach_recorded(&netrepl::project_of(&cwd), "zed-dap")
+            Netrepl::attach_recorded(&netrepl::project_of(&cwd))
                 .await
                 .context("no REPL for this project: start the Janet REPL kernel first")?
         };

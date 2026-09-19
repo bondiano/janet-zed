@@ -800,6 +800,7 @@ version = "0.3.0"
 dependencies = [
  "anyhow",
  "crossbeam-channel",
+ "getrandom 0.4.3",
  "insta",
  "janet-check",
  "jupyter-protocol",
