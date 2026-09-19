@@ -149,8 +149,9 @@ fn splice(cx: &Context) -> Option<Action> {
     })
 }
 
-/// Wraps the form under the cursor, or selected sibling forms.
-pub(super) fn wraps(cx: &Context) -> Vec<Action> {
+/// Wraps the form under the cursor, or selected sibling forms, each with where the new
+/// collection starts.
+pub(super) fn wraps(cx: &Context) -> Vec<(Action, usize)> {
     let range = if cx.selection.is_empty() {
         cx.form.map(|form| syntax::outer(form).byte_range())
     } else {
@@ -159,12 +160,15 @@ pub(super) fn wraps(cx: &Context) -> Vec<Action> {
     range.map_or_else(Vec::new, |range| {
         WRAPS
             .into_iter()
-            .map(|(title, open, close)| Action {
-                title: title.to_string(),
-                edits: vec![
-                    Edit::insert(range.start, open),
-                    Edit::insert(range.end, close),
-                ],
+            .map(|(title, open, close)| {
+                let action = Action {
+                    title: title.to_string(),
+                    edits: vec![
+                        Edit::insert(range.start, open),
+                        Edit::insert(range.end, close),
+                    ],
+                };
+                (action, range.start)
             })
             .collect()
     })

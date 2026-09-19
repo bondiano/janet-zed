@@ -18,7 +18,7 @@ pub fn fixes(doc: &Document, symbol: Node) -> Vec<Action> {
         None => define(doc, symbol, name),
     };
     std::iter::once(fix)
-        .filter(|fix| is_valid(&apply(&doc.text, &fix.edits)))
+        .filter(|fix| is_valid(&apply(&doc.text, &fix.edits), None))
         .collect()
 }
 

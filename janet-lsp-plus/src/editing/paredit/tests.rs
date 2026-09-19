@@ -151,6 +151,11 @@ fn wrap_one_form_in_a_struct() {
 }
 
 #[test]
+fn wrap_keeps_the_struct_around_it_even() {
+    assert_no_action!("Wrap with ( )", "{<a b> c d}");
+}
+
+#[test]
 fn barf_forward_out_of_a_struct() {
     assert_no_action!("Barf forward", "{:a 1 |:b 2}");
 }

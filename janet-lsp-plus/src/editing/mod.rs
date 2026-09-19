@@ -76,15 +76,16 @@ pub fn actions(doc: &Document, selection: Range<usize>) -> Vec<Action> {
     let valid = |actions: Vec<Action>| {
         actions
             .into_iter()
-            .filter(|action| is_valid(&apply(&doc.text, &action.edits)))
+            .filter(|action| is_valid(&apply(&doc.text, &action.edits), None))
             .collect::<Vec<_>>()
     };
     let rewrites = valid(threading::actions(&context));
     let edits = valid(paredit::actions(&context));
-    // `{x}` is left for the value still to type: a wrap only has to parse.
+    // `{x}` is left for the value still to type: the struct a wrap makes may have an odd count.
     let wraps = paredit::wraps(&context)
         .into_iter()
-        .filter(|action| parses(&apply(&doc.text, &action.edits)))
+        .filter(|(action, start)| is_valid(&apply(&doc.text, &action.edits), Some(*start)))
+        .map(|(action, _)| action)
         .collect();
     // On `(` or right after `)` the cursor picks the form itself: rewriting it comes first.
     let groups = if context.form.is_some_and(syntax::is_collection) {
@@ -95,11 +96,9 @@ pub fn actions(doc: &Document, selection: Range<usize>) -> Vec<Action> {
     groups.into_iter().flatten().collect()
 }
 
-fn parses(text: &str) -> bool {
-    syntax::parse(text).is_some_and(|tree| !tree.root_node().has_error())
-}
-
-fn is_valid(text: &str) -> bool {
+/// Whether `text` parses, with an even form count in every struct and table literal but the one
+/// starting at `exempt`.
+fn is_valid(text: &str, exempt: Option<usize>) -> bool {
     let Some(tree) = syntax::parse(text) else {
         return false;
     };
@@ -108,6 +107,7 @@ fn is_valid(text: &str) -> bool {
     !root.has_error()
         && syntax::descendants(root).all(|node| {
             !matches!(node.kind(), "struct_lit" | "tbl_lit")
+                || Some(node.start_byte()) == exempt
                 || syntax::forms(node).len().is_multiple_of(2)
         })
 }
