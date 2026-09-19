@@ -63,9 +63,6 @@ jobs:
               ForEach-Object { $_ >> $env:GITHUB_PATH }
           }
 
-      # spork builds its native modules with MSVC.
-      - uses: ilammy/msvc-dev-cmd@v1
-        if: runner.os == 'Windows'
       - name: Check out spork
         working-directory: ${{ runner.temp }}
         run: |
@@ -75,7 +72,7 @@ jobs:
         if: runner.os != 'Windows'
         working-directory: ${{ runner.temp }}
         run: sudo janet -e '(bundle/install "spork")'
-      # Not bash: its coreutils `link` shadows MSVC's linker.
+      # spork finds MSVC itself. Not bash: its coreutils `link` shadows MSVC's linker.
       - name: Install spork (Windows)
         if: runner.os == 'Windows'
         shell: pwsh
