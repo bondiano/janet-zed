@@ -1,0 +1,36 @@
+---
+source: src/analysis/references/tests.rs
+expression: "show_references(&ws, \"/ws/u.janet\", \"r/m/a\")"
+---
+----- SYMBOL
+-- /ws/u.janet
+(import ./r)
+(r/m/a)
+     ▔
+
+
+----- TARGET
+Module { file: "/ws/m.janet", name: "a" }
+
+----- REFERENCES
+-- /ws/m.janet
+(def a 1)
+     ▔
+(def b 2)
+
+-- /ws/r.janet
+(upscope (import ./m :export true))
+(m/a)
+   ▔
+
+-- /ws/u.janet
+(import ./r)
+(r/m/a)
+     ▔
+
+
+----- DECLARATION
+-- /ws/m.janet
+(def a 1)
+     ▔
+(def b 2)

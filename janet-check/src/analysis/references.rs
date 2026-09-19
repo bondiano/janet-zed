@@ -105,11 +105,8 @@ pub fn resolve<'w>(
         if !names_allow(import.names.as_deref(), name) {
             return None;
         }
-        let target = Target::Module {
-            file: defining(workspace, &import.path, name, MAX_REEXPORTS)?,
-            name: name.to_string(),
-        };
-        Some((at(name), target))
+        let (file, name) = defining(workspace, &import.path, name, MAX_REEXPORTS)?;
+        Some((at(&name), Target::Module { file, name }))
     });
     if imported.is_some() {
         return imported;
@@ -308,22 +305,26 @@ fn names_allow(names: Option<&[String]>, name: &str) -> bool {
     names.is_none_or(|names| names.iter().any(|allowed| allowed == name))
 }
 
-/// The file defining what `module` exports as `name`: `module` itself, or the file it re-exports
-/// the name from.
+/// The file defining what `module` exports as `name`, and the name it defines it by: `module`
+/// itself, or the file it re-exports the name from, under the prefix of that import.
 pub(super) fn defining(
     workspace: &Workspace,
     module: &Path,
     name: &str,
     hops: usize,
-) -> Option<PathBuf> {
+) -> Option<(PathBuf, String)> {
     if workspace.definition(module, name).is_some() {
-        return Some(module.to_path_buf());
+        return Some((module.to_path_buf(), name.to_string()));
     }
     workspace
         .imports_of(module)
         .iter()
-        .filter(|edge| hops > 0 && edge.names.is_some() && names_allow(edge.names.as_deref(), name))
-        .find_map(|edge| defining(workspace, &edge.path, name, hops - 1))
+        .filter(|edge| hops > 0 && edge.exported)
+        .find_map(|edge| {
+            let short = name.strip_prefix(edge.prefix.as_str())?;
+            names_allow(edge.names.as_deref(), short)
+                .then(|| defining(workspace, &edge.path, short, hops - 1))?
+        })
 }
 
 /// The files that see `module`'s `name`, with the prefix each writes it under: its importers, and
@@ -339,8 +340,14 @@ fn importers<'w>(
         .iter()
         .filter(|edge| names_allow(edge.names.as_deref(), name))
         .flat_map(|edge| {
-            let further = if edge.names.is_some() && hops > 0 {
-                importers(workspace, &edge.path, name, hops - 1)
+            // What a file re-exports, it binds under its import's prefix, which its importers write
+            // after their own.
+            let further = if edge.exported && hops > 0 {
+                let bound = format!("{}{name}", edge.prefix);
+                importers(workspace, &edge.path, &bound, hops - 1)
+                    .into_iter()
+                    .map(|(source, prefix)| (source, format!("{prefix}{}", edge.prefix)))
+                    .collect()
             } else {
                 Vec::new()
             };

@@ -6,4 +6,3 @@ expression: (comment (var n 0))
 (comment (var n 0))
 
 ----- DEFINITIONS
-var n

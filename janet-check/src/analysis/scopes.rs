@@ -9,6 +9,7 @@ use std::ops::Range;
 
 use tree_sitter::Node;
 
+use super::definitions;
 use crate::syntax::{self, Document};
 
 const PARAM_MARKERS: [&str; 4] = ["&", "&opt", "&keys", "&named"];
@@ -29,6 +30,11 @@ const SPECIALS: [&str; 13] = [
     "unquote",
     "upscope",
 ];
+
+enum Quasi {
+    Unquote,
+    Quasiquote,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Local {
@@ -95,13 +101,13 @@ impl<'d> Binder<'d> {
         self.doc.text_of(node)
     }
 
-    /// Walks a form. `top`: directly in the file (or a `comment`), where definitions are
+    /// Walks a form. `top`: directly in the file (or an upscope there), where definitions are
     /// module-level rather than local.
     fn form(&mut self, node: Node<'d>, top: bool) {
         match node.kind() {
             syntax::SYMBOL => self.reference(node),
             "quote_lit" => {}
-            "qq_lit" => self.template(node),
+            "qq_lit" => self.template(node, 0),
             syntax::LIST => self.list(node, top),
             _ => self.forms(&syntax::forms(node)),
         }
@@ -163,14 +169,37 @@ impl<'d> Binder<'d> {
         }
     }
 
-    /// Quasiquoted code is a template: only its unquoted parts are evaluated here.
-    fn template(&mut self, node: Node<'d>) {
-        for child in syntax::forms(node) {
-            if child.kind() == "unquote_lit" {
-                self.forms(&syntax::forms(child));
-            } else {
-                self.template(child);
+    /// Quasiquoted code is a template: only its unquoted parts are evaluated here. `depth`: how
+    /// many quasiquotes are around `node`, less the unquotes; a part is evaluated once an unquote
+    /// takes that to none.
+    fn template(&mut self, node: Node<'d>, depth: usize) {
+        let (inner, depth) = match self.quasi(node) {
+            Some((Quasi::Unquote, inner)) if depth <= 1 => return self.forms(&inner),
+            Some((Quasi::Unquote, inner)) => (inner, depth - 1),
+            Some((Quasi::Quasiquote, inner)) => (inner, depth + 1),
+            None => (syntax::forms(node), depth),
+        };
+        for child in inner {
+            self.template(child, depth);
+        }
+    }
+
+    /// `,x` or `(unquote x)`, `~x` or `(quasiquote x)`: which, and `x`.
+    fn quasi(&self, node: Node<'d>) -> Option<(Quasi, Vec<Node<'d>>)> {
+        let forms = syntax::forms(node);
+        match node.kind() {
+            "unquote_lit" => Some((Quasi::Unquote, forms)),
+            "qq_lit" => Some((Quasi::Quasiquote, forms)),
+            syntax::LIST => {
+                let (head, args) = forms.split_first()?;
+                let quasi = match self.text(*head) {
+                    "unquote" => Quasi::Unquote,
+                    "quasiquote" => Quasi::Quasiquote,
+                    _ => return None,
+                };
+                Some((quasi, args.to_vec()))
             }
+            _ => None,
         }
     }
 
@@ -198,12 +227,13 @@ impl<'d> Binder<'d> {
                 self.define_function(args, top, end);
             }
             "def" | "def-" | "var" | "var-" | "defglobal" | "varglobal" => self.define(args, top),
-            "comment" | "upscope" => {
+            _ if !shadowed && definitions::is_upscope(self.doc, &forms) => {
                 for arg in args {
                     self.form(*arg, top);
                 }
             }
-            // Any other form is a scope: a `def` inside it does not outlive it.
+            // Any other form is a scope, `do` and `comment` too: a `def` inside it does not
+            // outlive it.
             _ => self.scoped(end, |binder| binder.scope(name, args)),
         }
     }
@@ -232,7 +262,7 @@ impl<'d> Binder<'d> {
             "import" | "use" | "quote" => {}
             "quasiquote" => {
                 for arg in args {
-                    self.template(*arg);
+                    self.template(*arg, 1);
                 }
             }
             // Arguments are evaluated in order; a `def` among them binds for the rest.

@@ -8,7 +8,7 @@ use std::time::Duration;
 use anyhow::Result;
 use tree_sitter::Node;
 
-use super::canonical;
+use super::{canonical, definitions};
 use crate::janet;
 use crate::syntax::{self, Document};
 
@@ -20,9 +20,30 @@ pub struct ImportSpec {
     pub prefix: String,
     /// From `# janet-zed: include`: private names are visible too.
     pub included: bool,
-    /// Only these names, which the file binds as its own and so re-exports:
-    /// `(re-export "./x" ['a 'b])`.
+    /// Only these names: `:only [a b]`, the ones a re-export call names, none for `require`.
     pub names: Option<Vec<String>>,
+    /// The file binds what it imports as its own, so that its importers see it too, under both
+    /// prefixes: `:export true`, `(re-export "./x" ['a 'b])`.
+    pub exported: bool,
+}
+
+impl ImportSpec {
+    fn new(spec: &str, prefix: String) -> Self {
+        Self {
+            spec: spec.to_string(),
+            prefix,
+            included: false,
+            names: None,
+            exported: false,
+        }
+    }
+
+    /// Whether the import binds the module's `name`.
+    pub fn binds(&self, name: &str) -> bool {
+        self.names
+            .as_ref()
+            .is_none_or(|names| names.iter().any(|allowed| allowed == name))
+    }
 }
 
 /// A module a workspace project provides: `(declare-source :prefix "p" :source ["src/x.janet"])`
@@ -59,6 +80,8 @@ impl Search {
                 .iter()
                 .flat_map(|root| module_files(&root.join(relative)))
                 .collect()
+        } else if let Some(relative) = spec.strip_prefix("@syspath/") {
+            self.installed(relative)
         } else if spec.starts_with('@') {
             // `@name/x` is relative to `(dyn :name)`, known only at run time.
             Vec::new()
@@ -69,18 +92,22 @@ impl Search {
                 .packages
                 .iter()
                 .flat_map(|package| package_files(package, spec));
-            let installed = self
-                .roots
-                .iter()
-                .map(|root| root.join("jpm_tree/lib"))
-                .chain(self.syspath.clone())
-                .flat_map(|dir| module_files(&dir.join(spec)));
-            packaged.chain(installed).collect()
+            packaged.chain(self.installed(spec)).collect()
         };
         candidates
             .into_iter()
             .find(|candidate| exists(candidate))
             .map(|file| canonical(&file))
+    }
+
+    /// Where `spec` would be installed: a workspace's local tree, then the syspath.
+    fn installed(&self, spec: &str) -> Vec<PathBuf> {
+        self.roots
+            .iter()
+            .map(|root| root.join("jpm_tree/lib"))
+            .chain(self.syspath.clone())
+            .flat_map(|dir| module_files(&dir.join(spec)))
+            .collect()
     }
 
     /// The C sources of the native module `spec` (`spork/json`). jpm installs `<spec>.meta.janet`
@@ -116,58 +143,97 @@ pub fn directive<'t>(text: &'t str, name: &str) -> impl Iterator<Item = &'t str>
         .flat_map(str::split_whitespace)
 }
 
-/// Top-level `import` and `use` forms and re-export calls, unresolved, then
+/// The imports the file makes as it loads, and re-export calls at its top, unresolved, then
 /// `# janet-zed: include` files.
 pub fn import_specs(doc: &Document) -> Vec<ImportSpec> {
     let included = directive(&doc.text, "include").map(|spec| ImportSpec {
-        spec: spec.to_string(),
-        prefix: String::new(),
         included: true,
-        names: None,
+        ..ImportSpec::new(spec, String::new())
     });
     syntax::forms(doc.root())
         .into_iter()
-        .filter_map(|form| call(doc, form))
-        .flat_map(|(head, args)| match (head, args.as_slice()) {
-            // `(use ./a ./b)` imports every module without a prefix.
-            ("use", _) => args
-                .iter()
-                .filter_map(|arg| literal(doc, *arg))
-                .map(|spec| ImportSpec {
-                    spec: spec.to_string(),
-                    prefix: String::new(),
-                    included: false,
-                    names: None,
-                })
-                .collect(),
-            ("import", [spec, options @ ..]) => literal(doc, *spec)
-                .map(|spec| {
-                    vec![ImportSpec {
-                        spec: spec.to_string(),
-                        prefix: import_prefix(doc, spec, options),
-                        included: false,
-                        names: None,
-                    }]
-                })
-                .unwrap_or_default(),
-            // A helper binding another module's names in this one at load time, which only
-            // its arguments show: `(re-export "./x" ['a 'b])`.
-            // ponytail: a guess from the call's shape; the edge only exists when the module does.
-            (_, [spec, names]) if spec.kind() == syntax::STRING => literal(doc, *spec)
-                .zip(quoted_names(doc, *names))
-                .map(|(spec, names)| {
-                    vec![ImportSpec {
-                        spec: spec.to_string(),
-                        prefix: String::new(),
-                        included: false,
-                        names: Some(names),
-                    }]
-                })
-                .unwrap_or_default(),
-            _ => Vec::new(),
+        .flat_map(|form| {
+            let nested = loaded(doc, form).into_iter().map(|inner| (inner, false));
+            std::iter::once((form, true)).chain(nested)
         })
+        .filter_map(|(form, top)| Some((call(doc, form)?, top)))
+        .flat_map(|((head, args), top)| imports(doc, head, &args, top))
         .chain(included)
         .collect()
+}
+
+/// The forms inside `form` that run when the module loads, however deep: an `import` binds its
+/// names in the module's environment from inside a `when` or a `let` too, but not from a
+/// function's body, quoted data or a `comment`.
+fn loaded<'d>(doc: &'d Document, form: Node<'d>) -> Vec<Node<'d>> {
+    let inside = syntax::forms(form);
+    let head = inside.first().map_or("", |head| doc.text_of(*head));
+    let runs = match form.kind() {
+        "quote_lit" | "qq_lit" | "short_fn_lit" => false,
+        syntax::LIST => {
+            !(matches!(head, "fn" | "quote" | "quasiquote")
+                || definitions::is_function(head)
+                || (head == "comment" && !definitions::is_upscope(doc, &inside)))
+        }
+        _ => true,
+    };
+    if !runs {
+        return Vec::new();
+    }
+    inside
+        .into_iter()
+        .flat_map(|inner| std::iter::once(inner).chain(loaded(doc, inner)))
+        .collect()
+}
+
+/// The modules the call `(head args…)` loads. `top`: at the top of the file, where a call of any
+/// other name may be a re-export helper.
+fn imports(doc: &Document, head: &str, args: &[Node], top: bool) -> Vec<ImportSpec> {
+    let string = |node: &Node| (node.kind() == syntax::STRING).then(|| literal(doc, *node))?;
+    match (head, args) {
+        // `(use ./a ./b)` imports every module without a prefix.
+        ("use", _) => args
+            .iter()
+            .filter_map(|arg| literal(doc, *arg))
+            .map(|spec| ImportSpec::new(spec, String::new()))
+            .collect(),
+        // `import*` takes the same options, its path a string.
+        ("import" | "import*", [spec, options @ ..])
+            if head == "import" || spec.kind() == syntax::STRING =>
+        {
+            literal(doc, *spec)
+                .map(|spec| ImportSpec {
+                    names: option(doc, options, ":only").map(|only| names(doc, only)),
+                    exported: option(doc, options, ":export")
+                        .is_some_and(|flag| !matches!(doc.text_of(flag), "false" | "nil")),
+                    ..ImportSpec::new(spec, import_prefix(doc, spec, options))
+                })
+                .into_iter()
+                .collect()
+        }
+        // Loaded, and a module the file depends on, but none of its names bound.
+        // ponytail: `dofile` reads its path from the working directory, taken as the file's.
+        ("require" | "dofile", [spec, ..]) => string(spec)
+            .map(|spec| ImportSpec {
+                names: Some(Vec::new()),
+                ..ImportSpec::new(spec, String::new())
+            })
+            .into_iter()
+            .collect(),
+        // A helper binding another module's names in this one at load time, which only
+        // its arguments show: `(re-export "./x" ['a 'b])`.
+        // ponytail: a guess from the call's shape; the edge only exists when the module does.
+        (_, [spec, names]) if top => string(spec)
+            .zip(quoted_names(doc, *names))
+            .map(|(spec, names)| ImportSpec {
+                names: Some(names),
+                exported: true,
+                ..ImportSpec::new(spec, String::new())
+            })
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
 }
 
 /// Modules declared by `declare-source` in a `project.janet` living in `project_dir`.
@@ -308,6 +374,15 @@ fn sources<'d>(doc: &'d Document, args: &[Node<'d>]) -> Vec<&'d str> {
         })
         .into_iter()
         .filter_map(|node| literal(doc, node))
+        .collect()
+}
+
+/// The names of `:only [a b]`, as symbols or strings.
+fn names(doc: &Document, collection: Node) -> Vec<String> {
+    syntax::forms(collection)
+        .into_iter()
+        .filter_map(|node| literal(doc, node))
+        .map(str::to_string)
         .collect()
 }
 

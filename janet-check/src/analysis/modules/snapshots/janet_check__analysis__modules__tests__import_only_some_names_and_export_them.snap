@@ -1,0 +1,15 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "(import ./a :only [x y])\n(import ./b :as b :export true)\n(import ./c :export false)\n(import* \"./d\" :prefix \"\" :only [\"z\"])"
+---
+----- SOURCE CODE
+(import ./a :only [x y])
+(import ./b :as b :export true)
+(import ./c :export false)
+(import* "./d" :prefix "" :only ["z"])
+
+----- IMPORTS
+./a as "a/" only x y
+./b as "b/" exported
+./c as "c/"
+./d as "" only z

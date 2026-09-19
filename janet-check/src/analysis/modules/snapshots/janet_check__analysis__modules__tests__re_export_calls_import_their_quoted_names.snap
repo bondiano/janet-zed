@@ -10,5 +10,5 @@ expression: "(re-export \"./extension\" ['contribute! 'declare-point!])\n(re-exp
 (def x "doc" ['a])
 
 ----- IMPORTS
-./extension as "" only contribute! declare-point!
-./semver as "" only parse-version
+./extension as "" only contribute! declare-point! exported
+./semver as "" only parse-version exported

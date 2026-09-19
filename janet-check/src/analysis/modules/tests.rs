@@ -23,9 +23,13 @@ fn show_imports(source: &str) -> String {
         .map(|import| {
             let names = import
                 .names
-                .map(|names| format!(" only {}", names.join(" ")))
+                .map(|names| match names.as_slice() {
+                    [] => " binds nothing".to_string(),
+                    names => format!(" only {}", names.join(" ")),
+                })
                 .unwrap_or_default();
-            format!("{} as {:?}{names}", import.spec, import.prefix)
+            let exported = if import.exported { " exported" } else { "" };
+            format!("{} as {:?}{names}{exported}", import.spec, import.prefix)
         })
         .collect();
     format!(
@@ -136,6 +140,33 @@ fn re_export_calls_import_their_quoted_names() {
 }
 
 #[test]
+fn import_only_some_names_and_export_them() {
+    assert_imports!(
+        r#"(import ./a :only [x y])
+(import ./b :as b :export true)
+(import ./c :export false)
+(import* "./d" :prefix "" :only ["z"])"#
+    );
+}
+
+#[test]
+fn require_and_dofile_load_without_binding() {
+    assert_imports!(
+        r#"(require "./a")
+(dofile "./b.janet")
+(require path)"#
+    );
+}
+
+#[test]
+fn imports_run_as_the_module_loads() {
+    assert_imports!(
+        "(upscope (import ./a))\n(compwhen true (use ./b))\n(when x (let [y 1] (import ./c)))\n\
+         (defn main [] (import ./d))\n'(import ./e)\n(comment (import ./f))\n(when x (re-export \"./g\" ['a]))"
+    );
+}
+
+#[test]
 fn other_forms_are_not_imports() {
     assert_imports!("(print 1)");
 }
@@ -191,6 +222,11 @@ fn resolve_a_declared_file() {
 #[test]
 fn resolve_into_a_declared_directory() {
     assert_resolves!("fixture/lib/deep/c");
+}
+
+#[test]
+fn resolve_under_the_syspath_variable() {
+    assert_resolves!("@syspath/spork/http");
 }
 
 #[test]

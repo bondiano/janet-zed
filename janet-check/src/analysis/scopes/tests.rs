@@ -242,3 +242,29 @@ fn as_threading_binding() {
 fn fn_with_parenthesized_parameters() {
     assert_binding!("(fn (x) |x)");
 }
+
+#[test]
+fn def_in_an_upscope_is_the_modules() {
+    assert_no_binding!("(upscope (def a 1))\n(compwhen true (def b 2))\n(print |a b)");
+    assert_no_binding!("(compif true (def b 2) (def b 3))\n(print |b)");
+}
+
+#[test]
+fn def_in_a_comment_is_local_to_it() {
+    assert_binding!("(comment (def a 1) (+ |a 1))");
+}
+
+#[test]
+fn unquote_in_a_nested_quasiquote_is_the_inner_templates() {
+    assert_no_binding!("(defmacro m [x] ~(a ~(b ,|x)))");
+}
+
+#[test]
+fn double_unquote_in_a_nested_quasiquote_is_evaluated() {
+    assert_binding!("(defmacro m [x] ~(a ~(b ,,|x)))");
+}
+
+#[test]
+fn long_form_unquote_in_a_quasiquote_is_evaluated() {
+    assert_binding!("(defmacro m [x] (quasiquote (a (unquote |x))))");
+}

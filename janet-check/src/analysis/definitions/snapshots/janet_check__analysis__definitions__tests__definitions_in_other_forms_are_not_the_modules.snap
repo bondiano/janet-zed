@@ -1,0 +1,12 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(do (def a 1))\n(when true (def b 2))\n(let [x 1] (def c 3))\n'(def d 4)\n(quote (def e 5))"
+---
+----- SOURCE CODE
+(do (def a 1))
+(when true (def b 2))
+(let [x 1] (def c 3))
+'(def d 4)
+(quote (def e 5))
+
+----- DEFINITIONS

@@ -62,6 +62,13 @@ fn symbols_that_head_no_special() {
 }
 
 #[test]
+fn grammar_defined_then_passed_by_name() {
+    assert_specials!(
+        "(def grammar ~{:main (some :d)})\n(def data '(some \"a\"))\n(peg/match grammar s)"
+    );
+}
+
+#[test]
 fn locates_compiler_functions() {
     let peg_c = "static void spec_capture(Builder *b) {\n}\n\
                  static const SpecialPair peg_specials[] = {\n    \

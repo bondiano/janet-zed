@@ -1,0 +1,14 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(upscope (def a 1))\n(compwhen true (def b 2))\n(compif false (def c 3) (upscope (def d 4)))"
+---
+----- SOURCE CODE
+(upscope (def a 1))
+(compwhen true (def b 2))
+(compif false (def c 3) (upscope (def d 4)))
+
+----- DEFINITIONS
+def a
+def b
+def c
+def d

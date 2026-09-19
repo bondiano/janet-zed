@@ -1,0 +1,17 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "(upscope (import ./a))\n(compwhen true (use ./b))\n(when x (let [y 1] (import ./c)))\n(defn main [] (import ./d))\n'(import ./e)\n(comment (import ./f))\n(when x (re-export \"./g\" ['a]))"
+---
+----- SOURCE CODE
+(upscope (import ./a))
+(compwhen true (use ./b))
+(when x (let [y 1] (import ./c)))
+(defn main [] (import ./d))
+'(import ./e)
+(comment (import ./f))
+(when x (re-export "./g" ['a]))
+
+----- IMPORTS
+./a as "a/"
+./b as ""
+./c as "c/"

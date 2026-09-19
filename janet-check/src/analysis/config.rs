@@ -91,7 +91,9 @@ impl Config {
             .iter()
             .filter_map(|import| {
                 let name = head.strip_prefix(import.prefix.as_str())?;
-                Some(format!("{}/{name}", import.spec))
+                import
+                    .binds(name)
+                    .then(|| format!("{}/{name}", import.spec))
             })
             .find_map(|full| self.lint_as.get(&full).copied())
             .or_else(|| self.lint_as.get(head).copied())

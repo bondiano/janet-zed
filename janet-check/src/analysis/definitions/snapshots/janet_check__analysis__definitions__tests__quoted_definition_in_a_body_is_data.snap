@@ -1,0 +1,10 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(defmacro m [name] (def local 1) ~(def ,name 1))"
+---
+----- SOURCE CODE
+(defmacro m [name] (def local 1) ~(def ,name 1))
+
+----- DEFINITIONS
+defmacro m [name]
+  def local

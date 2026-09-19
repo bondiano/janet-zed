@@ -1,0 +1,14 @@
+---
+source: src/analysis/peg/tests.rs
+expression: "(def grammar ~{:main (some :d)})\n(def data '(some \"a\"))\n(peg/match grammar s)"
+---
+----- SOURCE CODE
+(def grammar ~{:main (some :d)})
+(def data '(some "a"))
+(peg/match grammar s)
+
+----- PEG SPECIALS
+(def grammar ~{:main (some :d)})
+                      ▔▔▔▔
+(def data '(some "a"))
+(peg/match grammar s)

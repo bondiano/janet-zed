@@ -136,6 +136,21 @@ fn module_definition_through_a_re_export() {
 }
 
 #[test]
+fn module_definition_through_an_exporting_import() {
+    // `u` sees what `r` imports with `:export`, under both prefixes; `o` imports `b` only.
+    let ws = workspace_of(&[
+        ("/ws/m.janet", "(def a 1)\n(def b 2)\n"),
+        (
+            "/ws/r.janet",
+            "(upscope (import ./m :export true))\n(m/a)\n",
+        ),
+        ("/ws/u.janet", "(import ./r)\n(r/m/a)\n"),
+        ("/ws/o.janet", "(import ./m :only [b])\n(m/a)\n(m/b)\n"),
+    ]);
+    insta::assert_snapshot!(show_references(&ws, "/ws/u.janet", "r/m/a"));
+}
+
+#[test]
 fn parameter() {
     assert_references!("/ws/src/shapes.janet", "[shape");
 }

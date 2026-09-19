@@ -1,0 +1,9 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "@syspath/spork/http"
+---
+----- IMPORT
+@syspath/spork/http from /ws/src/main.janet
+
+----- LOADS
+/sys/spork/http.janet

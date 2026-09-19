@@ -45,7 +45,9 @@ fn visible_as(name: &str, imports: &[ImportSpec]) -> String {
         .iter()
         .find_map(|import| {
             let rest = name.strip_prefix(import.spec.as_str())?.strip_prefix('/')?;
-            Some(format!("{}{rest}", import.prefix))
+            import
+                .binds(rest)
+                .then(|| format!("{}{rest}", import.prefix))
         })
         .unwrap_or_else(|| name.to_string())
 }
@@ -59,8 +61,10 @@ pub struct Edge {
     pub prefix: String,
     /// From `# janet-zed: include`: private names are visible too.
     pub included: bool,
-    /// Only these names, re-exported: from `(re-export "./x" ['a 'b])`.
+    /// Only these names: see [`ImportSpec::names`].
     pub names: Option<Vec<String>>,
+    /// Re-exported: see [`ImportSpec::exported`].
+    pub exported: bool,
     /// The other end: the imported file in `imports_of`, the importing one in `importers_of`.
     pub path: PathBuf,
 }
@@ -515,14 +519,15 @@ impl Workspace {
                 .names
                 .as_ref()
                 .is_none_or(|names| names.iter().any(|allowed| allowed == short));
-            let module = passed
+            let (module, short) = passed
                 .then(|| references::defining(self, &edge.path, short, references::MAX_REEXPORTS))
                 .flatten()?;
-            let definition = self.definition(&module, short)?;
+            let definition = self.definition(&module, &short)?;
             if definition.private && !edge.included {
                 return None;
             }
-            Some((module, short, definition.annotation.as_deref().cloned()))
+            let annotation = definition.annotation.as_deref().cloned();
+            Some((module, short, annotation))
         });
         let declared = || self.ambient(&file.imports).get(name).cloned().flatten();
         // A name an import provides is that module's, typed or not: the core's binding of the
@@ -531,7 +536,7 @@ impl Workspace {
             return declared().or_else(|| types::core().binding(name).cloned());
         };
         annotation
-            .or_else(|| inferred?(&module, short))
+            .or_else(|| inferred?(&module, &short))
             .or_else(declared)
     }
 
@@ -692,6 +697,7 @@ impl Workspace {
                             prefix: import.prefix.clone(),
                             included: import.included,
                             names: import.names.clone(),
+                            exported: import.exported,
                             path,
                         })
                     })
@@ -710,6 +716,7 @@ impl Workspace {
                         prefix: edge.prefix.clone(),
                         included: edge.included,
                         names: edge.names.clone(),
+                        exported: edge.exported,
                         path: importer.clone(),
                     };
                     (edge.path.clone(), reverse)

@@ -1,0 +1,9 @@
+---
+source: src/analysis/definitions/tests.rs
+expression: "(comment :declare (defn host [x]))"
+---
+----- SOURCE CODE
+(comment :declare (defn host [x]))
+
+----- DEFINITIONS
+defn host [x]

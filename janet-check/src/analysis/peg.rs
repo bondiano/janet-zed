@@ -1,13 +1,15 @@
 //! PEG grammars: `some` in `(peg/match ~(some "a") s)` names a special of Janet's PEG compiler
 //! rather than a binding.
 
-// ponytail: only quoted patterns written in the call itself are grammars; a grammar kept in a
-// `def` and passed by name (`(peg/match grammar s)`) reads as plain data.
+// ponytail: a grammar is a quoted pattern written in the call itself, or the quoted value of a
+// `def` whose name some call in the file passes, `(peg/match grammar s)`, matched by name, not by
+// scope. A grammar built by a function, or assembled from several `def`s, reads as plain data.
 
 use std::path::Path;
 
 use tree_sitter::Node;
 
+use super::definitions;
 use super::stdlib::{CoreBinding, CoreKind, SourceLocation};
 use crate::syntax::{self, Document};
 
@@ -318,17 +320,38 @@ fn in_pattern(doc: &Document, path: &[Node]) -> bool {
             // Code again: whatever it builds is not written as a pattern here.
             "unquote_lit" => return false,
             syntax::LIST => {
-                if let [head, pattern, ..] = syntax::forms(*node).as_slice()
+                let forms = syntax::forms(*node);
+                let child = path.get(index + 1);
+                if let [head, pattern, ..] = forms.as_slice()
                     && PEG_FUNCTIONS.contains(&doc.text_of(*head))
-                    && path.get(index + 1) == Some(pattern)
+                    && child == Some(pattern)
                 {
                     return quoted;
+                }
+                // `(def grammar ~{…})`
+                if let [head, name, .., value] = forms.as_slice()
+                    && definitions::core(doc.text_of(*head)).is_some()
+                    && name.kind() == syntax::SYMBOL
+                    && child == Some(value)
+                {
+                    return quoted && passed_to_peg(doc, doc.text_of(*name));
                 }
             }
             _ => {}
         }
     }
     false
+}
+
+/// Whether a `peg/*` call in the file takes the symbol `name` as its pattern.
+fn passed_to_peg(doc: &Document, name: &str) -> bool {
+    syntax::descendants(doc.root()).any(|node| {
+        node.kind() == syntax::LIST
+            && matches!(syntax::forms(node).as_slice(), [head, pattern, ..]
+                if PEG_FUNCTIONS.contains(&doc.text_of(*head))
+                    && pattern.kind() == syntax::SYMBOL
+                    && doc.text_of(*pattern) == name)
+    })
 }
 
 #[cfg(test)]

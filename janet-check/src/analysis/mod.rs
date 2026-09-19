@@ -34,7 +34,7 @@ pub struct SourceFile {
     /// As the client knows the file, to report it back.
     pub uri: Uri,
     pub document: Document,
-    /// Top-level `import`/`use` forms, unresolved.
+    /// What the file imports as it loads, unresolved: see [`modules::import_specs`].
     pub imports: Vec<ImportSpec>,
     /// Module-level definitions by name.
     pub definitions: HashMap<String, DefInfo>,

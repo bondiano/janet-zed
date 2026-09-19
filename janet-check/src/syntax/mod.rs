@@ -48,6 +48,10 @@ pub const MAX_DEPTH: usize = 256;
 pub const TOO_DEEP: &str = "nested deeper than 256 levels: the file is not analysed";
 
 /// The tree of `text`, unless it nests deeper than [`MAX_DEPTH`].
+// ponytail: every change reparses the whole text, about 1.2 ms per 1000 lines in release (3.9k
+// lines: 4.5 ms), a fraction of the analysis that follows it anyway. Incremental parsing
+// (`Tree::edit`, the old tree passed back in) needs incremental sync in the server; worth it once
+// files of tens of thousands of lines are edited.
 pub fn parse(text: &str) -> Option<Tree> {
     let mut parser = Parser::new();
     parser

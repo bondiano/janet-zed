@@ -109,3 +109,27 @@ fn library_macro_read_as_a_core_definer() {
 fn string_value_is_not_a_docstring() {
     assert_definitions!(r#"(def x "not a doc")"#);
 }
+
+#[test]
+fn definition_in_a_declare_block() {
+    assert_definitions!("(comment :declare (defn host [x]))");
+}
+
+#[test]
+fn definitions_in_upscopes_are_the_modules() {
+    assert_definitions!(
+        "(upscope (def a 1))\n(compwhen true (def b 2))\n(compif false (def c 3) (upscope (def d 4)))"
+    );
+}
+
+#[test]
+fn definitions_in_other_forms_are_not_the_modules() {
+    assert_definitions!(
+        "(do (def a 1))\n(when true (def b 2))\n(let [x 1] (def c 3))\n'(def d 4)\n(quote (def e 5))"
+    );
+}
+
+#[test]
+fn quoted_definition_in_a_body_is_data() {
+    assert_definitions!("(defmacro m [name] (def local 1) ~(def ,name 1))");
+}

@@ -19,6 +19,10 @@ const DEFINERS: [&str; 12] = [
     "defdyn",
 ];
 const FUNCTION_DEFINERS: [&str; 5] = ["defn", "defn-", "defmacro", "defmacro-", "varfn"];
+/// Forms Janet compiles the arguments of where the form itself is, rather than in a scope of their
+/// own: `compwhen` and `compif` expand to `upscope`. Every other form, `do` and `when` included, is
+/// a scope, and a definition in it is local to it.
+const UPSCOPES: [&str; 3] = ["upscope", "compwhen", "compif"];
 
 #[derive(Debug)]
 pub struct Definition<'d> {
@@ -43,8 +47,9 @@ pub struct Definition<'d> {
 /// The core definer a call head that is not one is read as: `:lint-as` from the config.
 pub type LintAs<'a> = &'a dyn Fn(&str) -> Option<&'static str>;
 
-/// Definitions under `node`. Ones in other forms (`comment`, `when`) surface at this level;
-/// ones in a definition's body become its children.
+/// Definitions under `node`: at its level, and in the upscopes there (see [`is_upscope`]), the
+/// ones Janet puts in the module. Ones in a definition's body become its children; ones in any
+/// other form (`let`, `when`, a quote) are no one's.
 pub fn definitions<'d>(doc: &'d Document, node: Node<'d>, lint_as: LintAs) -> Vec<Definition<'d>> {
     within(doc, node, lint_as, &syntax::forms)
 }
@@ -60,8 +65,28 @@ pub fn within<'d, R: AsRef<[Node<'d>]>>(
     forms(node)
         .as_ref()
         .iter()
-        .flat_map(|form| collect(doc, *form, lint_as, forms))
+        .flat_map(|form| collect(doc, *form, lint_as, forms, false))
         .collect()
+}
+
+/// Whether the arguments of the list `forms` are at the level of the list itself: an upscope, or
+/// a `comment` marked with a keyword, `(comment :declare …)`, whose definitions declare the
+/// module's names. Janet evaluates no other `comment`.
+pub fn is_upscope(doc: &Document, forms: &[Node]) -> bool {
+    match forms {
+        [head, marker, ..] if doc.text_of(*head) == "comment" => marker.kind() == "kwd_lit",
+        [head, ..] => head.kind() == syntax::SYMBOL && UPSCOPES.contains(&doc.text_of(*head)),
+        [] => false,
+    }
+}
+
+/// Quoted data: `'x`, `~x`, `(quote x)`, `(quasiquote x)`. What it holds is not code here.
+fn is_quoted(doc: &Document, form: Node, inside: &[Node]) -> bool {
+    matches!(form.kind(), "quote_lit" | "qq_lit")
+        || (form.kind() == syntax::LIST
+            && inside
+                .first()
+                .is_some_and(|head| matches!(doc.text_of(*head), "quote" | "quasiquote")))
 }
 
 /// `name` when it is a core definer.
@@ -73,19 +98,27 @@ pub fn is_function(definer: &str) -> bool {
     FUNCTION_DEFINERS.contains(&definer)
 }
 
+/// The definitions `form` makes. `nested`: in a definition's body, where every one is kept however
+/// deep; else only the ones of upscopes.
 fn collect<'d, R: AsRef<[Node<'d>]>>(
     doc: &'d Document,
     form: Node<'d>,
     lint_as: LintAs,
     forms: &impl Fn(Node<'d>) -> R,
+    nested: bool,
 ) -> Vec<Definition<'d>> {
     let inside = forms(form);
-    let found = definition(doc, form, inside.as_ref(), lint_as, forms);
-    if found.is_empty() {
+    let inside = inside.as_ref();
+    let found = definition(doc, form, inside, lint_as, forms);
+    let descend = if nested {
+        !is_quoted(doc, form, inside)
+    } else {
+        form.kind() == syntax::LIST && is_upscope(doc, inside)
+    };
+    if found.is_empty() && descend {
         inside
-            .as_ref()
             .iter()
-            .flat_map(|form| collect(doc, *form, lint_as, forms))
+            .flat_map(|form| collect(doc, *form, lint_as, forms, nested))
             .collect()
     } else {
         found
@@ -143,7 +176,7 @@ fn definition<'d, R: AsRef<[Node<'d>]>>(
             private,
             children: body
                 .iter()
-                .flat_map(|node| collect(doc, *node, lint_as, forms))
+                .flat_map(|node| collect(doc, *node, lint_as, forms, true))
                 .collect(),
         }];
     }

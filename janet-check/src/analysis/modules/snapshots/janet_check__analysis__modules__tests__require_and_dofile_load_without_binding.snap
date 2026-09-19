@@ -1,0 +1,12 @@
+---
+source: src/analysis/modules/tests.rs
+expression: "(require \"./a\")\n(dofile \"./b.janet\")\n(require path)"
+---
+----- SOURCE CODE
+(require "./a")
+(dofile "./b.janet")
+(require path)
+
+----- IMPORTS
+./a as "" binds nothing
+./b.janet as "" binds nothing
