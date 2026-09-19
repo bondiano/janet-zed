@@ -283,6 +283,12 @@ fn fixes(
         .imports_of(&file.path)
         .iter()
         .filter(|edge| !edge.prefix.is_empty() && defines(&edge.path, name))
+        // `:only` names the rest out.
+        .filter(|edge| {
+            edge.names
+                .as_ref()
+                .is_none_or(|names| names.iter().any(|allowed| allowed == name))
+        })
         .map(|edge| {
             let qualified = format!("{}{name}", edge.prefix);
             Fix {

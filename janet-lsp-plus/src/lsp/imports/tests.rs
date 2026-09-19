@@ -135,6 +135,17 @@ fn an_unknown_name_is_imported_or_qualified_under_its_alias() {
     );
 }
 
+#[test]
+fn a_name_only_leaves_out_is_not_offered_under_the_alias() {
+    let workspace = workspace_of(&[
+        ("/ws/geo.janet", "(defn area [s] s)\n(defn dist [] 0)\n"),
+        ("/ws/main.janet", "(import ./geo :only [area])\n(dist)\n"),
+    ]);
+    let main = file(&workspace, "/ws/main.janet");
+    let at = main.document.text.find("dist").unwrap();
+    assert!(fixes(&workspace, main, "dist", at..at + 4).is_empty());
+}
+
 /// Every file `moves` rewrites, as it reads afterwards.
 fn moved(files: &[(&str, &str)], moves: &[(&str, &str)]) -> Vec<(String, String)> {
     let workspace = workspace_of(files);
