@@ -9,18 +9,15 @@
 //! Strict mode holds unions and guesses too: a static union is `No` when some member is, a
 //! `Dynamic` type when no part of what it guesses could be.
 
-use std::sync::LazyLock;
-
 use smol_str::SmolStr;
 
-use super::infer::{Subst, spliced};
+use super::infer::{Subst, nil, spliced};
 use super::narrow::Expand;
 use super::{Fields, Signature, Type, is_atom};
 
-/// How far named types and variables are followed; a type defined in terms of itself stops here.
-const DEPTH: usize = 16;
-
-static NIL: LazyLock<Type> = LazyLock::new(|| Type::Keyword("nil".into()));
+/// How deep a fit check follows two types — into their parts, named types and variables — before
+/// it answers `Maybe`; a type defined in terms of itself stops here.
+const FIT_DEPTH: usize = 16;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Fit {
@@ -48,7 +45,7 @@ pub(super) fn fit(
         expand,
         unions,
     }
-    .fits(actual, expected, DEPTH)
+    .fits(actual, expected, FIT_DEPTH)
 }
 
 /// What rules out a union on the actual side.
@@ -131,9 +128,7 @@ impl Check<'_> {
                 Fit::No if self.unions == Unions::Every => Fit::No,
                 _ => Fit::Maybe,
             },
-            (Type::Nullable(inner), _) => {
-                self.union(&[NIL.clone(), (**inner).clone()], expected, depth)
-            }
+            (Type::Nullable(inner), _) => self.union(&[nil(), (**inner).clone()], expected, depth),
             (_, Type::Or(items)) => one_of(items.iter().map(|item| deeper(actual, item))),
             (_, Type::Open(items)) => match one_of(items.iter().map(|item| deeper(actual, item))) {
                 Fit::No => Fit::Maybe,
@@ -222,7 +217,7 @@ impl Check<'_> {
         let positions = given.params.len().max(wanted.params.len());
         let params = (0..positions).map(|index| match (at(given, index), at(wanted, index)) {
             (Some(takes), Some(passed)) => deeper(&passed, &takes),
-            (Some(takes), None) => match deeper(&NIL, &takes) {
+            (Some(takes), None) => match deeper(&nil(), &takes) {
                 Fit::No => Fit::No,
                 _ => Fit::Maybe,
             },
@@ -356,7 +351,7 @@ fn alike(given: &str, wanted: &str) -> bool {
 }
 
 /// The kind `(type x)` answers for a value of this type, where the type says.
-fn kind(ty: &Type) -> Option<&str> {
+pub(super) fn kind(ty: &Type) -> Option<&str> {
     match ty {
         Type::Keyword(name) if name == "any" || name == "never" => None,
         Type::Keyword(name) if is_atom(name) => Some(name),

@@ -15,8 +15,8 @@
 
 use smol_str::SmolStr;
 
-use super::fit::Fit;
-use super::infer::{kind, unions};
+use super::fit::{Fit, kind};
+use super::infer::{nil, unions};
 use super::{Fields, Type, Var, is_atom};
 
 /// What a named type stands for, as far as the file and its declarations know.
@@ -25,8 +25,9 @@ pub type Expand<'a> = &'a dyn Fn(&str, &[Type]) -> Option<Type>;
 /// Whether a value of one type can be where another is, as [`super::fit::fit`] answers it.
 pub type Fits<'a> = &'a dyn Fn(&Type, &Type) -> Fit;
 
-/// How far a named type is followed while matching; a type defined in terms of itself stops here.
-const DEPTH: usize = 8;
+/// How many named types in a row are expanded while matching; a type defined in terms of itself
+/// stops here. Only expansions count, not the parts of a shape.
+const EXPANSIONS: usize = 8;
 
 /// `ty` where a test for `want` holds, and where it does not. A part of `ty` that `want` neither
 /// covers nor excludes — `:any`, a variable — becomes `want` on the one side and stays as it is
@@ -62,7 +63,7 @@ pub fn split(ty: &Type, want: &Type, expand: Expand) -> (Type, Type) {
 /// The members of `ty` an `and` can stop at: `nil`, `:boolean`, and what is too vague to say.
 /// `None` when every member is true; an open union may hold a false one nobody listed.
 pub fn falsy(ty: &Type, expand: Expand) -> Option<Type> {
-    if is_open(ty, expand, DEPTH) {
+    if is_open(ty, expand, EXPANSIONS) {
         return Some(ty.clone());
     }
     let want = Type::Or([nil(), Type::Keyword("boolean".into())].into());
@@ -80,8 +81,8 @@ pub fn falsy(ty: &Type, expand: Expand) -> Option<Type> {
 /// out. A value no member of an open union can be is one nobody listed: `x` is that value, or,
 /// by a path, a form that holds it there.
 pub fn equal(ty: &Type, keys: &[&str], value: &Type, expand: Expand, fits: Fits) -> (Type, Type) {
-    let whole = spread(ty, expand, DEPTH);
-    let open = is_open(ty, expand, DEPTH);
+    let whole = spread(ty, expand, EXPANSIONS);
+    let open = is_open(ty, expand, EXPANSIONS);
     let (held, rest) = sides(ty, keys, value, expand, fits);
     (
         narrowed(held, &whole, ty),
@@ -98,7 +99,7 @@ fn sides(
     expand: Expand,
     fits: Fits,
 ) -> (Vec<Type>, Vec<Type>) {
-    let whole = spread(ty, expand, DEPTH);
+    let whole = spread(ty, expand, EXPANSIONS);
     let mut held = Vec::new();
     let mut rest = Vec::new();
     for member in &whole {
@@ -111,7 +112,7 @@ fn sides(
             }
             continue;
         };
-        match at(member, key, expand, DEPTH) {
+        match at(member, key, expand, EXPANSIONS) {
             None => {
                 held.push(member.clone());
                 rest.push(member.clone());
@@ -125,9 +126,9 @@ fn sides(
                 }
             }
             Some(found) => {
-                let inner = spread(&found, expand, DEPTH);
+                let inner = spread(&found, expand, EXPANSIONS);
                 let (inside, outside) = sides(&found, tail, value, expand, fits);
-                let open = is_open(&found, expand, DEPTH);
+                let open = is_open(&found, expand, EXPANSIONS);
                 if !inside.is_empty() {
                     let inside = narrowed(inside, &inner, &found);
                     held.push(holding(member, key, &found, &inside, expand));
@@ -139,7 +140,7 @@ fn sides(
             }
         }
     }
-    if held.is_empty() && is_open(ty, expand, DEPTH) {
+    if held.is_empty() && is_open(ty, expand, EXPANSIONS) {
         held.push(keys.iter().rev().fold(value.clone(), |inner, key| {
             tagged(&[((*key).into(), inner)])
         }));
@@ -153,7 +154,7 @@ fn holding(member: &Type, key: &str, found: &Type, narrowed: &Type, expand: Expa
     if narrowed == found {
         return member.clone();
     }
-    match shape_of(member, expand, DEPTH) {
+    match shape_of(member, expand, EXPANSIONS) {
         Some(shape) => Type::Struct(Fields {
             fields: shape
                 .fields
@@ -174,8 +175,8 @@ fn holding(member: &Type, key: &str, found: &Type, narrowed: &Type, expand: Expa
 /// that is there can still fail the pattern under it. Of an open union, a literal no member holds
 /// picks out a form nobody listed, and without a literal every member may be one nobody listed.
 pub fn shaped(ty: &Type, keys: &[(SmolStr, Option<Type>)], expand: Expand, fits: Fits) -> Type {
-    let whole = spread(ty, expand, DEPTH);
-    let open = is_open(ty, expand, DEPTH);
+    let whole = spread(ty, expand, EXPANSIONS);
+    let open = is_open(ty, expand, EXPANSIONS);
     let literals: Vec<(SmolStr, Type)> = keys
         .iter()
         .filter_map(|(key, literal)| Some((key.clone(), literal.clone()?)))
@@ -184,13 +185,13 @@ pub fn shaped(ty: &Type, keys: &[(SmolStr, Option<Type>)], expand: Expand, fits:
         .iter()
         .filter(|member| {
             let dictionary = matches!(
-                atom_of(member, expand, DEPTH).as_deref(),
+                atom_of(member, expand, EXPANSIONS).as_deref(),
                 None | Some("struct" | "table")
             );
             dictionary
                 && keys
                     .iter()
-                    .all(|(key, literal)| match at(member, key, expand, DEPTH) {
+                    .all(|(key, literal)| match at(member, key, expand, EXPANSIONS) {
                         None => true,
                         Some(found) => match literal {
                             Some(literal) => fits(literal, &found) != Fit::No,
@@ -210,12 +211,12 @@ pub fn shaped(ty: &Type, keys: &[(SmolStr, Option<Type>)], expand: Expand, fits:
 /// The keywords a closed union of keyword values holds, when that is all it holds: what a `case`
 /// over it has to name.
 pub fn tags(ty: &Type, expand: Expand) -> Option<Vec<SmolStr>> {
-    if is_open(ty, expand, DEPTH) {
+    if is_open(ty, expand, EXPANSIONS) {
         return None;
     }
-    let tags = spread(ty, expand, DEPTH)
+    let tags = spread(ty, expand, EXPANSIONS)
         .iter()
-        .map(|member| keywords(member, expand, DEPTH))
+        .map(|member| keywords(member, expand, EXPANSIONS))
         .collect::<Option<Vec<_>>>()?
         .concat();
     (tags.len() > 1).then_some(tags)
@@ -224,12 +225,12 @@ pub fn tags(ty: &Type, expand: Expand) -> Option<Vec<SmolStr>> {
 /// The key every member of a closed union of forms holds a keyword of its own at, and those
 /// keywords: `:kind`, `circle` and `rect` of `(or {:kind :circle …} {:kind :rect …})`.
 pub fn discriminant(ty: &Type, expand: Expand) -> Option<(SmolStr, Vec<SmolStr>)> {
-    if is_open(ty, expand, DEPTH) {
+    if is_open(ty, expand, EXPANSIONS) {
         return None;
     }
-    let shapes = spread(ty, expand, DEPTH)
+    let shapes = spread(ty, expand, EXPANSIONS)
         .iter()
-        .map(|member| shape_of(member, expand, DEPTH))
+        .map(|member| shape_of(member, expand, EXPANSIONS))
         .collect::<Option<Vec<_>>>()?;
     let [first, _, ..] = shapes.as_slice() else {
         return None;
@@ -365,10 +366,6 @@ fn singular(ty: &Type) -> bool {
     matches!(ty, Type::Keyword(name) if name == "nil" || !is_atom(name))
 }
 
-fn nil() -> Type {
-    Type::Keyword("nil".into())
-}
-
 fn or_all(members: Vec<Type>, whole: &Type) -> Type {
     if members.is_empty() {
         return whole.clone();
@@ -380,10 +377,7 @@ fn or_all(members: Vec<Type>, whole: &Type) -> Type {
 fn members(ty: &Type) -> Vec<Type> {
     match ty {
         Type::Or(items) | Type::Open(items) => items.iter().flat_map(members).collect(),
-        Type::Nullable(inner) => members(inner)
-            .into_iter()
-            .chain([Type::Keyword("nil".into())])
-            .collect(),
+        Type::Nullable(inner) => members(inner).into_iter().chain([nil()]).collect(),
         ty => vec![ty.clone()],
     }
 }
@@ -406,7 +400,7 @@ fn holds(member: &Type, want: &Type, expand: Expand) -> Option<bool> {
     let Type::Keyword(name) = want else {
         return None;
     };
-    Some(atom_of(member, expand, DEPTH)? == *name)
+    Some(atom_of(member, expand, EXPANSIONS)? == *name)
 }
 
 /// The atom `(type x)` answers for a type: `:circle` is a keyword, `@[:string]` an array. `None`
@@ -416,11 +410,7 @@ fn atom_of(ty: &Type, expand: Expand, depth: usize) -> Option<SmolStr> {
         return None;
     }
     match ty {
-        Type::Keyword(name) if name == "any" || name == "never" => None,
-        Type::Keyword(name) if is_atom(name) => Some(name.clone()),
-        Type::Keyword(_) => Some("keyword".into()),
         Type::Named { name, args } => atom_of(&expand(name, args)?, expand, depth - 1),
-        Type::Var(_) | Type::Nullable(_) | Type::Or(_) | Type::Open(_) => None,
-        ty => kind(ty).map(SmolStr::new_static),
+        ty => kind(ty).map(SmolStr::new),
     }
 }

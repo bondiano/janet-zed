@@ -88,6 +88,18 @@ fn shown(source: &str) -> String {
 }
 
 #[test]
+fn a_mutable_dictionary_is_a_table() {
+    let table = Type::Dict {
+        key: Arc::new(Type::Keyword("keyword".into())),
+        value: Arc::new(Type::Keyword("number".into())),
+        mutable: true,
+    };
+    let ty = Type::Or([table.clone(), Type::Keyword("string".into())].into());
+    let (held, _) = narrow::split(&ty, &Type::Keyword("table".into()), &|_, _| None);
+    assert_eq!(held, table);
+}
+
+#[test]
 fn every_literal_prints_back_as_written() {
     let parsed: Vec<String> = LITERALS
         .iter()

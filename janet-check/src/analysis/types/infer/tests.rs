@@ -1,6 +1,7 @@
 use std::fmt::Write as _;
 use std::path::PathBuf;
 
+use super::unions::dynamic;
 use super::*;
 use crate::analysis::types;
 
