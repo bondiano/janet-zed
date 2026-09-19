@@ -6,7 +6,7 @@ mod handlers;
 mod state;
 
 use anyhow::Result;
-use crossbeam_channel::{Receiver, select};
+use crossbeam_channel::{Receiver, Select, TryRecvError, select};
 use lsp_server::{Connection, ErrorCode, Message, Notification, Request, RequestId, Response};
 use lsp_types::notification::{
     Cancel, DidChangeConfiguration, DidChangeTextDocument, DidChangeWatchedFiles,
@@ -30,6 +30,7 @@ use lsp_types::{
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -288,7 +289,7 @@ fn watch_files(connection: &Connection) -> Result<()> {
 
 /// One message at a time, in order. What does not answer anybody waits for a quiet moment:
 /// type findings across the project are read when no message and no check is pending, once for
-/// however many changes asked for them.
+/// however many changes asked for them, and requests are answered while they are.
 fn serve(
     connection: &Connection,
     mut state: State,
@@ -329,11 +330,7 @@ fn serve(
                         tracing::info!("shut down");
                         return Ok(());
                     }
-                    if request.method == Formatting::METHOD {
-                        format_in_background(connection, &state, request);
-                    } else {
-                        connection.sender.send(dispatch(&state, request).into())?;
-                    }
+                    answer(connection, &state, request)?;
                 }
                 Message::Notification(notification) => {
                     let method = notification.method.clone();
@@ -357,7 +354,7 @@ fn serve(
         }
         if project_stale {
             // Stopped by a message, it carries on from where it was once that one is served.
-            project_stale = !publish_project(connection, &mut state)?;
+            project_stale = !publish_project(connection, &mut state, &mut queue, results)?;
             continue;
         }
         select! {
@@ -375,6 +372,75 @@ fn serve(
             }
         }
     }
+}
+
+/// Answers a request other than shutdown: they only read the state.
+fn answer(connection: &Connection, state: &State, request: Request) -> Result<()> {
+    if request.method == Formatting::METHOD {
+        format_in_background(connection, state, request);
+    } else {
+        connection.sender.send(dispatch(state, request).into())?;
+    }
+    Ok(())
+}
+
+/// Infers every file of `paths` on a thread of its own, answering requests meanwhile: they only
+/// read, and inference only fills its cache. Anything else stops it at the next component, since
+/// it changes what is inferred or waits to be published: a notification or shutdown, left at the
+/// back of `queue` with whatever comes after it, or a check come back, left in `results`. Whether
+/// it finished.
+// ponytail: a hover on a file not inferred yet infers it too, beside this thread; the cache takes
+// whichever lands last. Worth a per-component claim if the double work ever shows.
+fn infer_answering(
+    connection: &Connection,
+    state: &State,
+    paths: &[PathBuf],
+    queue: &mut VecDeque<Message>,
+    results: &Receiver<Checked>,
+) -> Result<bool> {
+    let workspace = &state.workspace;
+    let stop = AtomicBool::new(false);
+    let (done, finished) = crossbeam_channel::bounded(1);
+    thread::scope(|scope| {
+        scope.spawn(|| {
+            let stopped = || stop.load(Ordering::Relaxed);
+            done.send(workspace.infer_until(paths.iter().map(PathBuf::as_path), &stopped))
+                .ok();
+        });
+        let mut ready = Select::new();
+        let from_client = ready.recv(&connection.receiver);
+        let checked = ready.recv(results);
+        let inferred = ready.recv(&finished);
+        loop {
+            let index = ready.ready();
+            if index == inferred {
+                return Ok(finished.recv().unwrap_or(false));
+            }
+            if index == checked {
+                // Published once inference stops; requests are answered until then.
+                stop.store(true, Ordering::Relaxed);
+                ready.remove(checked);
+                continue;
+            }
+            match connection.receiver.try_recv() {
+                Ok(Message::Request(request)) if request.method != Shutdown::METHOD => {
+                    answer(connection, state, request)?;
+                }
+                // For a request answered already: nothing waits in `queue` to be cancelled.
+                Ok(Message::Notification(notification))
+                    if notification.method == Cancel::METHOD => {}
+                // What follows it is to see what it changes, so it waits as well.
+                Ok(message) => {
+                    queue.push_back(message);
+                    stop.store(true, Ordering::Relaxed);
+                    ready.remove(from_client);
+                }
+                Err(TryRecvError::Empty) => {}
+                // Nobody to answer: inference ends on its own, and `serve` sees the client gone.
+                Err(TryRecvError::Disconnected) => ready.remove(from_client),
+            }
+        }
+    })
 }
 
 /// Whether a `$/cancelRequest` for `id` waits in `queue`.
@@ -647,17 +713,18 @@ fn publish_buffer(connection: &Connection, state: &mut State, uri: Uri) -> Resul
 /// buffers, so without this a type error stays invisible until someone opens the file it is in.
 // ponytail: every file is walked on each pass; inference itself is cached, so only the files the
 // edit invalidated are read again. Worth narrowing to those if a large workspace feels it.
-/// Inference stops as soon as the client sends anything, so a request waits for the files being
-/// inferred at that moment rather than the whole project. Whether it finished.
-fn publish_project(connection: &Connection, state: &mut State) -> Result<bool> {
+/// Requests are answered while it infers; anything else stops it, see [`infer_answering`].
+/// Whether it finished.
+fn publish_project(
+    connection: &Connection,
+    state: &mut State,
+    queue: &mut VecDeque<Message>,
+    results: &Receiver<Checked>,
+) -> Result<bool> {
     let mut found: Vec<(Uri, Vec<Diagnostic>)> = Vec::new();
     if state.reporting != Reporting::Off {
         let paths: Vec<PathBuf> = state.workspace.paths().cloned().collect();
-        let waiting = || !connection.receiver.is_empty();
-        if !state
-            .workspace
-            .infer_until(paths.iter().map(PathBuf::as_path), &waiting)
-        {
+        if !infer_answering(connection, state, &paths, queue, results)? {
             return Ok(false);
         }
         let retyped: Vec<Uri> = state.retype.drain().collect();

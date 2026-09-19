@@ -1598,6 +1598,53 @@ fn type_errors_are_reported_for_files_that_are_not_open() {
     insta::assert_snapshot!(reported.join("\n"));
 }
 
+/// A hover is answered while the project's types are still being inferred, rather than once the
+/// file inference is busy with is done.
+#[test]
+fn hover_is_answered_while_the_project_is_inferred() {
+    let root = std::env::temp_dir().join(format!("janet-zed-busy-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    // One file, so one component: long enough to infer that a hover behind it would show.
+    let slow = (1..2000)
+        .map(|i| {
+            let before = i - 1;
+            format!("(defn f{i} [x]\n  (let [y (+ x {i})]\n    (if (> y 3) (string y) (f{before} y))))\n")
+        })
+        .collect::<Vec<_>>()
+        .concat();
+    std::fs::write(
+        root.join("src/slow.janet"),
+        format!("(defn f0 [x] x)\n{slow}"),
+    )
+    .unwrap();
+    std::fs::write(root.join("src/small.janet"), "(defn small [x] (+ x 1))\n").unwrap();
+    let mistakes = root.join("src/mistakes.janet");
+    let fixtures = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures");
+    std::fs::copy(fixtures.join("diagnostics/types.janet"), &mistakes).unwrap();
+    let root = root.canonicalize().unwrap();
+    let mistakes = mistakes.canonicalize().unwrap();
+
+    let settings = json!({"types": {"diagnostics": "warning"}});
+    let mut session = Session::start_with(root.clone(), "src/small.janet", &settings);
+    let at = session.at("(+", 1);
+    // Answered once the server has started, which then infers the project.
+    session.request("textDocument/hover", at.clone()).unwrap();
+    thread::sleep(Duration::from_millis(50));
+    let asked = Instant::now();
+    let hover = session.request("textDocument/hover", at);
+    let answered = asked.elapsed();
+    session.project_diagnostics(&uri(&mistakes));
+    let inferred = asked.elapsed();
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    assert!(hover.unwrap()["contents"].is_object());
+    assert!(
+        answered * 4 < inferred,
+        "hover took {answered:?}, the project {inferred:?}"
+    );
+}
+
 /// A copy of `files` of the fixture project in a directory of its own, for a test that writes.
 fn scratch_project(name: &str, files: &[&str]) -> PathBuf {
     let root = std::env::temp_dir().join(format!("janet-zed-{name}-{}", std::process::id()));
