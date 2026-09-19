@@ -63,6 +63,17 @@ impl Adapter {
 
     /// Runs the fixture with breakpoints on `lines` and the exception filters `filters`.
     fn launch(&mut self, lines: &[u32], filters: &[&str], stop_on_entry: bool) -> Value {
+        let breakpoints: Vec<Value> = lines.iter().map(|line| json!({"line": line})).collect();
+        self.launch_with(&breakpoints, filters, stop_on_entry)
+    }
+
+    /// Runs the fixture with `breakpoints` as Zed sends them.
+    fn launch_with(
+        &mut self,
+        breakpoints: &[Value],
+        filters: &[&str],
+        stop_on_entry: bool,
+    ) -> Value {
         self.request(
             "initialize",
             json!({"adapterID": "Janet", "linesStartAt1": true}),
@@ -77,7 +88,7 @@ impl Adapter {
             "setBreakpoints",
             json!({
                 "source": {"path": program},
-                "breakpoints": lines.iter().map(|line| json!({"line": line})).collect::<Vec<_>>(),
+                "breakpoints": breakpoints,
             }),
         );
         self.request("setExceptionBreakpoints", json!({"filters": filters}));
@@ -101,6 +112,17 @@ impl Adapter {
         let response = self.wait(|message| message["request_seq"] == seq);
         assert_eq!(response["success"], true, "{command} failed: {response}");
         response["body"].clone()
+    }
+
+    /// The message of a failed response to `command`.
+    fn fails(&mut self, command: &str, arguments: Value) -> String {
+        let seq = self.send(command, arguments);
+        let response = self.wait(|message| message["request_seq"] == seq);
+        assert_eq!(
+            response["success"], false,
+            "{command} succeeded: {response}"
+        );
+        response["message"].as_str().unwrap().to_string()
     }
 
     fn event(&mut self, event: &str) -> Value {
@@ -258,6 +280,58 @@ fn breakpoints_and_stepping() {
 }
 
 #[test]
+fn conditions_logpoints_and_set_variable() {
+    let mut adapter = Adapter::start();
+    adapter.launch_with(
+        &[
+            json!({"line": 4, "condition": "(= b 0)"}),
+            json!({"line": 5, "logMessage": "sum={sum} of {(+ a b)}"}),
+            json!({"line": 8, "condition": ""}),
+        ],
+        &[],
+        false,
+    );
+    assert_eq!(adapter.stopped("breakpoint"), ["run:8", "thunk:13"]);
+    adapter.step("continue");
+    // `(add 4 1)` passes the condition; `(add 10 0)` stops.
+    assert_eq!(
+        adapter.stopped("breakpoint"),
+        ["add:4", "run:9", "thunk:13"]
+    );
+    assert_eq!(adapter.locals(), ["a=10", "b=0"]);
+
+    let scopes = adapter.request("scopes", json!({"frameId": 0}));
+    let locals = scopes["scopes"][0]["variablesReference"].clone();
+    let refused = adapter.fails(
+        "setVariable",
+        json!({"variablesReference": locals, "name": "a", "value": "1"}),
+    );
+    assert!(refused.contains("local"), "{refused}");
+    let array = adapter.request("evaluate", json!({"expression": "@[1 2]", "frameId": 0}));
+    let reference = array["variablesReference"].clone();
+    let set = adapter.request(
+        "setVariable",
+        json!({"variablesReference": reference, "name": "0", "value": "(+ a 1)"}),
+    );
+    assert_eq!(set["value"], "11");
+    let variables = adapter.request("variables", json!({"variablesReference": reference}));
+    assert_eq!(variables["variables"][0]["value"], "11");
+    assert!(
+        adapter
+            .fails(
+                "evaluate",
+                json!({"expression": "(+ a 1)", "frameId": 0, "context": "hover"})
+            )
+            .contains("names only")
+    );
+
+    adapter.step("continue");
+    assert_eq!(adapter.event("exited")["exitCode"], 1);
+    assert_eq!(adapter.output("console"), "sum=5 of 5\nsum=10 of 10\n");
+    adapter.finish();
+}
+
+#[test]
 fn stops_on_entry_and_on_an_uncaught_error() {
     let mut adapter = Adapter::start();
     adapter.launch(&[], &["uncaught"], true);
@@ -345,6 +419,10 @@ fn attaches_to_the_repl() {
     // Zed sends the filter defaults; an attached REPL still does not stop on errors.
     adapter.request("setExceptionBreakpoints", json!({"filters": ["uncaught"]}));
     adapter.request("configurationDone", json!({}));
+
+    // The REPL evaluates while nothing is stopped.
+    let evaluated = adapter.request("evaluate", json!({"expression": "(+ 40 2)"}));
+    assert_eq!(evaluated["result"], "42");
 
     // `add` as the kernel finds it in the fixture.
     let add = "(defn add [a b]\n  (def sum (+ a b))\n  (* sum 2))";

@@ -28,11 +28,12 @@ const DRIVER: &str = include_str!("driver.janet");
 const JSON: &str = janet_check::janet::JSON;
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Requests the driver answers while the program is stopped.
-const STOP_REQUESTS: [&str; 8] = [
+const STOP_REQUESTS: [&str; 9] = [
     "stackTrace",
     "scopes",
     "variables",
     "evaluate",
+    "setVariable",
     "continue",
     "next",
     "stepIn",
@@ -105,8 +106,11 @@ struct Source {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct SourceBreakpoint {
     line: i64,
+    condition: Option<String>,
+    log_message: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -131,6 +135,15 @@ struct VariablesArguments {
 struct EvaluateArguments {
     expression: String,
     frame_id: Option<i64>,
+    context: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetVariableArguments {
+    variables_reference: i64,
+    name: String,
+    value: String,
 }
 
 pub fn run() -> Result<()> {
@@ -172,8 +185,8 @@ struct Session {
     seq: i64,
     inputs: mpsc::UnboundedSender<Input>,
     target: Option<Target>,
-    /// Source path → (id, line) of its breakpoints, as last set.
-    breakpoints: HashMap<String, Vec<(i64, i64)>>,
+    /// Source path → its breakpoints with their ids, as last set.
+    breakpoints: HashMap<String, Vec<(i64, SourceBreakpoint)>>,
     last_breakpoint_id: i64,
     uncaught: bool,
     driver: Option<OwnedWriteHalf>,
@@ -243,6 +256,12 @@ impl Session {
                     .collect::<Vec<_>>(),
             })),
             "pause" => self.pause().map(|()| json!({})),
+            "evaluate" if !self.stopped && self.driver.is_some() => {
+                match self.evaluate_running(seq, arguments).await {
+                    Ok(()) => return Ok(true),
+                    Err(err) => Err(err),
+                }
+            }
             "disconnect" | "terminate" => {
                 if let Some(kill) = self.kill.take() {
                     kill.send(()).ok();
@@ -276,19 +295,19 @@ impl Session {
             .source
             .path
             .context("a breakpoint source without a path")?;
-        let breakpoints: Vec<(i64, i64)> = arguments
+        let breakpoints: Vec<(i64, SourceBreakpoint)> = arguments
             .breakpoints
-            .iter()
+            .into_iter()
             .map(|breakpoint| {
                 self.last_breakpoint_id += 1;
-                (self.last_breakpoint_id, breakpoint.line)
+                (self.last_breakpoint_id, breakpoint)
             })
             .collect();
         // Unverified until the driver finds compiled code on the line.
         let body = json!({
             "breakpoints": breakpoints
                 .iter()
-                .map(|(id, line)| json!({"id": id, "line": line, "verified": false}))
+                .map(|(id, breakpoint)| json!({"id": id, "line": breakpoint.line, "verified": false}))
                 .collect::<Vec<_>>(),
         });
         if self.driver.is_some() {
@@ -436,6 +455,20 @@ impl Session {
         Ok(())
     }
 
+    /// Evaluates in the running program's env, or the REPL's, as the driver gets to it: at once
+    /// in an idle REPL, once a launched program waits on the event loop.
+    async fn evaluate_running(&mut self, seq: i64, arguments: Value) -> Result<()> {
+        let arguments: EvaluateArguments = parse(arguments)?;
+        check_hover(&arguments)?;
+        self.send_driver(&format!(
+            "[{seq} :eval {}]",
+            janet_string(&arguments.expression)
+        ))
+        .await?;
+        self.pending.insert(seq, "evaluate".to_string());
+        Ok(())
+    }
+
     /// Sends a request about the stop to the driver as `[seq :command args…]`.
     async fn forward(&mut self, seq: i64, command: &str, arguments: Value) -> Result<()> {
         let args = match command {
@@ -445,10 +478,20 @@ impl Session {
                 .to_string(),
             "evaluate" => {
                 let arguments: EvaluateArguments = parse(arguments)?;
+                check_hover(&arguments)?;
                 let frame = arguments
                     .frame_id
                     .map_or_else(|| "nil".to_string(), |id| id.to_string());
                 format!("{frame} {}", janet_string(&arguments.expression))
+            }
+            "setVariable" => {
+                let arguments: SetVariableArguments = parse(arguments)?;
+                format!(
+                    "{} {} {}",
+                    arguments.variables_reference,
+                    janet_string(&arguments.name),
+                    janet_string(&arguments.value)
+                )
             }
             _ => String::new(),
         };
@@ -497,6 +540,10 @@ impl Session {
                 let body = json!({"reason": message["reason"], "threadId": message["threadId"]});
                 self.event("thread", body).await
             }
+            Some("output") => {
+                let body = json!({"category": "console", "output": message["output"]});
+                self.event("output", body).await
+            }
             Some("breakpoint") => {
                 let breakpoint = json!({
                     "id": message["id"],
@@ -530,6 +577,10 @@ impl Session {
     async fn driver_closed(&mut self) -> Result<()> {
         self.driver = None;
         self.pid = None;
+        for (seq, command) in std::mem::take(&mut self.pending) {
+            self.respond(seq, &command, Err(anyhow!("the program ended")))
+                .await?;
+        }
         if self.repl.take().is_some() {
             self.stopped = false;
             self.event("terminated", json!({})).await?;
@@ -583,6 +634,9 @@ fn capabilities() -> Value {
     json!({
         "supportsConfigurationDoneRequest": true,
         "supportsEvaluateForHovers": true,
+        "supportsConditionalBreakpoints": true,
+        "supportsLogPoints": true,
+        "supportsSetVariable": true,
         "exceptionBreakpointFilters": [
             {"filter": "uncaught", "label": "Uncaught errors", "default": true},
         ],
@@ -598,10 +652,37 @@ fn janet_string(text: &str) -> String {
     Value::from(text).to_string()
 }
 
-fn breakpoints_command(path: &str, breakpoints: &[(i64, i64)]) -> String {
+/// A hover evaluates a name only: hovering over a call must not run it.
+fn check_hover(arguments: &EvaluateArguments) -> Result<()> {
+    let is_name = |text: &str| {
+        !text.is_empty()
+            && !text
+                .chars()
+                .any(|c| c.is_whitespace() || "()[]{}\"'`~,;|@".contains(c))
+    };
+    if arguments.context.as_deref() == Some("hover") && !is_name(&arguments.expression) {
+        bail!("a hover evaluates names only");
+    }
+    Ok(())
+}
+
+fn breakpoints_command(path: &str, breakpoints: &[(i64, SourceBreakpoint)]) -> String {
+    // Zed sends an empty condition for a breakpoint without one.
+    let text = |text: &Option<String>| {
+        text.as_deref()
+            .filter(|text| !text.trim().is_empty())
+            .map_or_else(|| "nil".to_string(), janet_string)
+    };
     let pairs: Vec<String> = breakpoints
         .iter()
-        .map(|(id, line)| format!("[{id} {line}]"))
+        .map(|(id, breakpoint)| {
+            format!(
+                "[{id} {} {} {}]",
+                breakpoint.line,
+                text(&breakpoint.condition),
+                text(&breakpoint.log_message)
+            )
+        })
         .collect();
     format!(
         "[0 :breakpoints {} [{}]]",

@@ -20,7 +20,7 @@
 (var- driver/pausing false)
 
 # Breakpoints. Paths are real paths; `debug/break` gets the source string funcdefs carry.
-(def- driver/wanted @{}) # path -> line -> breakpoint id
+(def- driver/wanted @{}) # path -> line -> {:id :condition :log}
 (def- driver/applied @{}) # path -> line -> [source column]
 (def- driver/lines @{}) # path -> line -> [source column] of the line's first instruction
 (def- driver/modules @{}) # module/cache key -> env already scanned
@@ -102,22 +102,24 @@
   where an older definition had them."
   [fresh]
   (eachp [path seen] fresh
-    (eachp [line id] (or (driver/wanted path) {})
-      (when (seen line) (driver/break path line id)))))
+    (eachp [line breakpoint] (or (driver/wanted path) {})
+      (when (seen line) (driver/break path line (breakpoint :id))))))
 
 (defn- driver/set-breakpoints
-  "Replaces the breakpoints of `path` with `pairs` of [id line]."
-  [path pairs]
+  "Replaces the breakpoints of `path` with `breakpoints` of [id line condition log-message], the
+  last two nil when not given."
+  [path breakpoints]
   (def path (driver/real path))
   (eachp [line [source column]] (or (driver/applied path) {})
     (protect (debug/unbreak source line column)))
   (put driver/applied path @{})
   (def wanted @{})
-  (each [id line] pairs (put wanted line id))
+  (each [id line condition log] breakpoints
+    (put wanted line {:id id :condition condition :log log}))
   (put driver/wanted path wanted)
-  (eachp [line id] wanted
+  (eachp [line breakpoint] wanted
     (when (get-in driver/lines [path line])
-      (driver/break path line id))))
+      (driver/break path line (breakpoint :id)))))
 
 (defn- driver/rebreak
   "Sets again the breakpoints on `line`:`column`: `debug/unfbreak` clears any breakpoint of its
@@ -169,9 +171,12 @@
    :type (string (type value))
    :variablesReference (driver/ref value)})
 
+(defn- driver/key-name [key]
+  (if (symbol? key) (string key) (string/format "%q" key)))
+
 (defn- driver/children [value]
   (if (dictionary? value)
-    (map |(driver/variable (if (symbol? $) (string $) (string/format "%q" $)) (in value $))
+    (map |(driver/variable (driver/key-name $) (in value $))
          (take 1000 (sorted (keys value))))
     (seq [i :range [0 (min 1000 (length value))]]
       (driver/variable (string i) (in value i)))))
@@ -187,9 +192,9 @@
       {:source {:path (driver/real source)}}
       {:presentationHint "subtle"})))
 
-(defn- driver/evaluate
-  "Evaluates `code` with the locals of `frame` over its module's env. Writes to locals stay in the
-  evaluation."
+(defn- driver/value
+  "The value of `code` with the locals of `frame`, if any, over its module's env. Writes to locals
+  stay in the evaluation."
   [frame code]
   (def base (or (module/cache (get frame :source)) driver/env))
   (def env (table/setproto @{} base))
@@ -202,9 +207,30 @@
                     :ed))
   (def result (resume f))
   (case (fiber/status f)
-    :dead {:result (driver/show result 20) :variablesReference (driver/ref result)}
+    :dead result
     :debug (error "the evaluation hit a breakpoint")
     (error (string result))))
+
+(defn- driver/evaluate [frame code]
+  (def result (driver/value frame code))
+  {:result (driver/show result 20) :variablesReference (driver/ref result)})
+
+(defn- driver/set-variable
+  "Puts the value of `code`, evaluated in the top frame, under `name` in the table or array behind
+  `ref`. Locals are copies of the frame's slots, which Janet cannot write back."
+  [ref name code]
+  (def container (get driver/refs (- ref 1)))
+  (when (find |(= container (get $ :locals)) driver/stack)
+    (error "Janet cannot change a local of a stopped frame, only the tables and arrays it holds"))
+  (unless (index-of (type container) [:table :array])
+    (error (string "a " (type container) " cannot change")))
+  (def key (if (table? container)
+             (find |(= name (driver/key-name $)) (keys container))
+             (scan-number name)))
+  (when (nil? key) (error (string "no " name " here")))
+  (def value (driver/value (get driver/stack 0) code))
+  (put container key value)
+  (driver/variable name value))
 
 (defn- driver/answer [name args]
   (case name
@@ -218,7 +244,35 @@
                        [])}
     :variables {:variables (driver/children (driver/refs (- (args 0) 1)))}
     :evaluate (driver/evaluate (get driver/stack (or (args 0) 0)) (args 1))
+    :setVariable (driver/set-variable ;args)
     (error (string "unknown command " name))))
+
+(defn- driver/interpolate
+  "Logpoint `message` with each `{expression}` replaced by its value in `frame`."
+  [frame message]
+  (defn value [_ code]
+    (try
+      (let [value (driver/value frame code)]
+        (if (bytes? value) (string value) (driver/show value 4)))
+      ([err] (string "<" err ">"))))
+  (peg/replace-all ~(* "{" (<- (to "}")) "}") value message))
+
+(defn- driver/passes?
+  "Whether `f`, stopped at a breakpoint, goes on: a logpoint logs its message, and a condition that
+  is false or nil lets it through. A condition that fails to evaluate stops."
+  [f]
+  (def frame (first (driver/frames f)))
+  (def source (get frame :source))
+  (def breakpoint (when (string? source)
+                    (get-in driver/wanted [(driver/real source) (frame :source-line)])))
+  (cond
+    (nil? breakpoint) false
+    (breakpoint :log) (do
+                        (driver/send {:event "output"
+                                      :output (string (driver/interpolate frame (breakpoint :log)) "\n")})
+                        true)
+    (breakpoint :condition) (not (try (driver/value frame (breakpoint :condition)) ([_] true)))
+    false))
 
 ### Running and stepping
 
@@ -365,14 +419,17 @@
   the lock: the resumed code may wait on a task that stops next. Returns [value reason] of that
   resume."
   [f reason text]
-  (ev/acquire-lock driver/serving)
-  (def reason (if (= :interrupted (fiber/status f)) "pause" reason))
-  (def command (defer (ev/release-lock driver/serving) (driver/stopped f reason text)))
-  (cond
-    (= command :disconnected) (driver/disconnected f)
-    (not (driver/halted? f)) [nil nil]
-    (= command :continue) [(driver/resume f) "breakpoint"]
-    (driver/step f command)))
+  (if (and (= reason "breakpoint") (= :debug (fiber/status f)) (driver/passes? f))
+    [(driver/resume f) "breakpoint"]
+    (do
+      (ev/acquire-lock driver/serving)
+      (def reason (if (= :interrupted (fiber/status f)) "pause" reason))
+      (def command (defer (ev/release-lock driver/serving) (driver/stopped f reason text)))
+      (cond
+        (= command :disconnected) (driver/disconnected f)
+        (not (driver/halted? f)) [nil nil]
+        (= command :continue) [(driver/resume f) "breakpoint"]
+        (driver/step f command)))))
 
 (defn- driver/trace [f err]
   (def buf @"")
@@ -469,12 +526,16 @@
   (while (try (net/read driver/conn 65536 buf) ([_] nil))
     (while (def newline (string/find "\n" buf))
       (def command (parse (buffer/slice buf 0 newline)))
-      (def [_ name & args] command)
+      (def [id name & args] command)
       (buffer/blit buf buf 0 (+ newline 1))
       (buffer/popn buf (+ newline 1))
       (case name
         :breakpoints (driver/set-breakpoints ;args)
         :exceptions (set driver/uncaught (args 0))
+        # An evaluation while the program runs, in its env or the REPL's.
+        :eval (driver/send (try {:id id :body {:result (driver/show (driver/value nil (args 0)) 20)
+                                               :variablesReference 0}}
+                                ([err] {:id id :error (string err)})))
         (ev/give driver/commands command))))
   (ev/chan-close driver/commands))
 
