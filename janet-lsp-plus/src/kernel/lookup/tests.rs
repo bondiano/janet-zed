@@ -9,6 +9,9 @@ fn looks_up_loaded_modules_then_the_repl() {
     let dir =
         std::env::temp_dir().join(format!("janet-tooling-lookup-test-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
+    // As an editor names it: Janet's `os/realpath` keeps the 8.3 short names (`RUNNER~1`) the
+    // temporary directory has on Windows, where the canonical path has none.
+    let dir = canonical(&dir);
     let module = dir.join("made.janet");
     std::fs::write(
         &module,

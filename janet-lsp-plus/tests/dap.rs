@@ -164,7 +164,8 @@ impl Adapter {
         self.request(command, json!({"threadId": 1}));
     }
 
-    /// Output of the program so far, per category.
+    /// Output of the program so far, per category, with the `\r\n` Janet prints on Windows as
+    /// `\n`.
     fn output(&self, category: &str) -> String {
         self.backlog
             .iter()
@@ -172,7 +173,8 @@ impl Adapter {
                 message["event"] == "output" && message["body"]["category"] == category
             })
             .map(|message| message["body"]["output"].as_str().unwrap())
-            .collect()
+            .collect::<String>()
+            .replace("\r\n", "\n")
     }
 
     fn finish(mut self) {

@@ -14,8 +14,11 @@ fn run(args: &[&str]) -> Output {
         .expect("janet-check runs")
 }
 
+/// What was printed, paths spelled with `/` on every platform.
 fn stdout(output: &Output) -> String {
-    String::from_utf8(output.stdout.clone()).expect("utf-8 output")
+    String::from_utf8(output.stdout.clone())
+        .expect("utf-8 output")
+        .replace('\\', "/")
 }
 
 #[test]
