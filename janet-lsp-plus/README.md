@@ -128,6 +128,12 @@ and all but the task check that the server answering is the project's.
 - netrepl has no authentication: another user of the same machine who finds the port can
   evaluate code in your REPL. The port is random and the file naming it is private, but on a
   shared machine run the kernel only while you use it.
+- Output appears as it is printed while the evaluation waits on the event loop; code that
+  computes without yielding shows its output when it ends.
+- `getline` asks the client for a line when it allows input, and otherwise reads the end of
+  input. Reading `stdin` itself never returns: the REPL process's stdin is the kernel's.
+- Completion and inspection answer with the names and docs of the running REPL, and the
+  client learns from Janet's parser whether a cell is a whole form.
 - `repl: interrupt` cancels the evaluation in progress, whether it computes or waits, with an
   `interrupted` error; the REPL keeps its state. Not on Windows, where a runaway evaluation
   needs a kernel restart.
@@ -149,8 +155,15 @@ is the port the kernel recorded for the project on `127.0.0.1`. Both give breakp
   runs in a new fiber (`try`, `defer`, `protect`), though breakpoints there still stop.
 - Pause stops the code that runs, the program or one of its `ev` tasks. A program waiting on
   the event loop stops once it runs again. Not on Windows.
-- There are no conditional breakpoints or logpoints, and no setting variables. An evaluation
-  sees the frame's locals, but assigning to one does not change the frame.
+- A conditional breakpoint stops when its condition, evaluated in the frame, is truthy or fails
+  to evaluate. A logpoint prints its message to the debug console, each `{expression}` replaced
+  by its value, and runs on. Hit counts are not supported.
+- Set Value changes an element of a table or an array. Locals cannot change: Janet hands the
+  debugger copies of a frame's slots. An evaluation sees the locals, but assigning to one does
+  not change the frame.
+- An evaluation while nothing is stopped runs in the program's env, or the REPL's when
+  attached: at once in an idle REPL, and once a launched program waits on the event loop.
+- Hover evaluates names only, so hovering over a call never runs it.
 - When attached, only code evaluated from the editor stops. Code from a terminal client prints
   a `debug:` trace at a breakpoint and runs on. Errors do not stop unless you turn on
   **Uncaught errors**.

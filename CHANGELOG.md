@@ -9,6 +9,11 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - The REPL kernel interrupts an evaluation in progress, and the debugger pauses a running
   program or one of its `ev` tasks (not on Windows).
+- The REPL kernel streams output as it is printed, answers `getline` with the client's input,
+  and answers completion, inspection and is-complete requests.
+- Conditional breakpoints, logpoints, Set Value on tables and arrays, and evaluation while the
+  program runs. Hover evaluates names only, and requests pending when the program ends get an
+  answer.
 - Types for fibers, channels, method calls and prototypes; narrowing through `and` and tagged
   result tuples; too few arguments counted, `&named` options typed.
 - Precise return types for the core and more spork modules.
