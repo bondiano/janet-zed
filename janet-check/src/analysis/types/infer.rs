@@ -897,7 +897,12 @@ impl<'d> Infer<'d> {
                 }
             }
             name if definitions::core(name).is_some() => {
-                self.definition(form, true);
+                let value = self.definition(form, true);
+                // Kept by the form too, not only by the name: a later definition of the name
+                // may bind something else.
+                if self.record {
+                    self.exprs.insert(form.start_byte(), value);
+                }
             }
             _ => {
                 self.expr(form);

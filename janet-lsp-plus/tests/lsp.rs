@@ -18,6 +18,8 @@ struct Session {
     server: JoinHandle<()>,
     next_id: i32,
     notifications: Vec<Notification>,
+    /// The methods of the requests the server sent, in order.
+    requests: Vec<String>,
     root: PathBuf,
     /// The text of `src/report.janet`.
     text: String,
@@ -50,6 +52,11 @@ impl Session {
 
     /// The same, with `settings` merged into the `initializationOptions`.
     fn start_with(root: PathBuf, open: &str, settings: &Value) -> Self {
+        Self::start_as(root, open, settings, &json!({}))
+    }
+
+    /// The same, from a client with `capabilities`.
+    fn start_as(root: PathBuf, open: &str, settings: &Value, capabilities: &Value) -> Self {
         let (server, connection) = Connection::memory();
         let server = thread::spawn(move || janet_lsp_plus::lsp::run_with(&server, false).unwrap());
         let text = std::fs::read_to_string(root.join(open)).unwrap();
@@ -59,6 +66,7 @@ impl Session {
             server,
             next_id: 0,
             notifications: Vec::new(),
+            requests: Vec::new(),
             root,
             text,
             report,
@@ -69,7 +77,7 @@ impl Session {
             .request(
                 "initialize",
                 json!({
-                    "capabilities": {},
+                    "capabilities": capabilities,
                     "workspaceFolders": [{"uri": root_uri, "name": "project"}],
                     "initializationOptions": options(settings),
                 }),
@@ -149,7 +157,8 @@ impl Session {
                 }
                 Message::Notification(notification) => self.notifications.push(notification),
                 // Requests from the server, like capability registration.
-                _ => {}
+                Message::Request(request) => self.requests.push(request.method),
+                Message::Response(_) => {}
             }
         }
     }
@@ -1818,5 +1827,33 @@ fn inlay_hints_show_inferred_types_until_turned_off() {
         "----- SOURCE\n{source}\n----- HINTS\n{}\n\n----- OFF\n{off}\n",
         shown.join("\n")
     ));
+    session.finish();
+}
+
+#[test]
+fn turning_hints_off_asks_the_client_to_request_them_again() {
+    let capabilities = json!({"workspace": {"inlayHint": {"refreshSupport": true}}});
+    let mut session = Session::start_as(
+        Session::root(),
+        "src/report.janet",
+        &Value::Null,
+        &capabilities,
+    );
+    session.notify(
+        "workspace/didChangeConfiguration",
+        json!({"settings": {"types": {"hints": false}}}),
+    );
+    // Answered after the notification, so whatever it sent has arrived by then.
+    session
+        .request("textDocument/hover", session.at("(defn", 1))
+        .unwrap();
+    assert!(
+        session
+            .requests
+            .iter()
+            .any(|method| method == "workspace/inlayHint/refresh"),
+        "{:?}",
+        session.requests
+    );
     session.finish();
 }

@@ -62,4 +62,8 @@ fn unquoted_symbols_are_code() {
     assert!(!quoted("(f |a)") && !quoted("~(f ,|a)") && !quoted("~(f ,(g |a))"));
     assert!(!quoted("(|quote a)") && !quoted("(quasiquote (f (unquote |a)))"));
     assert!(!quoted("~(f ~(g ,,|a))"));
+    // A quasiquote reaches through `quote`: `~(f ',x)` evaluates `x`.
+    assert!(!quoted("~(f ',|a)") && !quoted("~(f '(g ,|a))"));
+    assert!(!quoted("(defmacro m [a] ~(print ',|a))"));
+    assert!(!quoted("(quasiquote (f (quote (unquote |a))))"));
 }

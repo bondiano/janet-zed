@@ -72,6 +72,8 @@ pub struct State {
     pub reporting: Reporting,
     /// What `types.hints` is set to: whether inferred types are given as inlay hints.
     pub hints: bool,
+    /// Whether the client can be asked to request the inlay hints again.
+    pub refreshes_hints: bool,
     /// Workspace files nobody has open that last had type diagnostics published, so the marks
     /// come off again when a finding goes away.
     pub published: HashSet<Uri>,
@@ -98,6 +100,7 @@ impl State {
             repl: RefCell::new(None),
             reporting,
             hints: true,
+            refreshes_hints: false,
             published: HashSet::new(),
         };
         state.rescan();

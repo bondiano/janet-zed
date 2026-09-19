@@ -68,3 +68,17 @@ fn only_the_hints_in_the_range_are_given() {
         vec![second + "(def b".len()]
     );
 }
+
+#[test]
+fn each_definition_of_a_name_shows_its_own_type() {
+    assert_eq!(
+        show("(def x (string \"a\"))\n(def x (length []))\n"),
+        "(def x‹: :string› (string \"a\"))\n(def x‹: :number› (length []))\n"
+    );
+}
+
+#[test]
+fn long_quoted_forms_show_nothing() {
+    let text = "(def x (string \"a\"))\n(quote (let [x (length [])] x))\n(quasiquote (let [y (length [])] ,(f)))\n";
+    assert_eq!(show(text), text.replacen("(def x", "(def x‹: :string›", 1));
+}

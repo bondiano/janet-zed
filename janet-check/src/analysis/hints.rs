@@ -41,7 +41,7 @@ pub fn hints(workspace: &Workspace, path: &Path, range: &Range<usize>) -> Vec<Hi
             node.kind() == syntax::LIST
                 && node.start_byte() <= range.end
                 && range.start <= node.end_byte()
-                && !quoted(*node)
+                && !quoted(&file.document, *node)
         })
         .flat_map(|list| form(file, &facts, list))
         .filter(|hint| range.start <= hint.at && hint.at <= range.end)
@@ -49,9 +49,10 @@ pub fn hints(workspace: &Workspace, path: &Path, range: &Range<usize>) -> Vec<Hi
 }
 
 /// Data rather than code: nothing in it is bound or called.
-fn quoted(node: Node) -> bool {
-    std::iter::successors(node.parent(), Node::parent)
-        .any(|parent| matches!(parent.kind(), "quote_lit" | "qq_lit"))
+fn quoted(doc: &syntax::Document, node: Node) -> bool {
+    let mut path: Vec<_> = std::iter::successors(Some(node), Node::parent).collect();
+    path.reverse();
+    syntax::is_quoted(doc, &path)
 }
 
 fn form(file: &SourceFile, facts: &Facts, list: Node) -> Vec<Hint> {
@@ -64,11 +65,11 @@ fn form(file: &SourceFile, facts: &Facts, list: Node) -> Vec<Hint> {
     if head.kind() != syntax::SYMBOL || file.scopes.calls.contains(&head.start_byte()) {
         return Vec::new();
     }
-    let binding = |name: Node, value: Node| {
+    let binding = |name: Node, value: Node, definer: Option<Node>| {
         let written =
             literal(doc, value).is_some() || matches!(value.kind(), "quote_lit" | "qq_lit");
         (name.kind() == syntax::SYMBOL && !written)
-            .then(|| bound(file, facts, name))
+            .then(|| bound(file, facts, name, definer))
             .flatten()
             .map(|ty| Hint {
                 at: name.end_byte(),
@@ -80,14 +81,14 @@ fn form(file: &SourceFile, facts: &Facts, list: Node) -> Vec<Hint> {
         "fn" => returns(facts.expr(doc, list), args).into_iter().collect(),
         "defn" | "defn-" | "varfn" => match args {
             [name, rest @ ..] if name.kind() == syntax::SYMBOL => {
-                returns(bound(file, facts, *name), rest)
+                returns(bound(file, facts, *name, Some(list)), rest)
                     .into_iter()
                     .collect()
             }
             _ => Vec::new(),
         },
         name if DEFINERS.contains(&name) => match args {
-            [name, .., value] => binding(*name, *value).into_iter().collect(),
+            [name, .., value] => binding(*name, *value, Some(list)).into_iter().collect(),
             _ => Vec::new(),
         },
         name if BINDERS.contains(&name) => args
@@ -97,7 +98,7 @@ fn form(file: &SourceFile, facts: &Facts, list: Node) -> Vec<Hint> {
                 syntax::forms(*vector)
                     .chunks(2)
                     .filter_map(|pair| match pair {
-                        [name, value] => binding(*name, *value),
+                        [name, value] => binding(*name, *value, None),
                         _ => None,
                     })
                     .collect()
@@ -107,15 +108,15 @@ fn form(file: &SourceFile, facts: &Facts, list: Node) -> Vec<Hint> {
     }
 }
 
-/// What inference read of the name bound at `name`, where it read anything.
-fn bound(file: &SourceFile, facts: &Facts, name: Node) -> Option<Type> {
+/// What inference read of the name bound at `name`, where it read anything; a module
+/// definition's by its `definer` form, since a later one of the same name may bind another type.
+fn bound(file: &SourceFile, facts: &Facts, name: Node, definer: Option<Node>) -> Option<Type> {
     let ty = match file.scopes.uses.get(&name.start_byte()) {
         Some(index) => facts.locals.get(*index)?.clone(),
-        // A module definition, there only when nobody wrote its types down.
+        // There only when nobody wrote its types down.
         None => match facts.definitions.get(file.document.text_of(name))? {
-            Annotation::Value(ty) => ty.clone(),
-            Annotation::Function(signature) => Type::Fn(signature.clone()),
             Annotation::Typedef(..) => return None,
+            _ => facts.expr(&file.document, definer?)?,
         },
     };
     let ty = match ty {

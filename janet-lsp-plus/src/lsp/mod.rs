@@ -16,8 +16,9 @@ use lsp_types::notification::{
 use lsp_types::request::Formatting;
 use lsp_types::request::{
     CodeActionRequest, Completion, DocumentSymbolRequest, GotoDefinition, HoverRequest,
-    InlayHintRequest, PrepareRenameRequest, References, RegisterCapability, Rename,
-    Request as LspRequest, ResolveCompletionItem, Shutdown, SignatureHelpRequest,
+    InlayHintRefreshRequest, InlayHintRequest, PrepareRenameRequest, References,
+    RegisterCapability, Rename, Request as LspRequest, ResolveCompletionItem, Shutdown,
+    SignatureHelpRequest,
 };
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
@@ -30,7 +31,7 @@ use lsp_types::{
 use serde::Deserialize;
 use std::collections::{HashSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -208,6 +209,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     );
     state.watching = watching;
     state.hints = types.hints();
+    state.refreshes_hints = refreshes_hints(&params);
     tracing::info!(
         files = state.workspace.paths().count(),
         elapsed = ?started.elapsed(),
@@ -270,6 +272,32 @@ fn watches_files(params: &InitializeParams) -> bool {
         .and_then(|workspace| workspace.did_change_watched_files.as_ref())
         .and_then(|watch| watch.dynamic_registration)
         .unwrap_or(false)
+}
+
+fn refreshes_hints(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .workspace
+        .as_ref()
+        .and_then(|workspace| workspace.inlay_hint.as_ref())
+        .and_then(|hint| hint.refresh_support)
+        .unwrap_or(false)
+}
+
+/// Asks the client to request the inlay hints again, where it can: the types they show changed
+/// somewhere other than the edit the client already requests them after.
+fn refresh_hints(connection: &Connection, state: &State) -> Result<()> {
+    static SENT: AtomicU64 = AtomicU64::new(0);
+    if !state.refreshes_hints {
+        return Ok(());
+    }
+    let id = RequestId::from(format!(
+        "refresh-inlay-hints-{}",
+        SENT.fetch_add(1, Ordering::Relaxed)
+    ));
+    let request = Request::new(id, InlayHintRefreshRequest::METHOD.to_string(), ());
+    connection.sender.send(request.into())?;
+    Ok(())
 }
 
 /// Asks the client to report `.janet` and config file changes, which keep the workspace index
@@ -363,6 +391,10 @@ fn serve(
         if project_stale {
             // Stopped by a message, it carries on from where it was once that one is served.
             project_stale = !publish_project(connection, &mut state, &mut queue, results)?;
+            // What an importer shows can follow from an edit to what it imports.
+            if !project_stale && state.hints {
+                refresh_hints(connection, &state)?;
+            }
             continue;
         }
         select! {
@@ -432,7 +464,14 @@ fn infer_answering(
             }
             match connection.receiver.try_recv() {
                 Ok(Message::Request(request)) if request.method != Shutdown::METHOD => {
-                    answer(connection, state, request)?;
+                    answer(connection, state, request)
+                        .inspect_err(|_| stop.store(true, Ordering::Relaxed))?;
+                }
+                // To a request of ours, such as a refresh: it changes nothing inferred.
+                Ok(Message::Response(response)) => {
+                    if let Err(err) = response.response_result {
+                        tracing::warn!(id = %response.id, "client rejected request: {}", err.message);
+                    }
                 }
                 // For a request answered already: nothing waits in `queue` to be cancelled.
                 Ok(Message::Notification(notification))
@@ -444,8 +483,11 @@ fn infer_answering(
                     ready.remove(from_client);
                 }
                 Err(TryRecvError::Empty) => {}
-                // Nobody to answer: inference ends on its own, and `serve` sees the client gone.
-                Err(TryRecvError::Disconnected) => ready.remove(from_client),
+                // Nobody to answer: inference stops, and `serve` sees the client gone.
+                Err(TryRecvError::Disconnected) => {
+                    stop.store(true, Ordering::Relaxed);
+                    ready.remove(from_client);
+                }
             }
         }
     })
@@ -620,10 +662,15 @@ fn sync(
                 tracing::debug!("configuration without types, kept");
                 return Ok(false);
             };
-            let (reporting, mode) = (types.diagnostics, types.mode());
-            state.hints = types.hints();
-            tracing::debug!(?reporting, ?mode, "configured");
-            if state.reporting != reporting || state.workspace.mode() != mode {
+            let (reporting, mode, hints) = (types.diagnostics, types.mode(), types.hints());
+            tracing::debug!(?reporting, ?mode, hints, "configured");
+            let types_changed = state.reporting != reporting || state.workspace.mode() != mode;
+            // Types read otherwise are refreshed once the project is inferred again.
+            if state.hints != hints {
+                state.hints = hints;
+                refresh_hints(connection, state)?;
+            }
+            if types_changed {
                 state.reporting = reporting;
                 state.workspace.set_mode(mode);
                 // The buffers are marked up again, or their marks taken off.

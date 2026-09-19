@@ -3,6 +3,7 @@
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -180,24 +181,30 @@ fn write_record(ports: &Path, dir: &Path, port: u16, token: &str) -> io::Result<
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(ports, std::fs::Permissions::from_mode(0o700))?;
     }
+    // The token first: a reader that finds the new port finds its token.
     write_private(&dir.join("token"), token)?;
-    std::fs::write(dir.join("port"), port.to_string())
+    write_private(&dir.join("port"), &port.to_string())
 }
 
-/// Writes `text` to a new `file` only this user may read; on Windows the directory's permissions
-/// apply.
+/// Replaces `file` with `text`, only this user may read, at once: a reader sees the old text or
+/// the new, and kernels starting together each write a file of their own. On Windows the
+/// directory's permissions apply.
 fn write_private(file: &Path, text: &str) -> io::Result<()> {
     use std::io::Write;
-    // A token an earlier kernel left may be readable by others: replace the file, not its text.
-    match std::fs::remove_file(file) {
-        Err(err) if err.kind() != io::ErrorKind::NotFound => return Err(err),
-        _ => {}
-    }
+    static WRITTEN: AtomicU64 = AtomicU64::new(0);
+    let written = WRITTEN.fetch_add(1, Ordering::Relaxed);
+    let temporary = file.with_extension(format!("{}-{written}", std::process::id()));
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    options.open(file)?.write_all(text.as_bytes())
+    options
+        .open(&temporary)
+        .and_then(|mut open| open.write_all(text.as_bytes()))
+        .and_then(|()| std::fs::rename(&temporary, file))
+        .inspect_err(|_| {
+            std::fs::remove_file(&temporary).ok();
+        })
 }
 
 /// Whether a REPL's `reply` to [`PROJECT`] names `project`.

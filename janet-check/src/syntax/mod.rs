@@ -154,10 +154,11 @@ pub fn outer(node: Node<'_>) -> Node<'_> {
 }
 
 /// Whether the form ending `path` (from [`path_at`]) is quoted data rather than code: under `'`
-/// or `quote`, or under `~` or `quasiquote` with no unquote of its own in between.
+/// or `quote` outside any quasiquote, or under `~` or `quasiquote` with no unquote of its own in
+/// between. A quasiquote reaches through `quote`: in `~(f ',x)` the `x` is code.
 pub fn is_quoted(doc: &Document, path: &[Node]) -> bool {
-    let mut unquotes = 0usize;
-    for pair in path.windows(2).rev() {
+    let mut depth = 0usize;
+    for pair in path.windows(2) {
         let [node, child] = pair else { continue };
         let head = (node.kind() == LIST)
             .then(|| forms(*node).first().copied())
@@ -165,14 +166,13 @@ pub fn is_quoted(doc: &Document, path: &[Node]) -> bool {
             .filter(|head| head != child && head.kind() == SYMBOL)
             .map(|head| doc.text_of(head));
         match (node.kind(), head) {
-            ("quote_lit", _) | (_, Some("quote")) => return true,
-            ("unquote_lit", _) | (_, Some("unquote")) => unquotes += 1,
-            ("qq_lit", _) | (_, Some("quasiquote")) if unquotes == 0 => return true,
-            ("qq_lit", _) | (_, Some("quasiquote")) => unquotes -= 1,
+            ("quote_lit", _) | (_, Some("quote")) if depth == 0 => return true,
+            ("qq_lit", _) | (_, Some("quasiquote")) => depth += 1,
+            ("unquote_lit", _) | (_, Some("unquote")) => depth = depth.saturating_sub(1),
             _ => {}
         }
     }
-    false
+    depth > 0
 }
 
 pub fn symbol_at(root: Node<'_>, offset: usize) -> Option<Node<'_>> {
