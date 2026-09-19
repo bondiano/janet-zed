@@ -71,13 +71,26 @@ impl Options {
         let options = options.unwrap_or(&serde_json::Value::Null);
         Self {
             janet_path: read_option(options, "janetPath"),
-            janet_source: read_option(options, "janetSource"),
+            janet_source: read_option::<String>(options, "janetSource")
+                .map(|path| expand_home(&path)),
             repl_port: read_option(options, "replPort"),
             compile: read_option(options, "compile"),
             kernel: read_option(options, "kernel"),
             types: read_option(options, "types"),
         }
     }
+}
+
+/// `path` with a leading `~` or `~/` read as the home directory, as a shell would.
+fn expand_home(path: &str) -> PathBuf {
+    let home = path
+        .strip_prefix('~')
+        .filter(|rest| rest.is_empty() || rest.starts_with(['/', '\\']))
+        .zip(std::env::home_dir());
+    home.map_or_else(
+        || PathBuf::from(path),
+        |(rest, home)| home.join(rest.trim_start_matches(['/', '\\'])),
+    )
 }
 
 /// The option `key` of `options`, `None` where it is missing, null, or not what it should be.
@@ -867,5 +880,17 @@ mod tests {
         assert!(is_cancelled(&queue, &RequestId::from("x".to_string())));
         assert!(!is_cancelled(&queue, &RequestId::from(8)));
         assert!(!is_cancelled(&VecDeque::new(), &RequestId::from(7)));
+    }
+
+    #[test]
+    fn janet_source_expands_the_home_directory() {
+        let home = std::env::home_dir().unwrap();
+        let read = |path: &str| Options::read(Some(&serde_json::json!({ "janetSource": path })));
+        assert_eq!(
+            read("~/src/janet").janet_source,
+            Some(home.join("src/janet"))
+        );
+        assert_eq!(read("~").janet_source, Some(home));
+        assert_eq!(read("~x/j").janet_source, Some(PathBuf::from("~x/j")));
     }
 }
