@@ -5,6 +5,7 @@
 mod diagnostics;
 mod handlers;
 mod state;
+mod tokens;
 
 use anyhow::Result;
 use crossbeam_channel::{Receiver, Select, TryRecvError, select};
@@ -22,6 +23,7 @@ use lsp_types::request::{
     ResolveCompletionItem, Shutdown, SignatureHelpRequest, WorkDoneProgressCreate,
     WorkspaceSymbolRequest,
 };
+use lsp_types::request::{SemanticTokensFullRequest, SemanticTokensRangeRequest};
 use lsp_types::{
     CancelParams, CodeActionKind, CodeActionOptions, CodeActionProviderCapability,
     CompletionOptions, Diagnostic, DidChangeWatchedFilesRegistrationOptions,
@@ -279,6 +281,7 @@ fn capabilities() -> ServerCapabilities {
             prepare_provider: Some(true),
             work_done_progress_options: WorkDoneProgressOptions::default(),
         })),
+        semantic_tokens_provider: Some(tokens::capability()),
         ..ServerCapabilities::default()
     }
 }
@@ -685,6 +688,12 @@ fn dispatch(state: &State, request: Request) -> Response {
         Rename::METHOD => handle::<Rename>(state, request, handlers::rename),
         InlayHintRequest::METHOD => {
             handle::<InlayHintRequest>(state, request, handlers::inlay_hint)
+        }
+        SemanticTokensFullRequest::METHOD => {
+            handle::<SemanticTokensFullRequest>(state, request, tokens::full)
+        }
+        SemanticTokensRangeRequest::METHOD => {
+            handle::<SemanticTokensRangeRequest>(state, request, tokens::range)
         }
         method => {
             tracing::debug!(method, "unhandled request");

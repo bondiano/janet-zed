@@ -4,6 +4,8 @@
 use std::ops::Range;
 use std::path::{Path, PathBuf};
 
+use tree_sitter::Node;
+
 use super::workspace::{self, Workspace};
 use super::{SourceFile, peg, types};
 use crate::syntax;
@@ -57,8 +59,20 @@ pub fn resolve<'w>(
     is_core: impl Fn(&str) -> bool,
     in_project_env: impl Fn(&str) -> bool,
 ) -> Option<(Occurrence<'w>, Target)> {
+    let path = syntax::path_at(file.document.root(), offset);
+    resolve_path(workspace, file, &path, is_core, in_project_env)
+}
+
+/// [`resolve`] for the symbol ending `path`, as [`syntax::path_at`] gives it: a walk over every
+/// symbol of a file keeps its path at hand rather than descending again for each one.
+pub fn resolve_path<'w>(
+    workspace: &'w Workspace,
+    file: &'w SourceFile,
+    path: &[Node<'w>],
+    is_core: impl Fn(&str) -> bool,
+    in_project_env: impl Fn(&str) -> bool,
+) -> Option<(Occurrence<'w>, Target)> {
     let doc = &file.document;
-    let path = syntax::path_at(doc.root(), offset);
     let symbol = path.last().filter(|node| node.kind() == syntax::SYMBOL)?;
     let text = doc.text_of(*symbol);
     let at = |name: &str| Occurrence {
@@ -67,13 +81,13 @@ pub fn resolve<'w>(
     };
 
     // Quoted data, whatever the same name means as code.
-    if peg::is_special(doc, &path) {
+    if peg::is_special(doc, path) {
         let target = Target::Peg {
             name: text.to_string(),
         };
         return Some((at(text), target));
     }
-    if types::is_form(doc, &path) {
+    if types::is_form(doc, path) {
         let target = Target::Type {
             name: text.to_string(),
         };
