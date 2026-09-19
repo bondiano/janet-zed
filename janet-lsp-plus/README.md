@@ -17,8 +17,9 @@ $ janet-lsp-plus kernel <connection-file> <janet>   # Jupyter kernel
 $ janet-lsp-plus dap                          # debug adapter on stdio
 ```
 
-An installation that is found on `PATH` takes precedence over the build the Zed extension
-downloads.
+[GitHub Releases](https://github.com/bondiano/janet-zed/releases) has prebuilt archives for
+macOS, Linux and Windows; `just install` in a checkout builds it from source. An installation
+that is found on `PATH` takes precedence over the build the Zed extension downloads.
 
 `JANET_LSP_LOG` sets the log level on stderr — `error`, `warn`, `info` (default), `debug` or
 `trace`. `debug` logs every request with its timing, buffer sync and check.

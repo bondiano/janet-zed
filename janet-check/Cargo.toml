@@ -5,12 +5,13 @@ version = "0.3.0"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+rust-version.workspace = true
 publish = true
 readme = "README.md"
 keywords = ["janet", "lint", "types", "static-analysis", "lsp"]
 categories = ["development-tools", "command-line-utilities"]
-# The CLI tests run against ../fixtures, which is outside the package.
-exclude = ["tests"]
+# The tests read ../fixtures, which is outside the package: ship only what builds.
+exclude = ["tests", "src/**/tests.rs", "src/**/snapshots"]
 
 [features]
 default = ["cli"]

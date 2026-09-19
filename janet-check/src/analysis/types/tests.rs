@@ -356,7 +356,7 @@ fn core_declares_every_binding_of_the_installed_janet() {
             missing.is_empty() && extra.is_empty(),
             "core.d.janet is out of date with this Janet: {what} missing {missing:?}, \
              declared but gone {extra:?}. Regenerate it with\n  \
-             janet scripts/core-skeleton.janet > server/src/analysis/types/core.d.janet"
+             janet scripts/core-skeleton.janet > janet-check/src/analysis/types/core.d.janet"
         );
     };
     let named = |peg: bool| -> BTreeSet<&str> {
@@ -472,7 +472,7 @@ fn the_c_sources_type_most_of_what_the_c_functions_take() {
         typed * 5 >= total * 4,
         "the C sources type {typed} of {total} argument positions, under the four in five they \
          answered for. Rerun\n  janet scripts/core-ctypes.janet <janet-checkout> \
-         server/src/analysis/types/core.d.janet"
+         janet-check/src/analysis/types/core.d.janet"
     );
 }
 

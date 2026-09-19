@@ -6,10 +6,11 @@ members = [".", "janet-check", "janet-lsp-plus"]
 edition = "2024"
 license = "MIT"
 repository = "https://github.com/bondiano/janet-zed"
+rust-version = "1.94"
 publish = false
 
 [workspace.lints.rust]
-# `deny`, not `forbid`: the tree-sitter grammar FFI in server/src/syntax needs one local allow.
+# `deny`, not `forbid`: the tree-sitter grammar FFI in janet-check/src/syntax needs one local allow.
 unsafe_code = "deny"
 unused_must_use = "deny"
 

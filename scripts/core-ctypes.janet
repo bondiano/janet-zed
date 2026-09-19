@@ -1,4 +1,4 @@
-# Fills the types of Janet's C functions in `server/src/analysis/types/core.d.janet` from the C
+# Fills the types of Janet's C functions in `janet-check/src/analysis/types/core.d.janet` from the C
 # sources those functions are written in.
 #
 # A C function says what it takes by the accessor it reads each argument with — `janet_getstring`
@@ -8,7 +8,7 @@
 #
 # Only `:any` positions are written, so types written by hand survive a rerun:
 #
-#   janet scripts/core-ctypes.janet ../janet server/src/analysis/types/core.d.janet
+#   janet scripts/core-ctypes.janet ../janet janet-check/src/analysis/types/core.d.janet
 #
 # It rewrites the file in place.
 

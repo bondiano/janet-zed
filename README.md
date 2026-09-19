@@ -28,11 +28,15 @@ a REPL wired into the editor, and structural editing.
 
 ## Installation
 
-Open **Extensions** (`zed: extensions`), search for **Janet+** and install it. On first
-start the extension downloads the `janet-lsp-plus` build for your platform from
+Janet+ is not in the Zed extension registry yet. Clone this repository and install it as a dev
+extension: `zed: install dev extension`, then pick the checkout. On first start the extension
+downloads the `janet-lsp-plus` build for your platform from
 [GitHub Releases](https://github.com/bondiano/janet-zed/releases), and the Janet sources that
-match `janet/version` (for go-to-definition into the stdlib). A `janet-lsp-plus` found on
-`PATH` takes precedence over the downloaded one.
+match `janet/version` (for go-to-definition into the stdlib).
+
+A `janet-lsp-plus` found on the worktree's `PATH` takes precedence over the downloaded one.
+Install it with `cargo install janet-lsp-plus`, from a release archive, or from the checkout
+with `just install`, which also installs [`janet-check`](janet-check/README.md#the-binary).
 
 ## Configuration
 
@@ -80,6 +84,13 @@ top-level code included. `janet` itself is the one on the worktree's `PATH`, whi
 direnv can set per project. Open only projects you would run, or set `"compile": false`: the
 server then runs nothing of the project's, and reports only what the types rule out.
 Changing it takes a server restart (`editor: restart language server`).
+
+The extension runs executables it finds in the worktree's environment too. `extension.toml`
+grants `process:exec` for any command (`command = "*"`), since where `janet` lives varies: when a
+project opens, the extension runs the `janet` found on the worktree's `PATH` to read its version
+(unless `janet_source` is set), and starts the `janet-lsp-plus` found there in place of the
+downloaded server. A project whose environment (direnv, a `PATH` it sets) puts other
+executables under those names gets them run, whatever `"compile"` says.
 
 The REPL kernel of a project listens on `127.0.0.1` and serves only clients that know its token,
 a fresh secret it records next to its port in `~/.cache/janet-zed/repl/<project>/token`, readable

@@ -22,7 +22,8 @@ src/fetch.janet:42:4: host/fetch takes 2 arguments, given 3
 src/main.janet:7:2: unknown symbol undefined-fn
 ```
 
-With no arguments it checks the working directory. Directories are walked honoring
+There are no prebuilt archives of it; from a checkout of the repository, `just install` builds
+it and `janet-lsp-plus`. With no arguments it checks the working directory. Directories are walked honoring
 `.gitignore`, and `jpm_tree` is left to module resolution. Output is `path:line:col: message`,
 which the standard errorformat of most editors and CI annotators already parses. The exit
 status is 1 when anything is reported, so it drops into a pre-commit hook or a CI step as is.

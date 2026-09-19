@@ -4,7 +4,14 @@ description = "Language server, Jupyter kernel and debug adapter for Janet"
 version = "0.3.0"
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
 publish = true
+readme = "README.md"
+keywords = ["janet", "lsp", "language-server", "jupyter", "debugger"]
+categories = ["development-tools", "text-editors"]
+# The tests read ../fixtures, which is outside the package: ship only what builds.
+exclude = ["tests", "src/**/tests.rs", "src/**/snapshots"]
 
 [dependencies]
 anyhow = "1.0.104"

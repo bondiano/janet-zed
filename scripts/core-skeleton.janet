@@ -1,10 +1,10 @@
-# Prints the type skeleton of Janet's core: `server/src/analysis/types/core.d.janet`.
+# Prints the type skeleton of Janet's core: `janet-check/src/analysis/types/core.d.janet`.
 #
 # One declaration per binding of `root-env`, plus the special forms and the PEG specials, which
 # no environment holds. Every type is `:any`: the skeleton carries names, arity, markers and
 # docs, and later phases replace the `:any`s. Regenerate after a Janet upgrade:
 #
-#   janet scripts/core-skeleton.janet > server/src/analysis/types/core.d.janet
+#   janet scripts/core-skeleton.janet > janet-check/src/analysis/types/core.d.janet
 
 (def- skeleton/markers {'& true '&opt true '&keys true '&named true})
 
@@ -79,7 +79,7 @@
 (defn- skeleton/form [line]
   (skeleton/callable "defn" (first (parse line)) line line))
 
-# `SPECIAL_FORMS` of `server/src/analysis/stdlib.rs`.
+# `SPECIAL_FORMS` of `janet-check/src/analysis/stdlib.rs`.
 (def- skeleton/special-forms
   ["(break &opt value)"
    "(def name meta... value)"
@@ -95,7 +95,7 @@
    "(var name meta... value)"
    "(while condition & body)"])
 
-# `SPECIALS` then `ALIASES` of `server/src/analysis/peg.rs`.
+# `SPECIALS` then `ALIASES` of `janet-check/src/analysis/peg.rs`.
 (def- skeleton/peg-specials
   ["(sequence & patts)"
    "(choice & patts)"
