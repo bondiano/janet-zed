@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Result, anyhow};
 use crossbeam_channel::{Receiver, Sender};
-use lsp_types::{Diagnostic, DiagnosticSeverity, Uri};
+use lsp_types::{Diagnostic, DiagnosticSeverity, NumberOrString, Uri};
 
 use super::state::Reporting;
 use janet_check::analysis::ignores::ignores;
@@ -151,6 +151,11 @@ pub fn diagnostics(doc: &Document, problems: &[Problem]) -> Vec<Diagnostic> {
                     }),
                     source: Some("janet".to_string()),
                     message: problem.message.clone(),
+                    code: problem
+                        .code()
+                        .map(|code| NumberOrString::String(code.to_string())),
+                    // The symbol's name, for the quick fixes: round-tripped by the client.
+                    data: problem.unknown_symbol().map(Into::into),
                     ..Diagnostic::default()
                 }),
         )

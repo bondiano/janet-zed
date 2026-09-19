@@ -111,6 +111,31 @@ fn constant_edits_postpone_a_check_by_at_most_max_delay() {
 }
 
 #[test]
+fn codes_an_unknown_symbol() {
+    let doc = Document::new("(nope)\n".to_string());
+    let problems = ["unknown symbol nope", "boom"].map(|message| Problem {
+        severity: 1,
+        message: message.to_string(),
+        line: Some(1),
+        col: Some(1),
+    });
+    let coded: Vec<_> = diagnostics(&doc, &problems)
+        .into_iter()
+        .map(|diagnostic| (diagnostic.code, diagnostic.data))
+        .collect();
+    assert_eq!(
+        coded,
+        [
+            (
+                Some(NumberOrString::String("unknown-symbol".to_string())),
+                Some("nope".into())
+            ),
+            (None, None),
+        ]
+    );
+}
+
+#[test]
 fn ignore_comments_silence_unknown_symbols() {
     let doc = Document::new(
         "# janet-zed: ignore-file unknown-symbol file-wide\n\

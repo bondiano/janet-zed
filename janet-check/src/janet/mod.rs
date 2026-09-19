@@ -76,9 +76,15 @@ impl Problem {
         range.start..range.end.min(line_end)
     }
 
-    /// The name of an unknown symbol problem.
+    /// The name of an unknown symbol problem. Janet's compiler reports only the message, so this is
+    /// the one place that reads it.
     pub fn unknown_symbol(&self) -> Option<&str> {
         self.message.strip_prefix("unknown symbol ")
+    }
+
+    /// A stable kind to match on instead of the message: [`ignores::UNKNOWN_SYMBOL`] or none.
+    pub fn code(&self) -> Option<&'static str> {
+        self.unknown_symbol().map(|_| ignores::UNKNOWN_SYMBOL)
     }
 
     /// Whether an `ignore unknown-symbol` directive of `doc` silences it.

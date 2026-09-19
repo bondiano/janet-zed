@@ -13,10 +13,10 @@ use lsp_types::{
     DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, Documentation, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, ParameterInformation,
-    ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams, RenameParams,
-    SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolInformation, SymbolKind,
-    TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
+    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, NumberOrString,
+    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
+    RenameParams, SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolInformation,
+    SymbolKind, TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
     WorkspaceSymbolResponse,
 };
 
@@ -32,7 +32,7 @@ use janet_check::analysis::stdlib::SourceLocation;
 use janet_check::analysis::symbols::{self, CandidateKind, Origin, Parameters};
 use janet_check::analysis::types;
 use janet_check::analysis::{SourceFile, canonical, uri_of};
-use janet_check::analysis::{hints, modules};
+use janet_check::analysis::{hints, ignores, modules};
 use janet_check::janet;
 use janet_check::syntax::{self, Document};
 
@@ -485,9 +485,11 @@ fn unknown_symbol<'d>(
     offset: usize,
 ) -> Option<(Node<'d>, &'d Diagnostic)> {
     let symbol = syntax::symbol_at(doc.root(), offset)?;
-    let message = format!("unknown symbol {}", doc.text_of(symbol));
+    let code = NumberOrString::String(ignores::UNKNOWN_SYMBOL.to_string());
+    let name = doc.text_of(symbol);
     let diagnostic = state.diagnostics.get(uri)?.iter().find(|diagnostic| {
-        diagnostic.source.as_deref() == Some("janet") && diagnostic.message == message
+        diagnostic.code.as_ref() == Some(&code)
+            && diagnostic.data.as_ref().and_then(|data| data.as_str()) == Some(name)
     })?;
     Some((symbol, diagnostic))
 }
