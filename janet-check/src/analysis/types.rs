@@ -45,6 +45,15 @@ pub(super) fn is_atom(name: &str) -> bool {
     )
 }
 
+/// Whether a symbol written where a type goes names one: `Shape`, and `db/Shape` where an import
+/// puts its module in front of the name. A name starting lowercase is a variable of its own.
+pub(super) fn is_named(symbol: &str) -> bool {
+    symbol
+        .rsplit('/')
+        .next()
+        .is_some_and(|name| name.starts_with(char::is_uppercase))
+}
+
 /// Parameter vector markers, which take no type of their own.
 const MARKERS: [&str; 4] = ["&", "&opt", "&keys", "&named"];
 
@@ -222,6 +231,57 @@ pub enum Annotation {
 }
 
 impl Type {
+    /// A Janet literal of a value of this type, as plain as one gets: `0`, `""`, `[]`, `{}`. What
+    /// a stand-in for a declared host function answers, for the top-level code that calls it to
+    /// run on. `typedef` finds what a named type stands for; `nil` where nothing plainer fits.
+    pub fn plain_literal<'t>(&self, typedef: &dyn Fn(&str) -> Option<&'t Type>) -> String {
+        self.plain_literal_within(typedef, 8)
+    }
+
+    fn plain_literal_within<'t>(
+        &self,
+        typedef: &dyn Fn(&str) -> Option<&'t Type>,
+        depth: usize,
+    ) -> String {
+        let literal = match self {
+            Self::Keyword(name) => match name.as_str() {
+                "number" | "int" | "integer" | "float" | "real" | "uint" => "0",
+                "string" => "\"\"",
+                "buffer" => "@\"\"",
+                "boolean" => "false",
+                "tuple" | "indexed" | "bytes" => "[]",
+                "array" => "@[]",
+                "struct" | "dictionary" => "{}",
+                "table" => "@{}",
+                _ => "nil",
+            },
+            Self::Tuple(_) => "[]",
+            Self::Array(_) => "@[]",
+            Self::Struct(_) | Self::Dict { mutable: false, .. } => "{}",
+            Self::Table(_) | Self::Dict { mutable: true, .. } => "@{}",
+            Self::Enum(members) => {
+                return members.first().map_or("nil".into(), |m| format!(":{m}"));
+            }
+            Self::Or(members) | Self::Open(members) if depth > 0 => {
+                return members.first().map_or("nil".into(), |member| {
+                    member.plain_literal_within(typedef, depth - 1)
+                });
+            }
+            Self::Dynamic(inner) if depth > 0 => {
+                return inner.plain_literal_within(typedef, depth - 1);
+            }
+            Self::Named { name, .. } if depth > 0 => {
+                return typedef(name).map_or("nil".into(), |named| {
+                    named.plain_literal_within(typedef, depth - 1)
+                });
+            }
+            _ => "nil",
+        };
+        literal.to_string()
+    }
+}
+
+impl Type {
     /// The type a literal denotes, or `None` when it is not one.
     pub fn parse(doc: &Document, node: Node) -> Option<Self> {
         match node.kind() {
@@ -230,7 +290,7 @@ impl Type {
             "nil_lit" => Some(Self::Keyword("nil".into())),
             syntax::SYMBOL => {
                 let text = doc.text_of(node);
-                if text.starts_with(char::is_uppercase) {
+                if is_named(text) {
                     atom(text, |name| Self::named(name, Arc::new([])))
                 } else if text.starts_with(char::is_lowercase) {
                     atom(text, |name| Self::Var(Var::named(&name)))
@@ -685,6 +745,16 @@ pub fn annotation(doc: &Document, definition: &Definition) -> Option<Annotation>
     })
 }
 
+/// The rule `:typed-by` names in `definition`'s metadata: a symbol, `arc/query-type`.
+pub fn typed_by(doc: &Document, definition: &Definition) -> Option<String> {
+    let table = *definition
+        .metadata
+        .iter()
+        .find(|node| node.kind() == STRUCT)?;
+    let rule = *entries(doc, table).get(":typed-by")?;
+    (rule.kind() == syntax::SYMBOL).then(|| doc.text_of(rule).to_string())
+}
+
 /// What a metadata struct written as Janet source declares: what the checker and a running REPL
 /// report of a binding they hold, where the host has no source of its own to read.
 pub fn declared(metadata: &str) -> Option<Annotation> {
@@ -1028,8 +1098,8 @@ fn call(doc: &Document, node: Node) -> Option<Type> {
         name if builtin(name).is_some_and(|(_, arity)| arity == args.len()) => {
             Some(Type::named(name.into(), types(doc, args)?.into()))
         }
-        // `(Box :number)`: a named type applied to its arguments.
-        name if name.starts_with(char::is_uppercase) && !args.is_empty() => {
+        // `(Box :number)`, `(db/Box :number)`: a named type applied to its arguments.
+        name if is_named(name) && !args.is_empty() => {
             Some(Type::named(name.into(), types(doc, args)?.into()))
         }
         _ => None,

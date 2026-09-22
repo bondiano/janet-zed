@@ -86,8 +86,8 @@ impl<'d> Infer<'d> {
                 let [key, value] = pair else { continue };
                 let held = match self.field_name(*key) {
                     Some(name) => {
-                        let key = Type::Keyword(name.trim_start_matches(':').into());
-                        self.index(None, ty, &key)
+                        let named = Type::Keyword(name.trim_start_matches(':').into());
+                        self.index_quietly(Some(*key), ty, &named)
                     }
                     None => any(),
                 };
@@ -135,8 +135,8 @@ impl<'d> Infer<'d> {
                     // A key the pattern took apart is there, and not `nil`.
                     let held = match self.field_name(*key) {
                         Some(name) => {
-                            let key = Type::Keyword(name.trim_start_matches(':').into());
-                            let found = self.index(None, ty, &key);
+                            let named = Type::Keyword(name.trim_start_matches(':').into());
+                            let found = self.index_quietly(Some(*key), ty, &named);
                             self.present(&found)
                         }
                         None => any(),

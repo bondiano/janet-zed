@@ -1,0 +1,18 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n----- HOVER\\n{shown}\\n\")"
+---
+----- SOURCE CODE
+(def loud (shout "hi"))
+
+(defn quiet [x] (def said (shout x)) said)
+
+----- HOVER
+```janet
+loud: :string?
+```
+def in `main.janet`
+```janet
+said: :any
+```
+local, bound on line 3

@@ -13,11 +13,11 @@ use lsp_types::{
     Diagnostic, DocumentHighlight, DocumentHighlightKind, DocumentHighlightParams, DocumentSymbol,
     DocumentSymbolParams, DocumentSymbolResponse, Documentation, GotoDefinitionParams,
     GotoDefinitionResponse, Hover, HoverContents, HoverParams, InlayHint, InlayHintKind,
-    InlayHintLabel, InlayHintParams, Location, MarkupContent, MarkupKind, NumberOrString,
-    ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range, ReferenceParams,
-    RenameParams, SignatureHelp, SignatureHelpParams, SignatureInformation, SymbolInformation,
-    SymbolKind, TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit, WorkspaceSymbolParams,
-    WorkspaceSymbolResponse,
+    InlayHintLabel, InlayHintParams, InsertReplaceEdit, Location, MarkupContent, MarkupKind,
+    NumberOrString, ParameterInformation, ParameterLabel, Position, PrepareRenameResponse, Range,
+    ReferenceParams, RenameParams, SignatureHelp, SignatureHelpParams, SignatureInformation,
+    SymbolInformation, SymbolKind, TextDocumentPositionParams, TextEdit, Uri, WorkspaceEdit,
+    WorkspaceSymbolParams, WorkspaceSymbolResponse,
 };
 
 use lsp_types::DocumentFormattingParams;
@@ -190,7 +190,16 @@ pub fn hover(state: &State, params: HoverParams) -> Result<Option<Hover>> {
     .then(|| repl_binding(state, file, offset))
     .flatten();
     let value = match (&info, repl) {
-        (None, None) => return Ok(None),
+        // Nothing names the form: what inference made of it is still worth saying.
+        (None, None) => {
+            let Some((range, value)) = symbols::form_type(&state.workspace, file, offset) else {
+                return Ok(None);
+            };
+            return Ok(Some(Hover {
+                contents: HoverContents::Markup(markdown(value)),
+                range: Some(file.document.range(range)),
+            }));
+        }
         (Some(info), None) => info.markdown(),
         (Some(info), Some(binding)) => {
             // The REPL's doc only when the source has none.
@@ -262,18 +271,30 @@ pub fn completion(state: &State, params: CompletionParams) -> Result<Option<Comp
     let position = params.text_document_position;
     let file = state.file(&position.text_document.uri)?;
     let offset = file.document.offset(position.position);
-    // What is typed of the name so far, `mod/` or `:` included, is what an item replaces.
-    let typed = file
+    // What is typed of the name so far, `mod/` or `:` included, is what an item replaces. With
+    // the cursor in the middle of a name, the rest of it goes too, where the client takes both
+    // ranges: completing `:tabl|e` leaves `:table`, not `:tablee`.
+    let text = &file.document.text;
+    let typed = file.document.range(prefix_start(text, offset)..offset);
+    let whole = file
         .document
-        .range(prefix_start(&file.document.text, offset)..offset);
+        .range(prefix_start(text, offset)..prefix_end(text, offset));
+    let edit = |new_text: String| {
+        if state.client.replaces_completions {
+            CompletionTextEdit::InsertAndReplace(InsertReplaceEdit {
+                new_text,
+                insert: typed,
+                replace: whole,
+            })
+        } else {
+            CompletionTextEdit::Edit(TextEdit::new(typed, new_text))
+        }
+    };
     let items = symbols::completions(&state.workspace, &state.stdlib, file, offset)
         .into_iter()
         .enumerate()
         .map(|(rank, candidate)| CompletionItem {
-            text_edit: Some(CompletionTextEdit::Edit(TextEdit::new(
-                typed,
-                candidate.label.clone(),
-            ))),
+            text_edit: Some(edit(candidate.label.clone())),
             label: candidate.label,
             kind: Some(match candidate.kind {
                 CandidateKind::Function => CompletionItemKind::FUNCTION,
@@ -297,13 +318,26 @@ pub fn completion(state: &State, params: CompletionParams) -> Result<Option<Comp
 /// Where the symbol or keyword ending at `offset` starts: the characters Janet reads as part of
 /// one, `/` and `:` among them.
 fn prefix_start(text: &str, offset: usize) -> usize {
-    let is_part = |c: char| c.is_alphanumeric() || !c.is_ascii() || "!$%&*+-./:<=>?@^_".contains(c);
     text[..offset]
         .char_indices()
         .rev()
         .take_while(|&(_, c)| is_part(c))
         .last()
         .map_or(offset, |(start, _)| start)
+}
+
+/// Where the symbol or keyword the cursor stands in ends: the rest of the name an item written
+/// over it replaces.
+fn prefix_end(text: &str, offset: usize) -> usize {
+    text[offset..]
+        .char_indices()
+        .find(|&(_, c)| !is_part(c))
+        .map_or(text.len(), |(end, _)| offset + end)
+}
+
+/// Whether Janet reads `c` as part of one name.
+fn is_part(c: char) -> bool {
+    c.is_alphanumeric() || !c.is_ascii() || "!$%&*+-./:<=>?@^_".contains(c)
 }
 
 pub fn completion_resolve(state: &State, mut item: CompletionItem) -> Result<CompletionItem> {

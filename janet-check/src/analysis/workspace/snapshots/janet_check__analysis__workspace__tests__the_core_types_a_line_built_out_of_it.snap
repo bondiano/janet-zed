@@ -1,5 +1,5 @@
 ---
-source: src/analysis/workspace/tests.rs
+source: janet-check/src/analysis/workspace/tests.rs
 expression: "format!(\"----- SOURCE CODE\\n{REPORT}\\n{SUMMARY}\\n----- INFERRED\\n{}\\n\",\ninferred(&workspace, \"/ws/report.janet\"))"
 ---
 ----- SOURCE CODE
@@ -18,5 +18,5 @@ expression: "format!(\"----- SOURCE CODE\\n{REPORT}\\n{SUMMARY}\\n----- INFERRED
                  (string/join (map string (sorted (keys by-kind))) ", ")))
 
 ----- INFERRED
-summary: (fn [(or [a] @[a] [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :string)
+summary: (fn [(or [{:kind :any & r}] @[{:kind :any & r}] [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :string)
 total-area: (fn [(or [{:kind :any :r :number :w :number :h :number & r}] @[{:kind :any :r :number :w :number :h :number & r}])] :number)

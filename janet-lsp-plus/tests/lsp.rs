@@ -653,6 +653,38 @@ fn hover_on_a_local_typed_by_an_imported_signature() {
     ));
 }
 
+/// `$`, `$&` and the key of `(row :sql)` name nothing the workspace defines, and all three still
+/// have a type: the call the short function is handed to says what its arguments hold, and the
+/// key reads a field out of one.
+#[test]
+fn hover_on_a_short_function_argument_and_on_a_key() {
+    let mut session = Session::start();
+    let source = "(def rows @[{:sql \"select 1\" :n 1}])\n\
+                  (def sqls (map |($ :sql) rows))\n\
+                  (def firsts (map |(first $&) rows))\n";
+    let scratch = uri(&session.root.join("src/scratch.janet"));
+    session.open(&scratch, source);
+    let hovers: Vec<_> = [("$ :sql", 0), ("$ :sql", 2), ("$&", 0)]
+        .iter()
+        .map(|(needle, delta)| {
+            let params = json!({
+                "textDocument": {"uri": scratch},
+                "position": position(source, needle, *delta),
+            });
+            let hover = session.request("textDocument/hover", params).unwrap();
+            format!(
+                "----- HOVER at {delta}\n{}",
+                hover["contents"]["value"].as_str().unwrap()
+            )
+        })
+        .collect();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n{}\n",
+        hovers.join("\n\n")
+    ));
+    session.finish();
+}
+
 #[test]
 fn hover_on_peg_specials() {
     let mut session = Session::start();
@@ -740,6 +772,43 @@ fn completion_replaces_the_qualified_name_typed_so_far() {
                 "end": position(&session.text, "(string/join lines", 8),
             },
             "newText": "string/join",
+        })
+    );
+    session.finish();
+}
+
+/// With the cursor in the middle of a name, an item replaces the whole of it where the client
+/// takes both ranges: completing `(string/|join …)` leaves `string/join`, not `string/joinjoin`.
+#[test]
+fn completion_replaces_the_whole_name_the_cursor_stands_in() {
+    let capabilities = json!({
+        "textDocument": {"completion": {"completionItem": {"insertReplaceSupport": true}}},
+    });
+    let mut session = Session::start_as(
+        Session::root(),
+        "src/report.janet",
+        &Value::Null,
+        &capabilities,
+    );
+    let items = session
+        .request(
+            "textDocument/completion",
+            session.at("(string/join lines", 8),
+        )
+        .unwrap();
+    let join = items
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|item| item["label"] == "string/join")
+        .unwrap();
+    let at = |delta: usize| position(&session.text, "(string/join lines", delta);
+    assert_eq!(
+        join["textEdit"],
+        json!({
+            "newText": "string/join",
+            "insert": {"start": at(1), "end": at(8)},
+            "replace": {"start": at(1), "end": at(12)},
         })
     );
     session.finish();
@@ -1729,6 +1798,50 @@ fn a_library_macro_types_the_names_it_binds() {
             .to_string()
     };
     let shown = format!("{}\n{}", hover("wheel \"Wheel\""), hover("shout ("));
+    session.finish();
+    std::fs::remove_dir_all(&root).ok();
+    insta::assert_snapshot!(format!(
+        "----- SOURCE CODE\n{source}\n----- HOVER\n{shown}\n"
+    ));
+}
+
+/// A library's `:typed-by` rule: once the check has run it, hover shows what it computed for a
+/// call with a static argument, and the declared `:ret` for one without.
+#[test]
+fn hover_shows_the_type_a_library_rule_computed() {
+    let root = std::env::temp_dir().join(format!("janet-zed-typed-by-{}", std::process::id()));
+    std::fs::remove_dir_all(&root).ok();
+    std::fs::create_dir_all(root.join(".janet-zed")).unwrap();
+    std::fs::write(root.join(".janet-zed/config.jdn"), "{}").unwrap();
+    std::fs::write(
+        root.join("shout.d.janet"),
+        "(defn shout {:params [:any] :ret :any :typed-by shout/rule} [x])\n",
+    )
+    .unwrap();
+    std::fs::write(
+        root.join("shout.janet"),
+        "(defn rule [[arg] env] (when arg ['or :string :nil]))\n",
+    )
+    .unwrap();
+    let source = "(def loud (shout \"hi\"))\n\n(defn quiet [x] (def said (shout x)) said)\n";
+    std::fs::write(root.join("main.janet"), source).unwrap();
+    let root = root.canonicalize().unwrap();
+
+    let mut session = Session::start_at(root.clone(), "main.janet");
+    let main = session.report.clone();
+    // The check is what runs the rule; its diagnostics say it has run.
+    assert_eq!(session.diagnostics(&main, 1), json!([]));
+    let mut hover = |needle: &str| {
+        let at = json!({
+            "textDocument": {"uri": main},
+            "position": position(source, needle, 0),
+        });
+        session.request("textDocument/hover", at).unwrap()["contents"]["value"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    let shown = format!("{}\n{}", hover("loud"), hover("said"));
     session.finish();
     std::fs::remove_dir_all(&root).ok();
     insta::assert_snapshot!(format!(

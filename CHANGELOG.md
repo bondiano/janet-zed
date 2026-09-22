@@ -7,9 +7,19 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:typed-by lib/rule` in a function's metadata: a library function computes the type of a call
+  from its static arguments, and the check types the call by it instead of `:ret`, as macros
+  leave the call: a `->` step, a macro call that expands to it.
+- Hover over a form no name resolves: the `$` of a `|…` and the key of `(request :body)` show
+  what inference read them as.
 - `:libraries` in `.janet-zed/config.jdn` reads the exports of directories outside the syspath
   as installed libraries; `:include` runs files and directories (their files in name order) as
   one program, each file seeing the ones before it and every other file seeing all of them.
+- The check compiles the modules a file imports with a library's ambient declarations and the
+  `:include` files in scope, as a host that defines them as globals does: a declared host function
+  answers a plain value of its declared result, so a module's top level runs on it.
+- A `.janet-zed/` inside the workspace, like an app in a monorepo opened at its top, is a root of
+  its own: its config covers its directory, and its `:include` is seen only by its files.
 - The REPL kernel interrupts an evaluation in progress, and the debugger pauses a running
   program or one of its `ev` tasks (not on Windows).
 - The REPL kernel streams output as it is printed, answers `getline` with the client's input,

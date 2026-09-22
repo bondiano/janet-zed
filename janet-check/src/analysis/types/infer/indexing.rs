@@ -46,13 +46,13 @@ impl<'d> Infer<'d> {
 
     /// `(put d key value)`: the key joins the form, whatever else it holds.
     pub(super) fn put(&mut self, args: &[Node<'d>]) -> Type {
-        let [target, key, value, ..] = args else {
+        let [target, at, value, ..] = args else {
             return self.body(args);
         };
         let target = self.expr(*target);
-        let key = self.expr(*key);
+        let key = self.expr(*at);
         let value = self.expr(*value);
-        let inside = self.index(None, &target, &key);
+        let inside = self.index_quietly(Some(*at), &target, &key);
         self.unify(&inside, &value);
         target
     }
@@ -86,25 +86,48 @@ impl<'d> Infer<'d> {
     }
 
     /// What a key holds, and what having the key says about the form it is read from.
-    /// `at` is the key as it is written, where reading a key that is not there is worth saying
-    /// so; a `put` passes none, since it is what adds the key.
+    /// `at` is the key as it is written, where reading a key that is not there is worth saying so.
     pub(super) fn index(&mut self, at: Option<Node<'d>>, target: &Type, key: &Type) -> Type {
+        self.read(at, true, target, key)
+    }
+
+    /// `index` where a key the form has not got is nothing to report: a `put` is what adds the
+    /// key, and a pattern that does not fit is a clause that does not match.
+    pub(super) fn index_quietly(
+        &mut self,
+        at: Option<Node<'d>>,
+        target: &Type,
+        key: &Type,
+    ) -> Type {
+        self.read(at, false, target, key)
+    }
+
+    fn read(&mut self, at: Option<Node<'d>>, report: bool, target: &Type, key: &Type) -> Type {
         let resolved = self.unwrapped(target);
         let position = at
             .filter(|key| key.kind() == "num_lit")
             .and_then(|key| self.text(key).parse::<usize>().ok());
-        let found = match key {
-            Type::Keyword(name) if name == "number" => match position {
+        // A form is keyed by the name the keyword is written with, which only the source has:
+        // `:table` and `:string` are how the atoms naming those types are written too, so the
+        // type of the key cannot tell the key `:table` from the type of tables.
+        let written = at
+            .filter(|node| node.kind() == super::KEYWORD)
+            .map(|node| self.text(node).to_string())
+            .or_else(|| match key {
+                Type::Keyword(name) if !is_atom(name) => Some(format!(":{name}")),
+                _ => None,
+            });
+        let found = match (written, key) {
+            (Some(key), _) => {
+                // Only a type someone named and wrote the keys of is closed for certain: a form
+                // inference read off a literal grows keys the file puts in it later.
+                let at = at.filter(|_| report && matches!(unwrap(&resolved), Type::Named { .. }));
+                self.field(at, target, &resolved, &key)
+            }
+            (None, Type::Keyword(name)) if name == "number" => match position {
                 Some(position) => self.nth(target, position),
                 None => self.element(target),
             },
-            Type::Keyword(name) if !is_atom(name) => {
-                let key = format!(":{name}");
-                // Only a type someone named and wrote the keys of is closed for certain: a form
-                // inference read off a literal grows keys the file puts in it later.
-                let at = at.filter(|_| matches!(unwrap(&resolved), Type::Named { .. }));
-                self.field(at, target, &resolved, &key)
-            }
             _ => match unwrap(&resolved) {
                 Type::Dict { value, .. } => (*value).clone(),
                 Type::Struct(shape) | Type::Table(shape) => {
@@ -113,7 +136,13 @@ impl<'d> Infer<'d> {
                 _ => self.element(target),
             },
         };
-        self.as_dynamic_as(target, found)
+        let found = self.as_dynamic_as(target, found);
+        // Under the key is where a hover asks what it reads: the keyword's own type says only
+        // that it is that keyword.
+        if let Some(key) = at.filter(|_| self.record) {
+            self.keys.insert(key.start_byte(), found.clone());
+        }
+        found
     }
 
     fn field(&mut self, at: Option<Node<'d>>, target: &Type, resolved: &Type, key: &str) -> Type {

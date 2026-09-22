@@ -75,6 +75,7 @@ fn infer_in(
         Known {
             all: &lookup,
             written: &lookup,
+            provided: &HashMap::new(),
         },
         mode,
     );
@@ -166,6 +167,21 @@ fn a_lambda_takes_the_types_the_call_expects() {
         declared_type(facts.definitions.get("list-people").expect("list-people")).to_string(),
         "(fn [[[:any]]] {:body @[{:id :any :name :any :age :any}]})"
     );
+}
+
+/// `:table` and `:number` are how the atoms naming those types are written, and keys like any
+/// other. What a form holds at one is read from the key as written: the type of the keyword
+/// itself says only `:keyword`, which cannot tell the key `:table` from the type of tables.
+#[test]
+fn a_key_named_like_a_type_reads_the_key() {
+    let source = "(def Entity :typedef {:table :keyword :number :string})\n\
+                  (defn called {:params [Entity]} [e] (def name (e :table)) name)\n\
+                  (defn gotten {:params [Entity]} [e] (def held (get e :number)) held)\n\
+                  (defn taken {:params [Entity]} [{:table t}] t)\n";
+    let (_, scopes, facts) = alone(source);
+    assert_eq!(local(&scopes, &facts, "name"), ":keyword");
+    assert_eq!(local(&scopes, &facts, "held"), ":string");
+    assert_eq!(local(&scopes, &facts, "t"), ":keyword");
 }
 
 #[test]
@@ -296,6 +312,7 @@ fn a_thousand_lines_are_inferred_in_milliseconds() {
         Known {
             all: &lookup,
             written: &lookup,
+            provided: &HashMap::new(),
         },
         Mode::default(),
     );
@@ -334,6 +351,7 @@ fn nothing_in_a_janet_file_makes_inference_panic() {
             Known {
                 all: &lookup,
                 written: &lookup,
+                provided: &HashMap::new(),
             },
             Mode::default(),
         );
@@ -684,6 +702,7 @@ fn nothing_written_the_usual_way_is_complained_about() {
                 Known {
                     all: &lookup,
                     written: &lookup,
+                    provided: &HashMap::new(),
                 },
                 Mode::default(),
             );
@@ -999,6 +1018,7 @@ fn zz_slowest_corpus_files() {
                 Known {
                     all: &lookup,
                     written: &lookup,
+                    provided: &HashMap::new(),
                 },
                 Mode::default(),
             );
@@ -1029,6 +1049,7 @@ fn zz_thousand_lines_median() {
                 Known {
                     all: &lookup,
                     written: &lookup,
+                    provided: &HashMap::new(),
                 },
                 Mode::default(),
             );
@@ -1633,6 +1654,7 @@ fn a_wide_union_is_any_and_costs_no_more_than_its_lines() {
             Known {
                 all: &lookup,
                 written: &lookup,
+                provided: &HashMap::new(),
             },
             Mode::default(),
         );
@@ -2233,5 +2255,48 @@ fn a_dispatch_naming_every_tag_does_not_fall_through_to_nil() {
             "case over Shape misses :rect",
             "part returns :number?, declared :number"
         ]
+    );
+}
+
+/// `|($ :sql)`: the call the short function is handed to says what `$` holds, and the key reads
+/// the field out of it — what a hover on either shows.
+#[test]
+fn a_short_function_takes_the_types_the_call_expects() {
+    let source = "(comment :declare\n  (defn rows {:ret @[{:sql :string :n :number}]} []))\n\
+                  (defn sqls [] (map |($ :sql) (rows)))\n";
+    let (doc, _, facts) = alone(source);
+    let dollar = syntax::symbol_at(doc.root(), doc.text.find('$').expect("$")).expect("a symbol");
+    let key = *syntax::path_at(doc.root(), doc.text.find(":sql)").expect(":sql"))
+        .last()
+        .expect("a form");
+    assert_eq!(
+        declared_type(facts.definitions.get("sqls").expect("sqls")).to_string(),
+        "(fn [] @[:string])"
+    );
+    assert_eq!(
+        facts.expr(&doc, dollar).map(|ty| ty.to_string()),
+        Some("{:sql :string :n :number}".to_string())
+    );
+    assert_eq!(
+        facts.key(key).map(|ty| ty.to_string()),
+        Some(":string".to_string())
+    );
+}
+
+/// `$&` is every argument as one tuple, and the call the short function is handed to says what
+/// the arguments are: `map` calls it with one row, so `$&` holds one.
+#[test]
+fn a_short_function_types_its_rest_argument() {
+    let source = "(comment :declare\n  (defn rows {:ret @[{:sql :string :n :number}]} []))\n\
+                  (defn firsts [] (map |(first $&) (rows)))\n";
+    let (doc, _, facts) = alone(source);
+    let rest = syntax::symbol_at(doc.root(), doc.text.find("$&").expect("$&")).expect("a symbol");
+    assert_eq!(
+        facts.expr(&doc, rest).map(|ty| ty.to_string()),
+        Some("[{:sql :string :n :number}]".to_string())
+    );
+    assert_eq!(
+        declared_type(facts.definitions.get("firsts").expect("firsts")).to_string(),
+        "(fn [] @[{:sql :string :n :number}?])"
     );
 }

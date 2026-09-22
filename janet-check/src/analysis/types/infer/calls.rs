@@ -31,7 +31,20 @@ impl<'d> Infer<'d> {
         }
         self.as_forms(head, callee, args, &mut types);
         self.inspect(head, args, &types);
-        self.apply(callee, &types)
+        let ret = self.apply(callee, &types);
+        head.parent()
+            .map_or(ret.clone(), |call| self.provided(call, ret))
+    }
+
+    /// What a library's `:typed-by` rule computed for the call at `call`, else `ret`. The rule
+    /// read the arguments and is written by the library that ships it, so its type is what the
+    /// call is, not a guess.
+    pub(super) fn provided(&self, call: Node<'d>, ret: Type) -> Type {
+        self.known
+            .provided
+            .get(&call.start_byte())
+            .cloned()
+            .unwrap_or(ret)
     }
 
     /// A macro takes its arguments as forms: a bare symbol where it writes `:symbol` is that

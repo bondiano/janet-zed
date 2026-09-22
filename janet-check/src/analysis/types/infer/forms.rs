@@ -8,7 +8,7 @@ use tree_sitter::Node;
 
 use super::definitions::declared_type;
 use super::unions::{any, atom, dynamic, never, nil, unions};
-use super::{ARRAY, Infer, KEYWORD, STRUCT, TABLE, TUPLE, literal};
+use super::{ARRAY, Infer, KEYWORD, STRUCT, Short, TABLE, TUPLE, literal};
 use crate::analysis::types::fit::Fit;
 use crate::analysis::types::{Fields, Signature, Type};
 use crate::syntax;
@@ -175,6 +175,9 @@ impl<'d> Infer<'d> {
         if let Some(index) = self.scopes.uses.get(&node.start_byte()) {
             return self.locals.get(*index).cloned().unwrap_or_else(any);
         }
+        if let Some(ty) = self.short_param(node) {
+            return ty;
+        }
         let name = self.text(node);
         // Inside its own definition a name is one type, not a fresh copy: that is what lets a
         // recursive call constrain the result instead of walking off.
@@ -202,12 +205,39 @@ impl<'d> Infer<'d> {
         }
     }
 
-    /// `|(+ $ 1)`: a function of however many arguments its body names.
+    /// `$`, `$0`…`$9` and `$&` inside a `|…`: one fresh variable per position the body names and
+    /// one for the rest, so that the call the function is handed to — `(map |($ :sql) rows)` —
+    /// says what they hold. `None` for any other name, and for a `$` written outside a short
+    /// function.
+    fn short_param(&mut self, node: Node<'d>) -> Option<Type> {
+        let name = self.text(node).strip_prefix('$')?;
+        let fresh = self.fresh();
+        let short = self.shorts.last_mut()?;
+        // `$&` is every argument the function was given, as one tuple.
+        if name == "&" {
+            let rest = short.rest.get_or_insert(fresh).clone();
+            return Some(Type::Tuple([rest].into()));
+        }
+        let at = match name {
+            "" => 0,
+            digits => digits.parse().ok()?,
+        };
+        Some(short.params.entry(at).or_insert(fresh).clone())
+    }
+
+    /// `|(+ $ 1)`: a function of the `$n` its body names, and of any number of arguments beyond
+    /// them — Janet ignores the ones the body never reads, and `$&` is where it holds them.
     fn short_fn(&mut self, node: Node<'d>) -> Type {
+        self.shorts.push(Short::default());
         let ret = self.body(&self.forms(node));
+        let used = self.shorts.pop().unwrap_or_default();
+        let arity = used.params.keys().copied().max().map_or(0, |last| last + 1);
+        let params = (0..arity)
+            .map(|at| used.params.get(&at).cloned().unwrap_or_else(any))
+            .collect();
         Type::Fn(Arc::new(Signature {
-            params: Vec::new(),
-            rest: Some(any()),
+            params,
+            rest: Some(used.rest.unwrap_or_else(any)),
             ret: dynamic(ret),
             throws: Vec::new(),
             narrows: None,
@@ -398,6 +428,7 @@ impl<'d> Infer<'d> {
         } else {
             types.push(value);
         }
-        self.apply(&callee, &types)
+        let ret = self.apply(&callee, &types);
+        self.provided(step, ret)
     }
 }

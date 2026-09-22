@@ -37,8 +37,11 @@ fn check(
             packages,
             natives,
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .map(|report| report.problems)
 }
@@ -258,8 +261,11 @@ fn keeps_imports_loaded_until_their_files_change() {
                 packages: &[],
                 natives: &[],
                 declared: &[],
+                ambient: &[],
                 includes: &[],
+                program: &[],
                 definers: &[],
+                typed_by: &[],
             })
             .unwrap()
             .problems
@@ -297,8 +303,11 @@ fn restarts_after_a_check_that_does_not_finish() {
         packages: &[],
         natives: &[],
         declared: &[],
+        ambient: &[],
         includes: &[],
+        program: &[],
         definers: &[],
+        typed_by: &[],
     });
     assert!(slow.unwrap_err().to_string().contains("did not finish"));
 
@@ -311,8 +320,11 @@ fn restarts_after_a_check_that_does_not_finish() {
             packages: &[],
             natives: &[],
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .unwrap()
         .problems;
@@ -340,8 +352,11 @@ fn reports_the_types_a_macro_declares() {
             packages: &[],
             natives: &[],
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .unwrap();
     let bound = report
@@ -398,8 +413,11 @@ fn reports_what_macros_bind() {
             packages: &[],
             natives: &[],
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .unwrap();
     assert_eq!(
@@ -417,8 +435,11 @@ fn reports_what_macros_bind() {
             packages: &[],
             natives: &[],
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .unwrap();
     assert_eq!(
@@ -444,8 +465,11 @@ fn declared_core_names_keep_their_bindings() {
             packages: &[],
             natives: &[],
             declared: &declared,
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         })
         .unwrap()
         .problems;
@@ -475,8 +499,11 @@ fn declared_macros_read_as_definers_define_their_names() {
                 packages: &[],
                 natives: &[],
                 declared: &declared,
+                ambient: &[],
                 includes: &[],
+                program: &[],
                 definers,
+                typed_by: &[],
             })
             .unwrap()
             .problems
@@ -488,6 +515,58 @@ fn declared_macros_read_as_definers_define_their_names() {
     ];
     assert_eq!(show_problems(&check(&definers)), "");
     assert_ne!(show_problems(&check(&[])), "");
+}
+
+/// A host's globals and the files it runs first are seen by the modules a file imports, not only
+/// by the file: a module's top level calls a host function and splices what it answers, and names
+/// a workflow the included file defines.
+#[test]
+fn imported_modules_see_ambient_names_and_the_program() {
+    let dir =
+        std::env::temp_dir().join(format!("janet-tooling-ambient-test-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(dir.join("flows.janet"), "(defworkflow reminder [x] x)\n").unwrap();
+    std::fs::write(
+        dir.join("routes.janet"),
+        "(def routes [;(group \"/api\" [:get \"/\" nil]) (clock/now)])\n\
+         (defn start [] (reminder 1))\n",
+    )
+    .unwrap();
+    let ambient = [
+        Ambient {
+            name: "group".into(),
+            function: true,
+            value: "@[]".into(),
+        },
+        Ambient {
+            name: "clock/now".into(),
+            function: true,
+            value: "0".into(),
+        },
+        Ambient {
+            name: "defworkflow".into(),
+            function: false,
+            value: "nil".into(),
+        },
+    ];
+    let problems = Worker::new("janet")
+        .check(&Check {
+            path: &dir.join("a.janet"),
+            text: "(import ./routes)\n(print routes/routes (clock/now) no-such)\n",
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &[],
+            ambient: &ambient,
+            includes: &[],
+            program: &[dir.join("flows.janet")],
+            definers: &[("defworkflow".to_string(), "defn")],
+            typed_by: &[],
+        })
+        .unwrap()
+        .problems;
+    assert_eq!(show_problems(&problems), "2:1 unknown symbol no-such");
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
@@ -508,8 +587,11 @@ fn fails_fast_while_a_hung_check_has_not_changed() {
             packages: &[],
             natives: &[],
             declared: &[],
+            ambient: &[],
             includes: &[],
+            program: &[],
             definers: &[],
+            typed_by: &[],
         });
         (checked.unwrap_err().to_string(), started.elapsed())
     };
@@ -551,8 +633,11 @@ fn a_hung_check_takes_the_processes_it_started_along() {
         packages: &[],
         natives: &[],
         declared: &[],
+        ambient: &[],
         includes: &[],
+        program: &[],
         definers: &[],
+        typed_by: &[],
     });
     assert!(hung.is_err());
     let pid = std::fs::read_to_string(&pid).unwrap();
@@ -592,4 +677,67 @@ fn reads_janet_versions() {
     assert_eq!(version("dev"), None);
     assert!(version("1.34.9").unwrap() < MIN_VERSION);
     assert_eq!(too_old("janet"), None, "the installed janet checks");
+}
+
+/// What a `:typed-by` rule computes for a call reaches the report by the call's line and column:
+/// a rule declared for a name and found beside its declaration, and one on the `defn` itself.
+#[test]
+fn a_rule_types_calls_with_a_static_argument() {
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-typed-by-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    std::fs::write(
+        dir.join("shout.janet"),
+        "(defn rule [[arg] env] (def [_ value] (or arg [])) (when (string? value) :string))\n",
+    )
+    .unwrap();
+    std::fs::write(
+        dir.join("lib.janet"),
+        "(defn- rule [[arg] env] (when arg ['or :boolean :nil]))\n(defn yell {:typed-by rule} [x] x)\n",
+    )
+    .unwrap();
+    let report = Worker::new("janet")
+        .check(&Check {
+            path: &dir.join("a.janet"),
+            text: "(import ./lib)\n(def w \"hi\")\n(print (shout \"hi\") (shout w) (shout 1))\n(lib/yell 'x)\n(lib/yell (os/time))\n\
+                   (defmacro loud [x] ~(shout ,x))\n(defmacro deep [x] ~(do (shout ,x) 1))\n\
+                   (print (-> \"a\" (shout)) (loud \"b\") (deep \"c\"))\n",
+            cwd: &dir,
+            packages: &[],
+            natives: &[],
+            declared: &["shout".to_string()],
+            ambient: &[],
+            includes: &[],
+            program: &[],
+            definers: &[],
+            typed_by: &[TypedBy {
+                name: "shout".to_string(),
+                rule: "shout/rule".to_string(),
+                dir: dir.clone(),
+            }],
+        })
+        .unwrap();
+    std::fs::remove_dir_all(&dir).ok();
+    let provided: Vec<_> = report
+        .provided
+        .values()
+        .flatten()
+        .map(|p| format!("{}:{} {}", p.line, p.col, p.annotation))
+        .collect();
+    assert_eq!(
+        provided,
+        // The `->` call is its rewritten `(shout "a")` at its own place; `(loud "b")` expands to
+        // the call; the call inside `deep` has no place of its own.
+        [
+            "3:8 :string",
+            "3:21 :string",
+            "4:1 (or :boolean :nil)",
+            "8:16 :string",
+            "8:25 :string"
+        ],
+        "{:?}",
+        report.problems
+    );
 }

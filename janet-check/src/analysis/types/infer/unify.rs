@@ -396,6 +396,11 @@ impl Infer<'_> {
             (dict @ Type::Dict { .. }, Type::Struct(_) | Type::Table(_))
             | (Type::Struct(_) | Type::Table(_), dict @ Type::Dict { .. }) => dict.clone(),
             (Type::Fn(a), Type::Fn(b)) => {
+                // A rest parameter stands for every parameter the other side lists past the ones
+                // it names itself: `|(apply + $&)` against `(fn [a] b)` is what tells `$&` that
+                // it holds `a`s.
+                self.spread(&b.params, a.params.len(), a.rest.as_ref(), step);
+                self.spread(&a.params, b.params.len(), b.rest.as_ref(), step);
                 let params = self.positional(&a.params, &b.params, step);
                 let variadic = match (&a.rest, &b.rest) {
                     (Some(left), Some(right)) => Some(self.unify_at(left, right, step)),
@@ -479,6 +484,20 @@ impl Infer<'_> {
     }
 
     /// Two lists of types by position, keeping what only one of them has.
+    /// The parameters listed past `beyond` meet `rest`, which stands for all of them. Only a
+    /// rest that is still a variable learns: one already written down is a constraint, and one
+    /// left at `:any` says the arguments were never looked at, so binding a parameter to it
+    /// would throw away what the parameter knows.
+    fn spread(&mut self, params: &[Type], beyond: usize, rest: Option<&Type>, depth: usize) {
+        let Some(rest) = rest.filter(|rest| matches!(self.resolve(rest), Type::Var(_))) else {
+            return;
+        };
+        let rest = rest.clone();
+        for param in params.iter().skip(beyond) {
+            self.unify_at(&rest, param, depth);
+        }
+    }
+
     fn positional(&mut self, left: &[Type], right: &[Type], depth: usize) -> Vec<Type> {
         let (longer, shorter) = if left.len() >= right.len() {
             (left, right)

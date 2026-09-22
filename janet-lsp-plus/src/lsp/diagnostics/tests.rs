@@ -57,8 +57,11 @@ fn job(uri: &str, version: i32) -> Job {
         packages: Vec::new(),
         natives: Vec::new(),
         declared: Vec::new(),
+        ambient: Vec::new(),
+        program: Vec::new(),
         includes: Vec::new(),
         definers: Vec::new(),
+        typed_by: Vec::new(),
     }
 }
 

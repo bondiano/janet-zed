@@ -19,7 +19,7 @@ impl<'d> Infer<'d> {
         let forms = self.forms(node);
         if let (syntax::LIST, [head, args @ ..]) = (node.kind(), &*forms) {
             let name = self.text(*head);
-            if name.starts_with(char::is_uppercase)
+            if types::is_named(name)
                 && let Some((_, vars)) = self.typedef(name)
                 && !args.is_empty()
                 && args.len() != vars.len()

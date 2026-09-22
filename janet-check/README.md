@@ -243,6 +243,39 @@ Types for thirty-one of spork's modules (`json`, `http`, `path`, `sh`, `misc`, `
 `htmlgen`, `rawterm`, `getline`, `generators`, `data`, `randgen`, `utf8`, `cron`, `msg`, `channel`,
 `date`, `math`, `cc`, `pm`) are built in, reachable through an import of the module — `(import spork/json)` types `(json/decode text)` as `{:string :any}`.
 
+### Types a library computes
+
+Some calls answer a type that only their arguments tell: a datalog query, a format string, a
+grammar. `:typed-by` names a function of the library that reads a call and says what it answers:
+
+```janet
+# arc.d.janet
+(defn db/q {:params [:any :any] :ret :any :typed-by arc/query-type} [query & inputs])
+```
+
+```janet
+# arc.janet, beside it
+(defn query-type [args env] ...)
+```
+
+The check calls the rule for every call of `db/q` with a static argument: a literal, a quoted
+form, a quasiquoted one without an unquote, a name a pure `def` bound, and data made of those.
+`args` holds `[:value v]` for each static argument and nil for any other; `env` is the checked
+file's environment, and every module it loaded is in `module/cache`. The rule answers a type as
+data in the type syntax (`:boolean?`, `[:string]`, `['or :number :nil]`), or nil. `arc/query-type`
+is `query-type` of the module `arc`: the one bound where the call is, else `arc.janet` beside the
+declaration, else `arc` as Janet finds it. On a `defn` itself, `{:typed-by rule}` is resolved in
+the module that defines the function.
+
+What the rule answers is the call's type instead of `:ret`, written as much as `:ret` is:
+`--strict` holds a `{:type}` that disagrees with it. A call with no static argument, a rule that
+answers nil or fails, and a rule that cannot be found leave the call to `:ret`. Rules run in the
+check, so `--types-only` never computes these types.
+
+A call is read as macros leave it: `(-> q (db/q x))` is `(db/q q x)`, and a macro call that
+expands to a typed call is typed by it. A call a macro buries deeper in its expansion has no
+place in the source to type and is left alone.
+
 ### What is reported
 
 | Reported | Example |
@@ -316,6 +349,11 @@ sources, is named in `:libraries`: directories, relative to the workspace root o
 exactly as installed libraries are. Their `janet-zed.exports/<lib>/config.jdn` and `*.d.janet`
 merge with the others; the workspace's own config still wins.
 
+A name such a library declares without a module of its own, like `clock/now`, is a host global:
+the check compiles the modules a file imports with it bound too. Their top level runs, so a
+declared function answers a plain value of the result it declares — `[]` for `[:any]`, `{}` for a
+struct, `0` for `:number` — and `nil` where its type names nothing plainer.
+
 ```janet
 {:libraries ["../../crates/arc"]}
 ```
@@ -334,7 +372,11 @@ subdirectories', and not `*.d.janet`.
 Every workspace file is then read as if it had [`# janet-zed: include`](#comment-directives) for
 those files. A file of the program includes the files before it, never itself or the ones after
 it; any other file — tests, scripts — includes all of them. Private definitions are visible,
-go-to-definition, hover, references and types follow them, and the check runs them first.
+go-to-definition, hover, references and types follow them, and the check runs them first. The
+modules a file imports see all of them as well, as a host's globals.
+
+A `.janet-zed/` deeper in the workspace — an app inside a monorepo opened at its top — is a root
+of its own: its config is read too, and its `:include` is the program of its own directory only.
 
 A library macro that `:lint-as` reads as a core definer and that a `*.d.janet` declares with
 `defmacro` defines its name in the check too: `(deftask name [x] …)` read as `defn` binds `name`

@@ -53,6 +53,9 @@ pub struct Client {
     pub resolves_code_actions: bool,
     /// Whether the client shows work-done progress the server starts.
     pub reports_progress: bool,
+    /// Whether the client takes a completion that replaces the name the cursor stands in the
+    /// middle of, rather than only what is typed before it.
+    pub replaces_completions: bool,
 }
 
 #[allow(clippy::struct_excessive_bools, reason = "independent settings")]
@@ -257,8 +260,11 @@ impl State {
             packages: self.workspace.packages().to_vec(),
             natives: self.workspace.natives().to_vec(),
             declared,
+            ambient: self.workspace.host_globals(),
             includes,
+            program: self.workspace.program(&buffer.path).to_vec(),
             definers,
+            typed_by: self.workspace.typed_by(&buffer.path),
         })
     }
 

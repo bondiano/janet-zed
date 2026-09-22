@@ -48,7 +48,7 @@ use crate::kernel;
 use diagnostics::{Checked, Checker};
 use janet_check::analysis::stdlib::Stdlib;
 use janet_check::analysis::types::infer::Mode;
-use janet_check::analysis::workspace::Workspace;
+use janet_check::analysis::workspace::{self, Workspace};
 use janet_check::analysis::{lints, modules, path_of};
 use state::{Client, Reporting, State};
 
@@ -205,7 +205,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     } else {
         tracing::warn!("client does not watch files; the index only follows open buffers");
     }
-    let roots = workspace_roots(&params);
+    let roots = workspace::with_nested_projects(workspace_roots(&params));
     tracing::info!(
         ?roots,
         ?syspath,
@@ -225,6 +225,7 @@ pub fn run_with(connection: &Connection, register_kernel: bool) -> Result<()> {
     let client = Client {
         resolves_code_actions: resolves_code_actions(&params),
         reports_progress: reports_progress(&params),
+        replaces_completions: replaces_completions(&params),
     };
     let indexing = Progress::begin(connection, client.reports_progress, "Indexing")?;
     let mut state = State::new(
@@ -400,6 +401,19 @@ fn resolves_code_actions(params: &InitializeParams) -> bool {
         .and_then(|document| document.code_action.as_ref())
         .and_then(|action| action.resolve_support.as_ref())
         .is_some_and(|support| support.properties.iter().any(|property| property == "edit"))
+}
+
+/// Whether the client understands a completion that names both what it inserts at the cursor and
+/// what it replaces around it.
+fn replaces_completions(params: &InitializeParams) -> bool {
+    params
+        .capabilities
+        .text_document
+        .as_ref()
+        .and_then(|document| document.completion.as_ref())
+        .and_then(|completion| completion.completion_item.as_ref())
+        .and_then(|item| item.insert_replace_support)
+        .unwrap_or(false)
 }
 
 /// Asks the client to request the inlay hints again, where it can: the types they show changed
@@ -882,6 +896,7 @@ fn publish(connection: &Connection, state: &mut State, checked: Checked) -> Resu
         // Even from a stale check: a module's bindings come once per load, and names are looked
         // up in the current text.
         state.workspace.expand(report.bindings);
+        state.workspace.provide(report.provided);
         report.problems
     });
     if let Err(err) = &problems {

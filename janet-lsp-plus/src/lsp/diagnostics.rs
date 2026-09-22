@@ -18,7 +18,8 @@ use janet_check::analysis::ignores::{self, ignores};
 use janet_check::analysis::lints::Lint;
 use janet_check::analysis::modules::Package;
 use janet_check::analysis::types::infer::Finding;
-use janet_check::janet::{self, Check, Problem, Report};
+use janet_check::analysis::workspace::Ambient;
+use janet_check::janet::{self, Check, Problem, Report, TypedBy};
 use janet_check::syntax::{self, Document};
 
 /// Quiet time after the last edit before buffers are checked.
@@ -40,10 +41,16 @@ pub struct Job {
     pub natives: Vec<Package>,
     /// Names declared for this file that Janet itself never binds.
     pub declared: Vec<String>,
+    /// Declared names every module sees: see [`Check::ambient`].
+    pub ambient: Vec<Ambient>,
     /// Files the config's `:include` runs before this one.
     pub includes: Vec<PathBuf>,
+    /// Every `:include` file: see [`Check::program`].
+    pub program: Vec<PathBuf>,
     /// Declared macros read as core definers: see [`Check::definers`].
     pub definers: Vec<(String, &'static str)>,
+    /// Declared names a library's rule types: see [`Check::typed_by`].
+    pub typed_by: Vec<TypedBy>,
 }
 
 pub struct Checked {
@@ -117,8 +124,11 @@ fn check_one(worker: Option<&mut janet::Worker>, job: &Job) -> Result<Report> {
                 packages: &job.packages,
                 natives: &job.natives,
                 declared: &job.declared,
+                ambient: &job.ambient,
                 includes: &job.includes,
+                program: &job.program,
                 definers: &job.definers,
+                typed_by: &job.typed_by,
             })
         },
     )

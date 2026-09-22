@@ -545,6 +545,37 @@ fn a_declaration_file_is_told_only_about_its_types() {
     assert_eq!(messages, ["Box takes 1 type argument, given 2"]);
 }
 
+/// A named type an import brings in wears its module in front of its name: `db/Entity` names
+/// that type rather than a type variable of its own, and takes type arguments like any other.
+#[test]
+fn a_named_type_is_read_under_the_prefix_it_is_imported_with() {
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    workspace.insert(file(
+        "/ws/db.janet",
+        "(def Entity :typedef {:table :keyword})\n\
+         (def Box :typedef {:of [a]} '{:value a})\n",
+    ));
+    workspace.insert(file(
+        "/ws/main.janet",
+        "(import ./db)\n\
+         (defn read-one {:params [db/Entity (db/Box :number)]} [e b]\n  \
+         (def named (e :table))\n  \
+         (def held (b :value))\n  \
+         [named held])\n",
+    ));
+    workspace.refresh();
+    assert!(
+        hover(&workspace, "/ws/main.janet", "named").contains("named: :keyword"),
+        "{}",
+        hover(&workspace, "/ws/main.janet", "named")
+    );
+    assert!(
+        hover(&workspace, "/ws/main.janet", "held").contains("held: :number"),
+        "{}",
+        hover(&workspace, "/ws/main.janet", "held")
+    );
+}
+
 /// A module's own `slurp` shadows the core's: what the core declares for its binding says nothing
 /// about a function the module wrote, typed or not.
 #[test]

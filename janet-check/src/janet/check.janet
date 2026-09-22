@@ -1,10 +1,12 @@
-# A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :declared
-# :definers :packages :natives}`; each gets one line on stdout, `check/marker` and then, as JSON,
-# `{:problems [...] :bindings {path [[name line col doc private types] ...]}}`, or `error` and the
-# message as a JSON string. `:bindings` are the names macros bound, which the host cannot read
-# from the source: in `:file`, and in each module loaded since the previous request. Like core `flycheck`,
-# every form of the file is parsed and compiled and macros are expanded, but only forms known to
-# be safe run: definitions without side effects, imports, and anything with `:flycheck` metadata.
+# A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :program
+# :declared :ambient :definers :packages :natives :typed-by}`; each gets one line on stdout,
+# `check/marker` and then, as JSON, `{:problems [...] :bindings {path [[name line col doc private
+# types] ...]} :provided {path [[line col type] ...]}}`, or `error` and the message as a JSON
+# string. `:bindings` are the names macros bound, which the host cannot read from the source: in
+# `:file`, and in each module loaded since the previous request. `:provided` are the types of the
+# file's calls a `:typed-by` rule computed. Like core `flycheck`, every form of the file is parsed
+# and compiled and macros are expanded, but only forms known to be safe run: definitions without
+# side effects, imports, and anything with `:flycheck` metadata.
 # janet-zed: include ./json.janet ./project.janet ./types.janet
 # janet-zed: declare script/root-env check/vocabulary
 
@@ -95,7 +97,10 @@
 (put check/base :flychecking true)
 (put check/base :out @"")
 (put check/base :err @"")
-(put check/base *module-make-env* (fn [&] (make-env check/base)))
+# The `:include` files, run in order into one environment over `check/base`: what imported
+# modules load into, as a host that runs those files first gives every module their names.
+(var- check/program check/base)
+(put check/base *module-make-env* (fn [&] (make-env check/program)))
 
 # -- where modules are found -----------------------------------------------------------------
 
@@ -218,17 +223,188 @@
         ~(,head ,name (fn [] ,;inner))
         ~(fn [] ,;inner)))))
 
+# The ambient names `check/base` holds stand-ins for, `[name kind value]` as the last request
+# gave them.
+(var- check/ambient [])
+
+# Ambient names are a host's globals: every module sees them, not only the checked file, so their
+# stand-ins live in `check/base`. An imported module runs its top level, so a `:fn` stand-in
+# answers a plain value of what its declaration returns (`[]` for routes a module splices);
+# a `:lint-as` definer is a macro as in the checked file. Core names keep their bindings.
+(defn- check/set-ambient [ambient definers]
+  (each [name] check/ambient (put check/base (symbol name) nil))
+  (def macros (tabseq [[name definer] :in definers] name definer))
+  (each [name kind value] ambient
+    (def sym (symbol name))
+    (unless (get check/base sym)
+      (put check/base sym
+           (cond
+             (macros name) @{:macro true :value (check/definer (macros name))}
+             (= kind :fn) @{:value (fn [&] value) :stand-in true}
+             @{:value value :stand-in true}))))
+  (set check/ambient ambient))
+
+# The `:include` files `check/program` holds and their fingerprints. A change reloads it, and
+# every module with it: they saw its old names.
+(var- check/program-key nil)
+
+(defn- check/load-program [paths]
+  (def key [paths (map check/fingerprint paths)])
+  (unless (deep= key check/program-key)
+    (check/clear module/cache)
+    (check/clear check/fingerprints)
+    (set check/program-key key)
+    (def program (make-env check/base))
+    (set check/program program)
+    (each path paths
+      (protect (dofile path :env program :evaluator check/evaluator)))))
+
+# -- types a library computes (`:typed-by`) --------------------------------------------------
+
+# The value of `form` when it is static, `[:value v]`: a literal, a quoted form, a quasiquoted
+# one without an unquote, a symbol a pure `def` bound, and data made of those. Else nil.
+(defn- check/unquoted? [form]
+  (cond
+    (and (tuple? form) (= :parens (tuple/type form)) (index-of (first form) '[unquote splice])) false
+    (indexed? form) (all check/unquoted? form)
+    (dictionary? form) (and (all check/unquoted? (keys form)) (all check/unquoted? (values form)))
+    true))
+
+(defn- check/static [form env]
+  (defn all-static [forms]
+    (def values (map |(check/static $ env) forms))
+    (when (all truthy? values) (map |($ 1) values)))
+  (case (type form)
+    :symbol (when-let [binding (get env form)]
+              (when (and (table? binding) (not (binding :macro)) (not (binding :stand-in))
+                         (not (nil? (binding :value))) (not (binding :ref)))
+                [:value (binding :value)]))
+    :tuple (cond
+             (= :brackets (tuple/type form))
+             (when-let [items (all-static form)] [:value (tuple/brackets ;items)])
+             (= 'quote (first form)) [:value (form 1)]
+             (and (= 'quasiquote (first form)) (check/unquoted? (form 1))) [:value (form 1)])
+    :array (when-let [items (all-static form)] [:value (array ;items)])
+    :struct (when-let [items (all-static (mapcat identity (pairs form)))] [:value (struct ;items)])
+    :table (when-let [items (all-static (mapcat identity (pairs form)))] [:value (table ;items)])
+    [:value form]))
+
+# The rules the request's declarations name, `name` -> `[rule dir]`.
+(var- check/typed-by @{})
+# The rule each head resolved to in this request, false for none.
+(def- check/resolved @{})
+
+# The module environment that defined `binding`: an import binds a table whose prototype is the
+# module's own.
+(defn- check/defined-in [binding]
+  (var original binding)
+  (while (table/getproto original) (set original (table/getproto original)))
+  (find (fn [env] (and (table? env) (find |(= original $) (values env))))
+        (values module/cache)))
+
+# The function `rule` names: bound in `env`, else `name` of `module/name` in the module beside the
+# declaration in `dir`, else in `module` as Janet finds it.
+(defn- check/rule [rule dir env]
+  (def found (get env rule))
+  (def text (string rule))
+  (def slash (last (string/find-all "/" text)))
+  (cond
+    (and (table? found) (function? (found :value))) (found :value)
+    slash
+    (let [module (string/slice text 0 slash)
+          short (symbol (string/slice text (inc slash)))
+          beside (when dir (string dir "/" module ".janet"))
+          loaded (if (and beside (os/stat beside))
+                   (or (module/cache beside)
+                       (let [loaded (dofile beside :env (make-env check/program))]
+                         (put module/cache beside loaded)
+                         loaded))
+                   (let [[ok loaded] (protect (require module))] (when ok loaded)))]
+      (get-in loaded [short :value]))))
+
+# What the call `form` is, when its head names a rule and an argument is static: the rule's
+# answer, `[line col annotation]`. A rule that fails or answers nil leaves the call to `:ret`.
+# The rule is the head's `:typed-by` metadata, resolved where the head was defined, or what the
+# request declares for it.
+(defn- check/provided [form env at]
+  (def head (first form))
+  (def binding (when (symbol? head) (get env head)))
+  (def declared (when (symbol? head) (check/typed-by head)))
+  (def key (if (table? binding) binding head))
+  (when (nil? (check/resolved key))
+    (put check/resolved key
+         (or (cond
+               (and (table? binding) (symbol? (binding :typed-by)))
+               (check/rule (binding :typed-by) nil (or (check/defined-in binding) env))
+               declared (let [[rule dir] declared] (check/rule rule dir env)))
+             false)))
+  (def rule (check/resolved key))
+  (def args (when (function? rule) (map |(check/static $ env) (tuple/slice form 1))))
+  (when (and args (some truthy? args))
+    (def [ok answer] (protect (rule args env)))
+    (def [line col] at)
+    (when (and ok (not (nil? answer)))
+      [line col (types/literal answer)])))
+
+# `form` expanded by one macro step as Janet compiles it in `env`, or nil when its head is no
+# macro or the macro fails.
+(defn- check/expand-once [form env]
+  (def binding (get env (first form)))
+  (when (and (table? binding) (binding :macro))
+    (def [ok expanded] (protect (with-env env (macex1 form))))
+    (when (and ok (not= expanded form)) expanded)))
+
+# `[line col]` -> head of every call written in `form`.
+(defn- check/written [form &opt written]
+  (default written @{})
+  (cond
+    (and (tuple? form) (= :parens (tuple/type form)))
+    (do
+      (put written (tuple/slice (tuple/sourcemap form)) (first form))
+      (each item form (check/written item written)))
+    (indexed? form) (each item form (check/written item written))
+    (dictionary? form) (eachp [k v] form (check/written k written) (check/written v written)))
+  written)
+
+# The calls of `form` a rule types, as Janet compiles them: each macro is expanded, so a call
+# gets the arguments it runs with (`(-> q (db/q x))` is `(db/q q x)`). A call keeps the place of
+# the call written in the source it came from; one a macro made up (a template's tuple carries
+# the place of the macro's own source) is placed at the macro's call when it is what the call
+# expands to, and nowhere when it is deeper in the expansion.
+# ponytail: macros expand here and again in the compiler, so their expansion-time side effects run
+# twice.
+(defn- check/calls [form env found written &opt site]
+  (cond
+    (and (tuple? form) (= :parens (tuple/type form)))
+    (unless (index-of (first form) '[quote quasiquote])
+      (def own (tuple/slice (tuple/sourcemap form)))
+      (def at (if (= (first form) (written own)) own site))
+      (if-let [expanded (check/expand-once form env)]
+        (check/calls expanded env found written at)
+        (do
+          (when-let [provided (and at (check/provided form env at))]
+            (array/push found provided))
+          (each item form (check/calls item env found written)))))
+    (indexed? form) (each item form (check/calls item env found written))
+    (dictionary? form)
+    (eachp [k v] form (check/calls k env found written) (check/calls v env found written)))
+  found)
+
 (defn- check/run [request]
-  (def {:file file :cwd cwd :text text :includes includes :declared declared
-        :definers definers :packages packages :natives natives} request)
+  (def {:file file :cwd cwd :text text :includes includes :program program :declared declared :ambient ambient
+        :definers definers :packages packages :natives natives :typed-by typed-by} request)
   (os/cd cwd)
   (set check/tree (if (os/stat "jpm_tree/lib") (string cwd "/jpm_tree/lib")))
-  # Modules resolved against other workspace modules may hold the wrong imports.
-  (unless (= [packages natives] [check/packages check/natives])
+  # Modules resolved against other workspace modules, or other ambient names, may hold the wrong
+  # bindings.
+  (unless (deep= [packages natives ambient] [check/packages check/natives check/ambient])
     (check/clear module/cache)
-    (check/clear check/fingerprints))
+    (check/clear check/fingerprints)
+    (check/set-ambient ambient definers)
+    (set check/program-key nil))
   (set check/packages packages)
   (set check/natives natives)
+  (check/load-program program)
   (check/unload-changed)
   (set check/file file)
   (set check/form nil)
@@ -245,7 +421,9 @@
       (put env (symbol name) @{:macro true :value (check/definer definer)})))
   (each name declared
     (unless (get env (symbol name))
-      (put env (symbol name) @{:value nil})))
+      (put env (symbol name) @{:value nil :stand-in true})))
+  (check/clear check/resolved)
+  (set check/typed-by (tabseq [[name rule dir] :in typed-by] (symbol name) [(symbol rule) dir]))
   (each path includes
     (protect (dofile path :env env :evaluator check/evaluator)))
   (put env :current-file file)
@@ -262,6 +440,7 @@
         (when (symbol? name)
           (put env name binding)))))
 
+  (def provided @[])
   (var pending text)
   (run-context
     {:env env
@@ -270,7 +449,10 @@
                (when pending
                  (buffer/push buf pending "\n")
                  (set pending nil)))
-     :expander (fn [source] (set check/form source))
+     :expander (fn [source]
+                 (set check/form source)
+                 (protect (check/calls source env provided (check/written source)))
+                 source)
      :evaluator check/evaluator
      :on-compile-error (fn [message _ where &opt line col]
                          (when (= where file)
@@ -291,7 +473,7 @@
                     (check/report 1 (string value) line col)))})
   (def bindings @{file (check/bindings env file text)})
   (check/remember-loaded bindings)
-  {:problems check/problems :bindings bindings})
+  {:problems check/problems :bindings bindings :provided {file provided}})
 
 (loop [line :iterate (file/read stdin :line)]
   (def reply

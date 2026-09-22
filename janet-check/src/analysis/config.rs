@@ -45,9 +45,10 @@ pub struct Config {
     disabled: HashSet<String>,
     /// `:libraries`: directories read as installed libraries, as written.
     libraries: Vec<PathBuf>,
-    /// `:include`: files and directories that run as one program, as written until
-    /// [`Self::read`] resolves them against their root.
+    /// `:include`: files and directories that run as one program, as written.
     include: Vec<PathBuf>,
+    /// The `:include` of each root that has one, canonical: the root, then its entries.
+    programs: Vec<(PathBuf, Vec<PathBuf>)>,
 }
 
 /// What is wrong with a config file: an error when it is not one JDN struct, a warning for a key
@@ -76,7 +77,17 @@ impl Config {
                 .collect()
         };
         let named = resolved(|config| &config.libraries);
-        let include = resolved(|config| &config.include);
+        let programs = own
+            .iter()
+            .filter(|(_, config)| !config.include.is_empty())
+            .map(|(root, config)| {
+                let entries = config.include.iter();
+                (
+                    canonical(root),
+                    entries.map(|entry| canonical(&root.join(entry))).collect(),
+                )
+            })
+            .collect();
         let exported: Vec<PathBuf> = libraries
             .iter()
             .chain(&named)
@@ -101,7 +112,8 @@ impl Config {
             declarations,
             disabled,
             libraries: named,
-            include,
+            include: Vec::new(),
+            programs,
         }
     }
 
@@ -110,9 +122,10 @@ impl Config {
         &self.declarations
     }
 
-    /// The `:include` files and directories, canonical.
-    pub fn include(&self) -> &[PathBuf] {
-        &self.include
+    /// The `:include` files and directories of each root that names some, canonical: a root's
+    /// program is its own files' alone.
+    pub fn programs(&self) -> &[(PathBuf, Vec<PathBuf>)] {
+        &self.programs
     }
 
     /// Whether the workspace turned the lint `code` off.
@@ -147,6 +160,7 @@ impl Config {
             disabled,
             libraries: directories(&doc, ":libraries"),
             include: directories(&doc, ":include"),
+            programs: Vec::new(),
             ..Self::default()
         }
     }

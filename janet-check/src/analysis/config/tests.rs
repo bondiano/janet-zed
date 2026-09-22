@@ -76,7 +76,10 @@ fn an_included_file_sees_the_files_before_it_and_others_see_all() {
     use crate::analysis::SourceFile;
     use crate::analysis::workspace::Workspace;
     let config = Config {
-        include: vec!["/ws/src".into(), "/ws/workflows.janet".into()],
+        programs: vec![(
+            "/ws".into(),
+            vec!["/ws/src".into(), "/ws/workflows.janet".into()],
+        )],
         ..Config::default()
     };
     let mut workspace = Workspace::new(vec!["/ws".into()], None);

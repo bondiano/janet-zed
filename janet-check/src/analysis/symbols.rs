@@ -433,6 +433,32 @@ pub fn lambda(workspace: &Workspace, file: &SourceFile, list: Node) -> Option<St
     signature.render_lambda(file.document.text_of(vector))
 }
 
+/// What a hover says about a form no name resolves: `$` inside a `|…`, and the key of
+/// `(request :body)`, which reads the field rather than being the keyword it is written as.
+/// `None` off such a form and wherever inference read nothing worth showing.
+pub fn form_type(
+    workspace: &Workspace,
+    file: &SourceFile,
+    offset: usize,
+) -> Option<(Range<usize>, String)> {
+    let doc = &file.document;
+    let node = *syntax::path_at(doc.root(), offset).last()?;
+    let text = doc.text_of(node);
+    let facts = workspace.facts(&file.path);
+    let (ty, kind) = match node.kind() {
+        KEYWORD => (facts.key(node)?, "key"),
+        syntax::SYMBOL if text.starts_with('$') => (facts.expr(doc, node)?, "argument of `|…`"),
+        _ => return None,
+    };
+    // `:any` is what inference says when it read nothing: a hover repeating it reads as if
+    // nobody had looked.
+    if matches!(&ty, Type::Keyword(name) if name == "any") {
+        return None;
+    }
+    let markdown = format!("```janet\n{text}: {ty}\n```\n{kind}, type inferred");
+    Some((node.byte_range(), markdown))
+}
+
 const KEYWORD: &str = "kwd_lit";
 const TUPLE: &str = "sqr_tup_lit";
 const STRUCT: &str = "struct_lit";

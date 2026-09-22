@@ -7,7 +7,7 @@
 
 mod output;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -20,9 +20,9 @@ use janet_check::analysis::ignores::ignores;
 use janet_check::analysis::lints::{self, Lint};
 use janet_check::analysis::modules;
 use janet_check::analysis::types::infer::Mode;
-use janet_check::analysis::workspace::{Workspace, janet_files};
+use janet_check::analysis::workspace::{Workspace, janet_files, with_nested_projects};
 use janet_check::analysis::{SourceFile, canonical, is_declaration, uri_of};
-use janet_check::janet::{Check, Worker};
+use janet_check::janet::{Check, Report, Worker};
 use janet_check::syntax::{self, Document};
 use output::{Finding, Format, Place, Severity};
 use tree_sitter::Node;
@@ -208,12 +208,14 @@ fn check(
             .output()
             .with_context(|| format!("running `{janet}`: pass --janet <path>, or --types-only"))?;
     }
-    let roots: Vec<PathBuf> = paths
-        .iter()
-        .filter_map(root_of)
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect();
+    let roots: Vec<PathBuf> = with_nested_projects(
+        paths
+            .iter()
+            .filter_map(root_of)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect(),
+    );
     let mut workspace = Workspace::new(roots.clone(), syspath);
     workspace.set_mode(mode);
     // Every root that is itself a project is indexed whole, so its files resolve each other; one
@@ -239,6 +241,11 @@ fn check(
         workspace.insert(file);
     }
     workspace.refresh();
+    // Janet runs first: the types its `:typed-by` rules compute for calls are what inference
+    // reads those calls as.
+    let mut reports = janet.map_or_else(HashMap::new, |janet| {
+        compile_all(&mut workspace, &files, &mut Worker::new(janet))
+    });
     workspace.infer(files.iter().map(PathBuf::as_path));
 
     // Canonical as `files` are: on Windows the working directory may be spelled with 8.3 short
@@ -253,7 +260,6 @@ fn check(
             .replace('\\', "/")
     };
     let mut findings = config_problems(&roots, &shown);
-    let mut worker = janet.map(Worker::new);
     for path in &files {
         let Some(file) = workspace.file(path) else {
             let error = std::fs::read_to_string(path)
@@ -270,7 +276,7 @@ fn check(
             continue;
         };
         let doc = &file.document;
-        let problems = problems(&workspace, path, doc, worker.as_mut())?;
+        let problems = problems(&workspace, path, doc, janet.is_some(), reports.remove(path));
         findings.extend(problems.into_iter().map(|problem| Finding {
             path: shown(path),
             start: Some(Place::of(&doc.text, problem.range.start)),
@@ -331,23 +337,73 @@ impl Problem {
     }
 }
 
-/// What is wrong with the file at `path`. A file that does not parse is typed from whatever
-/// tree-sitter salvaged, so its findings are guesses: the parse error is the one thing worth
-/// reporting about it.
+/// What Janet's compiler makes of each of `files`, with the types its rules computed for calls
+/// handed to `workspace`.
+fn compile_all(
+    workspace: &mut Workspace,
+    files: &BTreeSet<PathBuf>,
+    worker: &mut Worker,
+) -> HashMap<PathBuf, anyhow::Result<Report>> {
+    let mut reports = HashMap::new();
+    for path in files {
+        let Some(file) = workspace.file(path) else {
+            continue;
+        };
+        let Some(mut report) = compile(workspace, path, &file.document, worker) else {
+            continue;
+        };
+        if let Ok(report) = &mut report {
+            workspace.provide(std::mem::take(&mut report.provided));
+        }
+        reports.insert(path.clone(), report);
+    }
+    reports
+}
+
+/// What Janet's compiler makes of the file at `path`, none for a file it does not compile: one
+/// that does not parse, and a declaration file, which is types for the checker, not code.
+fn compile(
+    workspace: &Workspace,
+    path: &Path,
+    doc: &Document,
+    worker: &mut Worker,
+) -> Option<anyhow::Result<Report>> {
+    if doc.too_deep || first_error(doc.root()).is_some() || is_declaration(path) {
+        return None;
+    }
+    let Some(cwd) = workspace.project_root(path) else {
+        return Some(Err(anyhow::anyhow!("a checked file has a directory")));
+    };
+    Some(worker.check(&Check {
+        path,
+        text: &doc.text,
+        cwd: &cwd,
+        packages: workspace.packages(),
+        natives: workspace.natives(),
+        declared: &workspace.unbound(path),
+        ambient: &workspace.host_globals(),
+        includes: workspace.includes(path),
+        program: workspace.program(path),
+        definers: &workspace.definers(path),
+        typed_by: &workspace.typed_by(path),
+    }))
+}
+
+/// What is wrong with the file at `path`, with what Janet reported of it when `janet_runs`. A
+/// file that does not parse is typed from whatever tree-sitter salvaged, so its findings are
+/// guesses: the parse error is the one thing worth reporting about it.
 fn problems(
     workspace: &Workspace,
     path: &Path,
     doc: &Document,
-    worker: Option<&mut Worker>,
-) -> anyhow::Result<Vec<Problem>> {
+    janet_runs: bool,
+    report: Option<anyhow::Result<Report>>,
+) -> Vec<Problem> {
     if doc.too_deep {
-        return Ok(vec![Problem::error(0, syntax::TOO_DEEP.to_string())]);
+        return vec![Problem::error(0, syntax::TOO_DEEP.to_string())];
     }
     if let Some(node) = first_error(doc.root()) {
-        return Ok(vec![Problem::error(
-            node.start_byte(),
-            "parse error".to_string(),
-        )]);
+        return vec![Problem::error(node.start_byte(), "parse error".to_string())];
     }
     let typed = workspace
         .facts(path)
@@ -360,34 +416,19 @@ fn problems(
             message: finding.message.clone(),
         })
         .collect::<Vec<_>>();
-    // A declaration file is types for the checker, not code to compile.
-    let worker = worker.filter(|_| !is_declaration(path));
     // What the compiler reports when it runs is left to it.
-    let janet_runs = worker.is_some();
+    let janet_runs = janet_runs && !is_declaration(path);
     let linted = lints::lints(workspace, path)
         .into_iter()
         .filter(|lint| !janet_runs || !lint.compiled)
         .map(linted);
-    let Some(worker) = worker else {
-        return Ok(sorted(typed.into_iter().chain(linted).collect()));
+    let Some(report) = report else {
+        return sorted(typed.into_iter().chain(linted).collect());
     };
-    let cwd = workspace
-        .project_root(path)
-        .context("a checked file has a directory")?;
-    let report = worker.check(&Check {
-        path,
-        text: &doc.text,
-        cwd: &cwd,
-        packages: workspace.packages(),
-        natives: workspace.natives(),
-        declared: &workspace.unbound(path),
-        includes: workspace.includes(path),
-        definers: &workspace.definers(path),
-    });
     // One file Janet fails on is that file's problem: the rest are still checked.
     let report = match report {
         Ok(report) => report,
-        Err(err) => return Ok(vec![Problem::error(0, format!("janet: {err:#}"))]),
+        Err(err) => return vec![Problem::error(0, format!("janet: {err:#}"))],
     };
     let directives = ignores(&doc.text);
     let compiled = report
@@ -404,7 +445,7 @@ fn problems(
             code: problem.code(),
             message: problem.message,
         });
-    Ok(sorted(compiled.chain(typed).chain(linted).collect()))
+    sorted(compiled.chain(typed).chain(linted).collect())
 }
 
 fn linted(lint: Lint) -> Problem {

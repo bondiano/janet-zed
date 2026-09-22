@@ -63,6 +63,9 @@ pub struct Known<'a> {
     /// those alone: a type read out of another file's body is a guess, and a guess makes a bad
     /// complaint.
     pub written: Lookup<'a>,
+    /// What a library's `:typed-by` rule computed for a call, by the byte the call starts at: the
+    /// call's type instead of its callee's `:ret`.
+    pub provided: &'a HashMap<usize, Type>,
 }
 
 /// The fresh variables a copy of a type was given, by the ones they replace.
@@ -98,6 +101,9 @@ pub struct Facts {
     /// The type of every expression that is not a literal, by the byte it starts at, as
     /// inference left it: what a hover or a completion reads to know the form under the cursor.
     exprs: HashMap<usize, Type>,
+    /// What the key of an index read out of the form it indexes, by the byte the key starts at:
+    /// `(request :body)` under the `:body`, where the keyword's own type says nothing.
+    keys: HashMap<usize, Type>,
     /// What a variable of those types stands for: applied when one of them is asked for, rather
     /// than to all of them on every edit.
     subst: Subst,
@@ -112,6 +118,12 @@ impl Facts {
             return Some(ty);
         }
         let ty = self.exprs.get(&node.start_byte())?;
+        Some(unmarked(generalize(&zonk(&self.subst, ty, INFER_DEPTH))))
+    }
+
+    /// What the key written at `node` reads out of the form it indexes, `None` off such a key.
+    pub fn key(&self, node: Node) -> Option<Type> {
+        let ty = self.keys.get(&node.start_byte())?;
         Some(unmarked(generalize(&zonk(&self.subst, ty, INFER_DEPTH))))
     }
 }
@@ -164,6 +176,7 @@ pub fn facts(doc: &Document, scopes: &Scopes, known: Known, mode: Mode) -> Facts
     let mut module = HashMap::new();
     let mut locals = vec![any(); scopes.locals.len()];
     let mut exprs = HashMap::new();
+    let mut keys = HashMap::new();
     let mut subst = Subst::default();
     let mut findings = Vec::new();
     for pass in 0..PASSES {
@@ -175,7 +188,7 @@ pub fn facts(doc: &Document, scopes: &Scopes, known: Known, mode: Mode) -> Facts
         infer.record = pass + 1 == PASSES;
         infer.mode = mode;
         infer.run();
-        (module, locals, exprs, subst, findings) = infer.finish();
+        (module, locals, exprs, keys, subst, findings) = infer.finish();
     }
     // What the file says it does not want reported. Filtered here rather than at either caller,
     // so the editor and `janet-check` silence the same lines.
@@ -191,6 +204,7 @@ pub fn facts(doc: &Document, scopes: &Scopes, known: Known, mode: Mode) -> Facts
             .collect(),
         locals,
         exprs,
+        keys,
         subst,
         findings,
     }
@@ -225,6 +239,10 @@ struct Infer<'d> {
     /// What every expression came out as, by the byte it starts at. Filled on the last pass
     /// only: the earlier ones are thrown away, and keeping their types is pure cost.
     exprs: HashMap<usize, Type>,
+    /// What an index read, by the byte its key starts at. Filled on the last pass only.
+    keys: HashMap<usize, Type>,
+    /// The `|…` literals being inferred, innermost last.
+    shorts: Vec<Short>,
     /// Calls a written signature rules out. Filled on the last pass only, like `exprs`.
     findings: Vec<Finding>,
     record: bool,
@@ -234,6 +252,16 @@ struct Infer<'d> {
     /// union is told apart at, if it is one, and its tags. Found once a pass, however many
     /// dispatches read it.
     tagsets: HashMap<SmolStr, Option<Tagset>>,
+}
+
+/// What a `|…` literal takes, as its body reads it: a fresh variable per `$n` it names and one
+/// for `$&`, so that the call the function is handed to says what they hold.
+#[derive(Default)]
+struct Short {
+    /// By position: `$` and `$0` are the first.
+    params: HashMap<usize, Type>,
+    /// What `$&` holds one of, where the body names it.
+    rest: Option<Type>,
 }
 
 /// The key a tagged union is told apart at, none for a union of keywords, and the tags it holds.
@@ -267,6 +295,8 @@ impl<'d> Infer<'d> {
             yielded: Vec::new(),
             narrowed: Vec::new(),
             exprs: HashMap::new(),
+            keys: HashMap::new(),
+            shorts: Vec::new(),
             findings: Vec::new(),
             record: false,
             mode: Mode::default(),
@@ -304,6 +334,7 @@ impl<'d> Infer<'d> {
         HashMap<String, Type>,
         Vec<Type>,
         HashMap<usize, Type>,
+        HashMap<usize, Type>,
         Subst,
         Vec<Finding>,
     ) {
@@ -315,7 +346,14 @@ impl<'d> Infer<'d> {
             .map(|(name, ty)| (name.clone(), settled(ty)))
             .collect();
         let locals = self.locals.iter().map(settled).collect();
-        (definitions, locals, self.exprs, self.subst, self.findings)
+        (
+            definitions,
+            locals,
+            self.exprs,
+            self.keys,
+            self.subst,
+            self.findings,
+        )
     }
 
     fn text(&self, node: Node) -> &'d str {

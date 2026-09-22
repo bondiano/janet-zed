@@ -1,0 +1,27 @@
+---
+source: janet-lsp-plus/tests/lsp.rs
+assertion_line: 681
+expression: "format!(\"----- SOURCE CODE\\n{source}\\n{}\\n\", hovers.join(\"\\n\\n\"))"
+---
+----- SOURCE CODE
+(def rows @[{:sql "select 1" :n 1}])
+(def sqls (map |($ :sql) rows))
+(def firsts (map |(first $&) rows))
+
+----- HOVER at 0
+```janet
+$: {:sql :string :n :number}
+```
+argument of `|…`, type inferred
+
+----- HOVER at 2
+```janet
+:sql: :string
+```
+key, type inferred
+
+----- HOVER at 0
+```janet
+$&: [{:sql :string :n :number}]
+```
+argument of `|…`, type inferred

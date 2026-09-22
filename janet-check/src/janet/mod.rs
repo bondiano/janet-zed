@@ -17,6 +17,7 @@ use serde::Deserialize;
 use crate::analysis::ignores::{self, Ignore};
 use crate::analysis::modules::{self, Package, Search};
 use crate::analysis::project;
+use crate::analysis::workspace::Ambient;
 use crate::syntax::{self, Document};
 
 /// The JSON encoder every script prints its results with.
@@ -107,6 +108,27 @@ pub struct Report {
     pub problems: Vec<Problem>,
     /// Names macros bound, by file: in the checked one, and in modules loaded for this check.
     pub bindings: HashMap<PathBuf, Vec<Binding>>,
+    /// Types of calls a `:typed-by` rule computed, by file.
+    #[serde(default)]
+    pub provided: HashMap<PathBuf, Vec<Provided>>,
+}
+
+/// The type a library's `:typed-by` rule computed for the call at the 1-based line and byte
+/// column Janet reports, written in the type syntax: `:boolean?`.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct Provided {
+    pub line: usize,
+    pub col: usize,
+    pub annotation: String,
+}
+
+/// A declared name whose calls a library types: `rule`, `module/name`, found beside the
+/// declaration in `dir` when not bound where the call is.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypedBy {
+    pub name: String,
+    pub rule: String,
+    pub dir: PathBuf,
 }
 
 /// A name a macro call bound, at the 1-based line and byte column of the call.
@@ -300,6 +322,7 @@ fn inputs(check: &Check) -> Vec<(PathBuf, Option<SystemTime>)> {
     let mut pending: Vec<(PathBuf, Option<String>)> = check
         .includes
         .iter()
+        .chain(check.program)
         .map(|include| (include.clone(), None))
         .chain([(check.path.to_path_buf(), Some(check.text.to_string()))])
         .collect();
@@ -335,12 +358,20 @@ pub struct Check<'c> {
     pub natives: &'c [Package],
     /// Names declared for this file that Janet itself never binds.
     pub declared: &'c [String],
+    /// Declared names Janet never binds that every module sees, the modules the file imports too:
+    /// a host's globals.
+    pub ambient: &'c [Ambient],
     /// Files the config's `:include` runs first in the same environment, as
     /// `# janet-zed: include` does.
     pub includes: &'c [PathBuf],
+    /// Every file of the config's `:include`: the environment the modules the file imports see,
+    /// as a host that runs them first gives its modules their definitions.
+    pub program: &'c [PathBuf],
     /// Declared macros a `:lint-as` entry reads as a core definer, and that definer: a stand-in
     /// macro defines the name as the definer would.
     pub definers: &'c [(String, &'static str)],
+    /// Declared names whose calls a library's rule types.
+    pub typed_by: &'c [TypedBy],
 }
 
 /// A request line for `check.janet`: a Janet struct.
@@ -364,15 +395,47 @@ fn line(job: &Check) -> Result<String> {
         .map(string)
         .collect::<Result<Vec<_>, _>>()?
         .join(" ");
+    let program = job
+        .program
+        .iter()
+        .map(|path| string(&path.to_string_lossy()))
+        .collect::<Result<Vec<_>, _>>()?
+        .join(" ");
+    let ambient = job
+        .ambient
+        .iter()
+        .map(|ambient| {
+            let kind = if ambient.function { ":fn" } else { ":value" };
+            Ok(format!(
+                "[{} {kind} {}]",
+                string(&ambient.name)?,
+                ambient.value
+            ))
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()?
+        .join(" ");
     let definers = job
         .definers
         .iter()
         .map(|(name, definer)| Ok(format!("[{} {}]", string(name)?, string(definer)?)))
         .collect::<Result<Vec<_>, serde_json::Error>>()?
         .join(" ");
+    let typed_by = job
+        .typed_by
+        .iter()
+        .map(|typed| {
+            Ok(format!(
+                "[{} {} {}]",
+                string(&typed.name)?,
+                string(&typed.rule)?,
+                string(&typed.dir.to_string_lossy())?
+            ))
+        })
+        .collect::<Result<Vec<_>, serde_json::Error>>()?
+        .join(" ");
     Ok(format!(
-        "{{:file {} :cwd {} :text {} :includes [{includes}] :declared [{declared}] \
-         :definers [{definers}] :packages [{}] :natives [{}]}}",
+        "{{:file {} :cwd {} :text {} :includes [{includes}] :program [{program}] :declared [{declared}] \
+         :ambient [{ambient}] :definers [{definers}] :typed-by [{typed_by}] :packages [{}] :natives [{}]}}",
         string(&path.to_string_lossy())?,
         string(&job.cwd.to_string_lossy())?,
         string(text)?,

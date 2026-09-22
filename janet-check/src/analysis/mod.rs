@@ -56,6 +56,8 @@ pub struct DefInfo {
     pub params: Option<String>,
     /// The types its metadata declares. Boxed: most definitions have none.
     pub annotation: Option<Box<types::Annotation>>,
+    /// `:typed-by lib/rule`: the library function that types its calls, `lib/rule`.
+    pub typed_by: Option<String>,
     /// Declared, not defined: from a `*.d.janet` file or a `(comment :declare …)` block.
     pub declared: bool,
     pub private: bool,
@@ -120,6 +122,7 @@ fn module_definitions(
                     .params
                     .map(|params| document.text_of(params).to_string()),
                 annotation: types::annotation(document, definition).map(Box::new),
+                typed_by: types::typed_by(document, definition),
                 declared: file_declares
                     || blocks
                         .iter()

@@ -1102,3 +1102,30 @@ fn named_parameters_are_shown_with_their_types() {
         Some("(f k: :keyword &named of: :string? from: :keyword?) -> :nil")
     );
 }
+
+#[test]
+fn plain_literals_of_types() {
+    let route = Type::read("{:path :string}").unwrap();
+    let typedef = |name: &str| (name == "Route").then_some(&route);
+    let plain = |source: &str| Type::read(source).unwrap().plain_literal(&typedef);
+    assert_eq!(
+        [
+            ":number",
+            ":string",
+            ":string?",
+            "[:any]",
+            "@[Route]",
+            "{:keyword :any}",
+            "@{:a :number}",
+            "Route",
+            "Unknown",
+            "(or [:any] :string)",
+            "(enum :get :post)",
+            ":any",
+        ]
+        .map(plain),
+        [
+            "0", "\"\"", "nil", "[]", "@[]", "{}", "@{}", "{}", "nil", "[]", ":get", "nil"
+        ]
+    );
+}

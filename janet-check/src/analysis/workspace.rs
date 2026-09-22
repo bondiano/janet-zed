@@ -15,7 +15,7 @@ use super::references;
 use super::types::infer::{self, Facts, Mode};
 use super::types::{self, Annotation, Type};
 use super::{DefInfo, SourceFile, canonical, is_declaration, uri_of};
-use crate::janet::Binding;
+use crate::janet::{Binding, Provided, TypedBy};
 use tree_sitter::Node;
 
 use crate::syntax::{self, Document};
@@ -36,6 +36,16 @@ pub struct Declared<'w> {
     /// The name as declared.
     pub name: &'w str,
     pub info: &'w DefInfo,
+}
+
+/// A declared name Janet never binds that every module sees, and what stands in for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Ambient {
+    pub name: String,
+    /// A function answering `value`, or `value` itself.
+    pub function: bool,
+    /// A Janet literal.
+    pub value: String,
 }
 
 /// How a file with `imports` writes a declared name: under the prefix of the import that names
@@ -87,6 +97,9 @@ pub struct Workspace {
     // ponytail: replaced by the next reply for a file, never dropped; a deleted file's names stay
     // unreachable in memory.
     expanded: HashMap<PathBuf, Vec<Binding>>,
+    /// Types of calls the checker's `:typed-by` rules computed, by file. Until a check reports
+    /// them a call is typed by its `:ret`.
+    provided: HashMap<PathBuf, Vec<Provided>>,
     /// What inference read out of a file: filled on demand, dropped when the file or anything it
     /// imports changes.
     types: Mutex<HashMap<PathBuf, Arc<Facts>>>,
@@ -96,8 +109,8 @@ pub struct Workspace {
     /// How often inference actually ran, to tell a cache hit from a miss in tests.
     inferences: AtomicUsize,
     stale: bool,
-    /// The files `:include` names, in the order they run as one program.
-    program: Vec<PathBuf>,
+    /// The files each root's `:include` names, in the order they run as one program, by root.
+    programs: Vec<(PathBuf, Vec<PathBuf>)>,
     /// What is reported beyond what a written signature rules out.
     mode: Mode,
 }
@@ -163,7 +176,7 @@ impl Workspace {
         if config == self.config {
             return;
         }
-        self.stale |= config.include() != self.config.include();
+        self.stale |= config.programs() != self.config.programs();
         self.config = config;
         lock(&self.types).clear();
         lock(&self.ambient).clear();
@@ -267,6 +280,37 @@ impl Workspace {
                 self.expanded.insert(path, bindings);
             }
         }
+    }
+
+    /// Takes the types a check's `:typed-by` rules computed for calls.
+    pub fn provide(&mut self, provided: HashMap<PathBuf, Vec<Provided>>) {
+        for (path, provided) in provided {
+            let path = canonical(&path);
+            if self.provided.get(&path) != Some(&provided) {
+                self.invalidate(&path);
+                self.provided.insert(path, provided);
+            }
+        }
+    }
+
+    /// The types `:typed-by` rules computed for calls of `file`, by the byte the call starts at.
+    fn provided_in(&self, file: &SourceFile) -> HashMap<usize, Type> {
+        let doc = &file.document;
+        self.provided
+            .get(&file.path)
+            .into_iter()
+            .flatten()
+            .filter_map(|provided| {
+                let at = doc.byte_offset(
+                    provided.line.saturating_sub(1),
+                    provided.col.saturating_sub(1),
+                );
+                match types::declared(&format!("{{:type {}}}", provided.annotation))? {
+                    Annotation::Value(ty) => Some((at, ty)),
+                    _ => None,
+                }
+            })
+            .collect()
     }
 
     /// The definition of `name` in `path`: read from the source, else bound by a macro call the
@@ -482,9 +526,11 @@ impl Workspace {
         let all = |name: &str| self.foreign(file, name, Some(&inferred));
         // What inference made of a module's body is never what a finding speaks for.
         let written = |name: &str| self.foreign(file, name, None);
+        let provided = self.provided_in(file);
         let known = infer::Known {
             all: &all,
             written: &written,
+            provided: &provided,
         };
         let mut facts = infer::facts(&file.document, &file.scopes, known, self.mode);
         // A declaration file declares and never runs: the `nil` of `(def x {:type T} nil)` there
@@ -563,19 +609,21 @@ impl Workspace {
                 self.roots()
                     .iter()
                     .map(|root| canonical(root))
-                    .find(|root| path.starts_with(root))
+                    .filter(|root| path.starts_with(root))
+                    .max_by_key(|root| root.components().count())
             })
             .or_else(|| path.parent().map(Path::to_path_buf))
     }
 
-    /// Names the file at `path` sees declared that Janet itself never binds: ambient declarations
-    /// and its `(comment :declare …)` blocks.
+    /// Names the file at `path` sees declared that Janet itself never binds: declarations of the
+    /// modules it imports and its `(comment :declare …)` blocks. Ambient ones are [`Self::ambient_names`].
     pub fn unbound(&self, path: &Path) -> Vec<String> {
         let Some(file) = self.file(path) else {
             return Vec::new();
         };
         self.declarations(&file.imports)
             .into_iter()
+            .filter(|declared| declared.file.starts_with(builtin_dir()))
             .map(|declared| declared.label)
             .chain(
                 file.definitions
@@ -583,6 +631,43 @@ impl Workspace {
                     .filter(|(_, info)| info.declared)
                     .map(|(name, _)| name.clone()),
             )
+            .collect()
+    }
+
+    /// Names every file sees declared without an import, as a host defines its globals: the same
+    /// for each file, and seen by the modules a file imports too. Each with what its stand-in
+    /// is: a function answering a plain value of its declared result, or a plain value.
+    pub fn host_globals(&self) -> Vec<Ambient> {
+        let declared: Vec<Declared> = self
+            .declarations(&[])
+            .into_iter()
+            .filter(|declared| !declared.file.starts_with(builtin_dir()))
+            .collect();
+        let typedef = |name: &str| {
+            declared
+                .iter()
+                .find_map(|other| match other.info.annotation.as_deref() {
+                    Some(Annotation::Typedef(ty, _)) if other.name == name => Some(ty),
+                    _ => None,
+                })
+        };
+        declared
+            .iter()
+            .map(|declared| {
+                let annotation = declared.info.annotation.as_deref();
+                let (function, value) = match annotation {
+                    Some(Annotation::Function(signature)) => {
+                        (true, signature.ret.plain_literal(&typedef))
+                    }
+                    Some(Annotation::Value(ty)) => (false, ty.plain_literal(&typedef)),
+                    _ => (declared.info.definer.starts_with("defn"), "nil".to_string()),
+                };
+                Ambient {
+                    name: declared.name.to_string(),
+                    function,
+                    value,
+                }
+            })
             .collect()
     }
 
@@ -598,6 +683,24 @@ impl Workspace {
             .filter_map(|declared| {
                 let definer = self.config.definer(&declared.label, &file.imports)?;
                 Some((declared.label, definer))
+            })
+            .collect()
+    }
+
+    /// The declarations the file at `path` sees whose calls a library rule types, with the
+    /// directory of the declaration the rule is looked for beside.
+    pub fn typed_by(&self, path: &Path) -> Vec<TypedBy> {
+        let Some(file) = self.file(path) else {
+            return Vec::new();
+        };
+        self.declarations(&file.imports)
+            .into_iter()
+            .filter_map(|declared| {
+                Some(TypedBy {
+                    rule: declared.info.typed_by.clone()?,
+                    dir: declared.file.parent()?.to_path_buf(),
+                    name: declared.label,
+                })
             })
             .collect()
     }
@@ -627,7 +730,13 @@ impl Workspace {
     /// The files the config's `:include` runs before the file at `path`, in order: for one of
     /// them, the ones before it; for any other file, all of them.
     pub fn includes(&self, path: &Path) -> &[PathBuf] {
-        includes(&self.program, path)
+        includes(self.program(path), path)
+    }
+
+    /// Every file the `:include` that covers `path` names, in the order they run as one program:
+    /// that of the innermost root holding it that has one.
+    pub fn program(&self, path: &Path) -> &[PathBuf] {
+        program_of(&self.programs, path)
     }
 
     pub fn imports_of(&self, path: &Path) -> &[Edge] {
@@ -701,8 +810,8 @@ impl Workspace {
             .flat_map(|(file, dir)| native_modules(&file.document, dir))
             .collect();
 
-        self.program = program(files, self.config.include());
-        let program = &self.program;
+        self.programs = programs(files, self.config.programs());
+        let programs = &self.programs;
         let search = &self.search;
         let config = &self.config;
         // A `*.d.janet` is not a module: nothing imports it, and it imports nothing.
@@ -715,14 +824,16 @@ impl Workspace {
             .filter(|file| !is_declaration(&file.path))
             .map(|file| {
                 // As `# janet-zed: include` would name them, ahead of the file's own imports.
-                let included = includes(program, &file.path).iter().map(|path| Edge {
-                    spec: path.to_string_lossy().into_owned(),
-                    prefix: String::new(),
-                    included: true,
-                    names: None,
-                    exported: false,
-                    path: path.clone(),
-                });
+                let included = includes(program_of(programs, &file.path), &file.path)
+                    .iter()
+                    .map(|path| Edge {
+                        spec: path.to_string_lossy().into_owned(),
+                        prefix: String::new(),
+                        included: true,
+                        names: None,
+                        exported: false,
+                        path: path.clone(),
+                    });
                 let edges = included
                     .chain(file.imports.iter().filter_map(|import| {
                         let path = search.resolve(&file.path, &import.spec, exists)?;
@@ -845,6 +956,26 @@ fn program(files: &HashMap<PathBuf, SourceFile>, entries: &[PathBuf]) -> Vec<Pat
         .collect()
 }
 
+/// Each root's program: its `:include` entries as the workspace files they name.
+fn programs(
+    files: &HashMap<PathBuf, SourceFile>,
+    entries: &[(PathBuf, Vec<PathBuf>)],
+) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    entries
+        .iter()
+        .map(|(root, entries)| (root.clone(), program(files, entries)))
+        .collect()
+}
+
+/// The program of the innermost root holding `path` that has one.
+fn program_of<'p>(programs: &'p [(PathBuf, Vec<PathBuf>)], path: &Path) -> &'p [PathBuf] {
+    programs
+        .iter()
+        .filter(|(root, _)| path.starts_with(root))
+        .max_by_key(|(root, _)| root.components().count())
+        .map_or(&[], |(_, program)| program)
+}
+
 /// What [`Workspace::includes`] says, over the `program` of the last refresh.
 fn includes<'p>(program: &'p [PathBuf], path: &Path) -> &'p [PathBuf] {
     match program.iter().position(|member| member == path) {
@@ -887,6 +1018,7 @@ fn expanded_definition(file: &SourceFile, binding: &Binding) -> Option<DefInfo> 
             .as_deref()
             .and_then(types::declared)
             .map(Box::new),
+        typed_by: None,
         declared: false,
         private: binding.private,
     })
@@ -955,6 +1087,26 @@ pub fn janet_files(roots: &[PathBuf]) -> BTreeSet<PathBuf> {
         .filter(is_janet_file)
         .map(|entry| canonical(entry.path()))
         .collect()
+}
+
+/// `roots` and the projects inside them with a `.janet-zed/` of their own: a monorepo opened at
+/// its top reads the config of an app in a subdirectory for that app's files, as a check run in
+/// that subdirectory would.
+// ponytail: found once per call; the server takes a `.janet-zed/` created later after a restart.
+pub fn with_nested_projects(roots: Vec<PathBuf>) -> Vec<PathBuf> {
+    let tops: Vec<PathBuf> = roots.iter().map(|root| canonical(root)).collect();
+    let nested: BTreeSet<PathBuf> = janet_files(&roots)
+        .iter()
+        .flat_map(|file| {
+            file.ancestors()
+                .skip(1)
+                .take_while(|dir| !tops.iter().any(|top| top == dir))
+                .filter(|dir| dir.join(".janet-zed").is_dir())
+                .map(Path::to_path_buf)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    roots.into_iter().chain(nested).collect()
 }
 
 /// What [`janet_files`] finds at `path`, a file or a directory, without walking all the roots:

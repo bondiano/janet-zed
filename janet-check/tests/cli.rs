@@ -451,6 +451,32 @@ fn a_config_is_validated() {
     assert_eq!(broken.status.code(), Some(2));
 }
 
+/// A monorepo checked from its top reads the config of an app inside it for that app's files: its
+/// `:include` is the app's program, and nothing outside the app sees it.
+#[test]
+fn a_nested_config_covers_its_own_directory() {
+    let scratch = scratch(
+        "nested",
+        &[
+            (".janet-zed/config.jdn", "{}"),
+            ("app/.janet-zed/config.jdn", "{:include [\"base.janet\"]}"),
+            ("app/base.janet", "(defn helper [] 1)\n"),
+            ("app/test.janet", "(print (helper))\n"),
+            ("tools/other.janet", "(print (helper))\n"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(&scratch)
+        .arg(".")
+        .output()
+        .expect("janet-check runs");
+    std::fs::remove_dir_all(&scratch).expect("cleanup");
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        ["tools/other.janet:1:9: unknown symbol helper [unknown-symbol]"]
+    );
+}
+
 /// `src/` runs as one program with the declarations of a host library outside the workspace: a
 /// file sees the private names of the files named before it and the host's functions; a name
 /// from a later file is unknown.
@@ -539,4 +565,66 @@ fn a_usage_error_exits_2() {
     assert_eq!(output.status.code(), Some(2));
     let output = run(&["Cargo.toml"]);
     assert_eq!(output.status.code(), Some(2));
+}
+
+/// A library types calls of its functions with a rule of its own, `:typed-by`: declared in a
+/// `*.d.janet` and found in the module beside it, or on a `defn` itself. What the rule computes
+/// from a static argument is a written type, which `--strict` holds a `{:type}` to; where the
+/// argument is not static, or the rule answers nil, fails or is missing, the call is its `:ret`.
+/// A call is typed as macros leave it: a macro that expands to one, and a `->` step.
+#[test]
+fn a_library_rule_types_the_calls_it_reads() {
+    let scratch = scratch(
+        "typed-by",
+        &[
+            (".janet-zed/config.jdn", "{}"),
+            (
+                "shout.d.janet",
+                "(defn shout {:params [:any] :ret :any :typed-by shout/rule} [x])\n\
+                 (defn whisper {:params [:any] :ret :any :typed-by shout/missing} [x])\n",
+            ),
+            (
+                "shout.janet",
+                "(defn rule [[arg] env]\n\
+                 \x20 (def [_ value] (or arg []))\n\
+                 \x20 (cond (string? value) :string (keyword? value) (error \"no\")))\n",
+            ),
+            (
+                "lib.janet",
+                "(defn- rule [[arg] env] (when arg :boolean))\n\
+                 (defn yell {:typed-by rule} [x] x)\n",
+            ),
+            (
+                "app.janet",
+                "(import ./lib)\n\
+                 (def words \"hi\")\n\
+                 (def a {:type :number} (shout \"hi\"))\n\
+                 (def b {:type :number} (shout words))\n\
+                 (def c {:type :number} (shout 1))\n\
+                 (def d {:type :number} (shout :boom))\n\
+                 (def e {:type :number} (whisper \"hi\"))\n\
+                 (defn f [x] (def g {:type :number} (shout x)) g)\n\
+                 (def h {:type :number} (lib/yell 'x))\n\
+                 (defmacro loud [x] ~(shout ,x))\n\
+                 (def i {:type :number} (loud \"b\"))\n\
+                 (def j {:type :number} (-> \"a\" (shout)))\n",
+            ),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(&scratch)
+        .args(["--strict", "app.janet"])
+        .output()
+        .expect("janet-check runs");
+    std::fs::remove_dir_all(&scratch).expect("cleanup");
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        [
+            "app.janet:3:24: a is :string, declared :number; :as-type casts it",
+            "app.janet:4:24: b is :string, declared :number; :as-type casts it",
+            "app.janet:9:24: h is :boolean, declared :number; :as-type casts it",
+            "app.janet:11:24: i is :string, declared :number; :as-type casts it",
+            "app.janet:12:24: j is :string, declared :number; :as-type casts it",
+        ]
+    );
 }
