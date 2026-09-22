@@ -229,7 +229,7 @@ impl<'d> Infer<'d> {
         }
         // Not the forms `scopes.rs` names: those are the ones that bind, these every one with a
         // type of its own.
-        match self.text(*head) {
+        match self.head(*head) {
             "def" | "def-" | "var" | "var-" | "defglobal" | "varglobal" | "defdyn" | "defn"
             | "defn-" | "defmacro" | "defmacro-" | "varfn" => self.definition(node, false),
             "fn" => self.lambda(args),

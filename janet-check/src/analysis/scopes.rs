@@ -9,7 +9,7 @@ use std::ops::Range;
 
 use tree_sitter::Node;
 
-use super::definitions;
+use super::definitions::{self, LintAs};
 use crate::syntax::{self, Document};
 
 const PARAM_MARKERS: [&str; 4] = ["&", "&opt", "&keys", "&named"];
@@ -53,12 +53,22 @@ pub struct Scopes {
     /// Start byte of every head naming a core macro the file has shadowed by then — a local, or
     /// a definition above it: the form is a call, not the macro.
     pub calls: HashSet<usize>,
+    /// Start byte of every head `:lint-as` reads as a core definer → that definer: the call
+    /// binds as the definer does.
+    pub definers: HashMap<usize, &'static str>,
 }
 
 impl Scopes {
     pub fn new(doc: &Document) -> Self {
+        Self::read(doc, &|_| None)
+    }
+
+    /// The scopes of `doc`, where a call whose head `lint_as` names a core definer binds as that
+    /// definer: its parameters are locals.
+    pub fn read<'d>(doc: &'d Document, lint_as: LintAs<'d>) -> Self {
         let mut binder = Binder {
             doc,
+            lint_as,
             scopes: Self::default(),
             env: Vec::new(),
             globals: HashSet::new(),
@@ -89,6 +99,7 @@ impl Scopes {
 
 struct Binder<'d> {
     doc: &'d Document,
+    lint_as: LintAs<'d>,
     scopes: Scopes,
     /// Bindings in scope, innermost last.
     env: Vec<(&'d str, usize)>,
@@ -221,6 +232,13 @@ impl<'d> Binder<'d> {
             self.scopes.calls.insert(head.start_byte());
         }
         let name = if shadowed { "" } else { name };
+        let name = match (self.lint_as)(name) {
+            Some(core) if !name.is_empty() && definitions::core(name).is_none() => {
+                self.scopes.definers.insert(head.start_byte(), core);
+                core
+            }
+            _ => name,
+        };
         match name {
             // Definitions bind in the enclosing scope.
             "defn" | "defn-" | "defmacro" | "defmacro-" | "varfn" => {

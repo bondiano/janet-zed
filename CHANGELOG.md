@@ -31,6 +31,9 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - A declared macro that `:lint-as` reads as a core definer defines its name when the file is
   compiled, instead of leaving it an unknown symbol.
+- A call `:lint-as` reads as a core definer binds its parameters: one named like a declared
+  function is the local in the body, for references and for types, and the name it defines is
+  not typed from the body.
 - Mutable literals, top-level `var`s and exhaustive dispatches hold the types they are given.
 - `~` expands in the `janet_source` setting; unknown-symbol diagnostics are matched by code.
 - Structural editing keeps reader macros on raise, and threading skips definitions.

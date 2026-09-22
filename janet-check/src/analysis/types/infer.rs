@@ -322,6 +322,14 @@ impl<'d> Infer<'d> {
         &self.doc.text[node.byte_range()]
     }
 
+    /// A call's head as read: the core definer `:lint-as` reads it as, else as written.
+    fn head(&self, head: Node) -> &'d str {
+        match self.scopes.definers.get(&head.start_byte()) {
+            Some(core) => core,
+            None => self.text(head),
+        }
+    }
+
     fn fresh(&self) -> Type {
         Type::Var(self.row())
     }

@@ -73,7 +73,7 @@ impl SourceFile {
                 symbols.entry(text).or_default().push(node.byte_range());
                 symbols
             });
-        let scopes = Scopes::new(&document);
+        let scopes = Scopes::read(&document, &|head| config.definer(head, &imports));
         Self {
             path,
             uri,
@@ -90,10 +90,11 @@ impl SourceFile {
         Some(Self::new(path, uri, text, config))
     }
 
-    /// Reads the definitions again, under a changed config.
+    /// Reads the definitions and scopes again, under a changed config.
     pub fn reconfigure(&mut self, config: &Config) {
         let declared = is_declaration(&self.path);
         self.definitions = module_definitions(&self.document, &self.imports, config, declared);
+        self.scopes = Scopes::read(&self.document, &|head| config.definer(head, &self.imports));
     }
 }
 

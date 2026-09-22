@@ -126,3 +126,39 @@ fn a_missing_directory_is_a_warning() {
         ]
     );
 }
+
+/// A `:lint-as` `defn` binds its parameters: one named like a declared function is the local
+/// in the body, for references and for types.
+#[test]
+fn a_lint_as_definer_binds_its_parameters() {
+    use crate::analysis::SourceFile;
+    use crate::analysis::workspace::Workspace;
+    let config = Config {
+        lint_as: HashMap::from([("defworkflow".to_string(), "defn")]),
+        ..Config::default()
+    };
+    let declared = "(defn seconds {:params [:number] :ret :number} [n])\n\
+                    (defn sleep {:params [:number] :ret :nil} [s])\n\
+                    (defmacro defworkflow {:params [:symbol :any] :ret :any} [name & more])\n";
+    let text = "(defworkflow w [id seconds] (sleep seconds))\n";
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    for (path, text) in [("/ws/host.d.janet", declared), ("/ws/a.janet", text)] {
+        let uri = format!("file://{path}").parse().unwrap();
+        workspace.insert(SourceFile::new(path.into(), uri, text.to_string(), &config));
+    }
+    workspace.set_config(config);
+    workspace.refresh();
+    let path = Path::new("/ws/a.janet");
+    let file = workspace.file(path).unwrap();
+    let param = text.find("seconds").unwrap();
+    let used = text.rfind("seconds").unwrap();
+    assert_eq!(file.scopes.uses.get(&used), file.scopes.uses.get(&param));
+    assert!(file.scopes.uses.contains_key(&used), "the use is the local");
+    let findings: Vec<_> = workspace
+        .facts(path)
+        .findings
+        .iter()
+        .map(|finding| finding.message.clone())
+        .collect();
+    assert_eq!(findings, Vec::<String>::new());
+}

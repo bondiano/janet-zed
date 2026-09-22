@@ -56,7 +56,7 @@ impl<'d> Infer<'d> {
             self.expr(form);
             return;
         }
-        match self.text(*head) {
+        match self.head(*head) {
             // Declarations, read by `declarations`: a `nil` there stands in for a host value.
             // Only what they write as types is checked.
             "comment"
@@ -97,7 +97,7 @@ impl<'d> Infer<'d> {
         let [head, target, rest @ ..] = &*forms else {
             return nil();
         };
-        let definer = self.text(*head);
+        let definer = self.head(*head);
         let name = (target.kind() == syntax::SYMBOL).then(|| self.text(*target));
         self.written_arities(definer, rest);
         let declared = name.and_then(|name| self.declared.get(name)).cloned();
@@ -169,6 +169,13 @@ impl<'d> Infer<'d> {
                 self.written(name, *last, metadata, value)
             }
             _ => value,
+        };
+        // A `:lint-as` call is read for its name and the locals of its body, never for what the
+        // name holds: that is the macro's to say.
+        let value = if self.scopes.definers.contains_key(&head.start_byte()) {
+            any()
+        } else {
+            value
         };
         self.current = outer;
         match slot {
