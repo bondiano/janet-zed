@@ -416,7 +416,10 @@ fn a_config_is_validated() {
     let unknown = scratch(
         "unknown-key",
         &[
-            (".janet-zed/config.jdn", "{:lint-as {} :disable [:x]}"),
+            (
+                ".janet-zed/config.jdn",
+                "{:lint-as {} :disable [:x] :include [\"nowhere\"]}",
+            ),
             ("main.janet", "(print 1)\n"),
         ],
     );
@@ -432,8 +435,12 @@ fn a_config_is_validated() {
     std::fs::remove_dir_all(&unknown).expect("cleanup");
     std::fs::remove_dir_all(&malformed).expect("cleanup");
     assert_eq!(
-        stdout(&warned),
-        ".janet-zed/config.jdn:1:14: unknown key :disable, expected one of :lint-as :disable-lints\n"
+        stdout(&warned).lines().collect::<Vec<_>>(),
+        [
+            ".janet-zed/config.jdn:1:14: unknown key :disable, expected one of :lint-as \
+             :disable-lints :libraries :include",
+            ".janet-zed/config.jdn:1:38: no directory nowhere",
+        ]
     );
     assert_eq!(warned.status.code(), Some(1));
     assert!(
@@ -442,6 +449,45 @@ fn a_config_is_validated() {
         stdout(&broken)
     );
     assert_eq!(broken.status.code(), Some(2));
+}
+
+/// `src/` runs as one program with the declarations of a host library outside the workspace: a
+/// file sees the private names of the files named before it and the host's functions; a name
+/// from a later file is unknown.
+#[test]
+fn included_directories_run_as_one_program_with_the_libraries_declared() {
+    let scratch = scratch(
+        "program",
+        &[
+            (
+                "app/.janet-zed/config.jdn",
+                "{:include [\"src\"] :libraries [\"../host\"]}",
+            ),
+            (
+                "host/janet-zed.exports/host/host.d.janet",
+                "(defn clock/now {:params [] :ret :number} \"Now.\" [])\n",
+            ),
+            (
+                "app/src/1-base.janet",
+                "(defn- now [] (clock/now))\n(defn early [] (late))\n",
+            ),
+            ("app/src/2-late.janet", "(defn late [] (now))\n"),
+            ("app/test.janet", "(print (now) (late) (clock/now 1))\n"),
+        ],
+    );
+    let output = Command::new(env!("CARGO_BIN_EXE_janet-check"))
+        .current_dir(scratch.join("app"))
+        .arg(".")
+        .output()
+        .expect("janet-check runs");
+    std::fs::remove_dir_all(&scratch).expect("cleanup");
+    assert_eq!(
+        stdout(&output).lines().collect::<Vec<_>>(),
+        [
+            "src/1-base.janet:2:17: unknown symbol late [unknown-symbol]",
+            "test.janet:1:22: clock/now takes 0 arguments, given 1",
+        ]
+    );
 }
 
 #[test]

@@ -297,7 +297,12 @@ fn inputs(check: &Check) -> Vec<(PathBuf, Option<SystemTime>)> {
         packages: check.packages.to_vec(),
     };
     let mut seen = BTreeMap::new();
-    let mut pending = vec![(check.path.to_path_buf(), Some(check.text.to_string()))];
+    let mut pending: Vec<(PathBuf, Option<String>)> = check
+        .includes
+        .iter()
+        .map(|include| (include.clone(), None))
+        .chain([(check.path.to_path_buf(), Some(check.text.to_string()))])
+        .collect();
     while let Some((file, text)) = pending.pop() {
         if seen.contains_key(&file) {
             continue;
@@ -330,6 +335,9 @@ pub struct Check<'c> {
     pub natives: &'c [Package],
     /// Names declared for this file that Janet itself never binds.
     pub declared: &'c [String],
+    /// Files the config's `:include` runs first in the same environment, as
+    /// `# janet-zed: include` does.
+    pub includes: &'c [PathBuf],
 }
 
 /// A request line for `check.janet`: a Janet struct.
@@ -337,8 +345,13 @@ fn line(job: &Check) -> Result<String> {
     let (path, text) = (job.path, job.text);
     // A JSON string is a valid Janet string literal.
     let string = |value: &str| serde_json::to_string(value);
-    let includes = modules::directive(text, "include")
-        .filter_map(|spec| Search::default().resolve(path, spec, Path::is_file))
+    let directed = modules::directive(text, "include")
+        .filter_map(|spec| Search::default().resolve(path, spec, Path::is_file));
+    let includes = job
+        .includes
+        .iter()
+        .cloned()
+        .chain(directed)
         .map(|include| string(&include.to_string_lossy()))
         .collect::<Result<Vec<_>, _>>()?
         .join(" ");

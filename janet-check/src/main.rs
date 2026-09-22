@@ -288,10 +288,12 @@ fn check(
 fn config_problems(roots: &[PathBuf], shown: &dyn Fn(&Path) -> String) -> Vec<Finding> {
     roots
         .iter()
-        .map(|root| config::file(root))
-        .filter_map(|path| Some((std::fs::read_to_string(&path).ok()?, path)))
-        .flat_map(|(text, path)| {
-            Config::problems(&text)
+        .filter_map(|root| {
+            let path = config::file(root);
+            Some((std::fs::read_to_string(&path).ok()?, path, root))
+        })
+        .flat_map(|(text, path, root)| {
+            Config::problems(&text, root)
                 .into_iter()
                 .map(|problem| Finding {
                     path: shown(&path),
@@ -379,6 +381,7 @@ fn problems(
         packages: workspace.packages(),
         natives: workspace.natives(),
         declared: &workspace.unbound(path),
+        includes: &workspace.includes(path),
     });
     // One file Janet fails on is that file's problem: the rest are still checked.
     let report = match report {

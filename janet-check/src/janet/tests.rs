@@ -37,6 +37,7 @@ fn check(
             packages,
             natives,
             declared: &[],
+            includes: &[],
         })
         .map(|report| report.problems)
 }
@@ -256,6 +257,7 @@ fn keeps_imports_loaded_until_their_files_change() {
                 packages: &[],
                 natives: &[],
                 declared: &[],
+                includes: &[],
             })
             .unwrap()
             .problems
@@ -293,6 +295,7 @@ fn restarts_after_a_check_that_does_not_finish() {
         packages: &[],
         natives: &[],
         declared: &[],
+        includes: &[],
     });
     assert!(slow.unwrap_err().to_string().contains("did not finish"));
 
@@ -305,6 +308,7 @@ fn restarts_after_a_check_that_does_not_finish() {
             packages: &[],
             natives: &[],
             declared: &[],
+            includes: &[],
         })
         .unwrap()
         .problems;
@@ -332,6 +336,7 @@ fn reports_the_types_a_macro_declares() {
             packages: &[],
             natives: &[],
             declared: &[],
+            includes: &[],
         })
         .unwrap();
     let bound = report
@@ -388,6 +393,7 @@ fn reports_what_macros_bind() {
             packages: &[],
             natives: &[],
             declared: &[],
+            includes: &[],
         })
         .unwrap();
     assert_eq!(
@@ -405,6 +411,7 @@ fn reports_what_macros_bind() {
             packages: &[],
             natives: &[],
             declared: &[],
+            includes: &[],
         })
         .unwrap();
     assert_eq!(
@@ -430,6 +437,7 @@ fn declared_core_names_keep_their_bindings() {
             packages: &[],
             natives: &[],
             declared: &declared,
+            includes: &[],
         })
         .unwrap()
         .problems;
@@ -454,6 +462,7 @@ fn fails_fast_while_a_hung_check_has_not_changed() {
             packages: &[],
             natives: &[],
             declared: &[],
+            includes: &[],
         });
         (checked.unwrap_err().to_string(), started.elapsed())
     };
@@ -495,6 +504,7 @@ fn a_hung_check_takes_the_processes_it_started_along() {
         packages: &[],
         natives: &[],
         declared: &[],
+        includes: &[],
     });
     assert!(hung.is_err());
     let pid = std::fs::read_to_string(&pid).unwrap();

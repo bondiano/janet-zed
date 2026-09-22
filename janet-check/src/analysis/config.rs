@@ -11,6 +11,15 @@
 //! A library ships its own as `janet-zed.exports/<lib>/config.jdn`, installed with
 //! `(declare-source :source ["janet-zed.exports"])`, and its type declarations as
 //! `janet-zed.exports/<lib>/*.d.janet` beside it.
+//!
+//! `:libraries` names directories, relative to the workspace root or absolute, read as installed
+//! libraries are: their `janet-zed.exports/<lib>/config.jdn` and `*.d.janet`, for a library its
+//! users do not install on the syspath: `{:libraries ["../../crates/arc"]}`.
+//!
+//! `:include` names directories, relative to the workspace root, whose `.janet` files a host runs
+//! as one program, in name order, in one environment: `{:include ["src"]}`. A file in one sees
+//! the files named before it as if it had `# janet-zed: include` for them; any other workspace
+//! file sees all of them.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -19,12 +28,12 @@ use std::path::{Path, PathBuf};
 use tree_sitter::Node;
 
 use super::modules::ImportSpec;
-use super::{definitions, is_declaration, lints};
+use super::{canonical, definitions, is_declaration, lints};
 use crate::syntax::{self, Document};
 
 const FILE: &str = ".janet-zed/config.jdn";
 const EXPORTS: &str = "janet-zed.exports";
-const KEYS: [&str; 2] = [":lint-as", ":disable-lints"];
+const KEYS: [&str; 4] = [":lint-as", ":disable-lints", ":libraries", ":include"];
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -34,6 +43,11 @@ pub struct Config {
     declarations: Vec<PathBuf>,
     /// Lint codes the workspace turned off.
     disabled: HashSet<String>,
+    /// `:libraries`: directories read as installed libraries, as written.
+    libraries: Vec<PathBuf>,
+    /// `:include`: directories whose files run as one program, as written until [`Self::read`]
+    /// resolves them against their root.
+    include: Vec<PathBuf>,
 }
 
 /// What is wrong with a config file: an error when it is not one JDN struct, a warning for a key
@@ -49,18 +63,32 @@ impl Config {
     /// The configs libraries export from the directories in `libraries`, a later one winning, then
     /// those at the workspace `roots`, which win over all of them.
     pub fn read(libraries: &[PathBuf], roots: &[PathBuf]) -> Self {
+        let parsed = |path: PathBuf| Some(Self::parse(&std::fs::read_to_string(path).ok()?));
+        let own: Vec<(&PathBuf, Self)> = roots
+            .iter()
+            .filter_map(|root| Some((root, parsed(file(root))?)))
+            .collect();
+        let resolved = |dirs: fn(&Self) -> &[PathBuf]| -> Vec<PathBuf> {
+            own.iter()
+                .flat_map(|(root, config)| {
+                    dirs(config).iter().map(|dir| canonical(&root.join(dir)))
+                })
+                .collect()
+        };
+        let named = resolved(|config| &config.libraries);
+        let include = resolved(|config| &config.include);
         let exported: Vec<PathBuf> = libraries
             .iter()
+            .chain(&named)
             .filter_map(|dir| std::fs::read_dir(dir.join(EXPORTS)).ok())
             .flat_map(|entries| sorted(entries.flatten().map(|entry| entry.path())))
             .collect();
         let declarations = exported.iter().flat_map(|dir| declarations(dir)).collect();
-        let parsed = |path: PathBuf| Some(Self::parse(&std::fs::read_to_string(path).ok()?));
         let shipped: Vec<Self> = exported
             .iter()
             .filter_map(|dir| parsed(dir.join("config.jdn")))
             .collect();
-        let own: Vec<Self> = roots.iter().filter_map(|root| parsed(file(root))).collect();
+        let own: Vec<Self> = own.into_iter().map(|(_, config)| config).collect();
         let lint_as = shipped
             .iter()
             .chain(&own)
@@ -72,12 +100,19 @@ impl Config {
             lint_as,
             declarations,
             disabled,
+            libraries: named,
+            include,
         }
     }
 
     /// The declaration files libraries export, lowest priority first.
     pub fn declarations(&self) -> &[PathBuf] {
         &self.declarations
+    }
+
+    /// The `:include` directories, canonical.
+    pub fn include(&self) -> &[PathBuf] {
+        &self.include
     }
 
     /// Whether the workspace turned the lint `code` off.
@@ -110,12 +145,15 @@ impl Config {
         Self {
             lint_as,
             disabled,
+            libraries: directories(&doc, ":libraries"),
+            include: directories(&doc, ":include"),
             ..Self::default()
         }
     }
 
-    /// What is wrong with the config `text`, which [`Self::parse`] reads past.
-    pub fn problems(text: &str) -> Vec<Problem> {
+    /// What is wrong with the config `text` of the workspace root `workspace`, which [`Self::parse`]
+    /// reads past.
+    pub fn problems(text: &str, workspace: &Path) -> Vec<Problem> {
         let doc = Document::new(text.to_string());
         let root = doc.root();
         let problem = |node: Node, error: bool, message: String| Problem {
@@ -141,6 +179,23 @@ impl Config {
                     let expected = KEYS.join(" ");
                     let message = format!("unknown key {name}, expected one of {expected}");
                     return vec![problem(key, false, message)];
+                }
+                if matches!(name, ":libraries" | ":include") {
+                    return syntax::forms(value)
+                        .into_iter()
+                        .filter_map(|dir| {
+                            let message = match string(&doc, dir) {
+                                None => {
+                                    format!("{} is not a directory path string", doc.text_of(dir))
+                                }
+                                Some(path) if !workspace.join(path).is_dir() => {
+                                    format!("no directory {path}")
+                                }
+                                Some(_) => return None,
+                            };
+                            Some(problem(dir, false, message))
+                        })
+                        .collect();
                 }
                 if name != ":disable-lints" {
                     return Vec::new();
@@ -215,6 +270,23 @@ fn entries(node: Node<'_>) -> Vec<(Node<'_>, Node<'_>)> {
         .chunks_exact(2)
         .map(|pair| (pair[0], pair[1]))
         .collect()
+}
+
+/// The path strings of the `key` entries: `{:include ["src"]}`.
+fn directories(doc: &Document, key: &str) -> Vec<PathBuf> {
+    top_entries(doc)
+        .into_iter()
+        .filter(|(name, _)| doc.text_of(*name) == key)
+        .flat_map(|(_, dirs)| syntax::forms(dirs))
+        .filter_map(|dir| string(doc, dir))
+        .map(PathBuf::from)
+        .collect()
+}
+
+/// The contents of a string literal.
+fn string<'d>(doc: &'d Document, node: Node) -> Option<&'d str> {
+    let text = doc.text_of(node);
+    (node.kind() == syntax::STRING).then(|| text.strip_prefix('"')?.strip_suffix('"'))?
 }
 
 /// `unused-binding`, written `:unused-binding` or `unused-binding`.

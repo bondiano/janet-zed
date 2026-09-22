@@ -7,6 +7,9 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- `:libraries` in `.janet-zed/config.jdn` reads the exports of directories outside the syspath
+  as installed libraries; `:include` runs the files of a directory as one program in name order,
+  each seeing the ones before it and every other file seeing all of them.
 - The REPL kernel interrupts an evaluation in progress, and the debugger pauses a running
   program or one of its `ev` tasks (not on Windows).
 - The REPL kernel streams output as it is printed, answers `getline` with the client's input,

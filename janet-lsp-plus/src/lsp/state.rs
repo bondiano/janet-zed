@@ -246,6 +246,7 @@ impl State {
         let file = self.workspace.file(&buffer.path)?;
         let cwd = self.workspace.project_root(&buffer.path)?;
         let declared = self.workspace.unbound(&buffer.path);
+        let includes = self.workspace.includes(&buffer.path);
         Some(Job {
             uri: uri.clone(),
             version: buffer.version,
@@ -255,6 +256,7 @@ impl State {
             packages: self.workspace.packages().to_vec(),
             natives: self.workspace.natives().to_vec(),
             declared,
+            includes,
         })
     }
 

@@ -40,6 +40,8 @@ pub struct Job {
     pub natives: Vec<Package>,
     /// Names declared for this file that Janet itself never binds.
     pub declared: Vec<String>,
+    /// Files the config's `:include` runs before this one.
+    pub includes: Vec<PathBuf>,
 }
 
 pub struct Checked {
@@ -113,6 +115,7 @@ fn check_one(worker: Option<&mut janet::Worker>, job: &Job) -> Result<Report> {
                 packages: &job.packages,
                 natives: &job.natives,
                 declared: &job.declared,
+                includes: &job.includes,
             })
         },
     )

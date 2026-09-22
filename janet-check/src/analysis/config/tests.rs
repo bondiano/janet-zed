@@ -57,3 +57,66 @@ fn workspace_config_wins_over_exports() {
     assert_eq!(config.lint_as.get("lib/defthing"), Some(&"def"));
     assert_eq!(config.lint_as.get("lib/shared"), Some(&"defn"));
 }
+
+#[test]
+fn libraries_are_read_as_installed_ones() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/libraries");
+    let config = Config::read(&[], std::slice::from_ref(&root));
+    let names: Vec<_> = config
+        .declarations()
+        .iter()
+        .filter_map(|path| path.file_name()?.to_str())
+        .collect();
+    assert_eq!(names, ["lib.d.janet"]);
+    assert_eq!(config.lint_as.get("lib/defthing"), Some(&"def"));
+}
+
+#[test]
+fn an_included_file_sees_the_files_named_before_it_and_others_see_all() {
+    use crate::analysis::SourceFile;
+    use crate::analysis::workspace::Workspace;
+    let config = Config {
+        include: vec![PathBuf::from("/ws/src")],
+        ..Config::default()
+    };
+    let mut workspace = Workspace::new(vec!["/ws".into()], None);
+    for path in ["/ws/src/b.janet", "/ws/src/a.janet", "/ws/test.janet"] {
+        let uri = format!("file://{path}").parse().unwrap();
+        let file = SourceFile::new(path.into(), uri, "(defn- f [] 1)".to_string(), &config);
+        workspace.insert(file);
+    }
+    workspace.set_config(config);
+    workspace.refresh();
+    let seen = |path: &str| -> Vec<(PathBuf, bool)> {
+        let edges = workspace.imports_of(Path::new(path)).iter();
+        edges
+            .map(|edge| (edge.path.clone(), edge.included))
+            .collect()
+    };
+    let (a, b) = (
+        PathBuf::from("/ws/src/a.janet"),
+        PathBuf::from("/ws/src/b.janet"),
+    );
+    assert_eq!(seen("/ws/src/a.janet"), []);
+    assert_eq!(seen("/ws/src/b.janet"), [(a.clone(), true)]);
+    assert_eq!(seen("/ws/test.janet"), [(a, true), (b, true)]);
+}
+
+#[test]
+fn a_missing_directory_is_a_warning() {
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/libraries");
+    let messages: Vec<_> = Config::problems(
+        "{:include [\"nowhere\" :src] :libraries [\"../exports\"]}",
+        &root,
+    )
+    .into_iter()
+    .map(|problem| (problem.message, problem.error))
+    .collect();
+    assert_eq!(
+        messages,
+        [
+            ("no directory nowhere".to_string(), false),
+            (":src is not a directory path string".to_string(), false),
+        ]
+    );
+}

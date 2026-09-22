@@ -96,6 +96,8 @@ pub struct Workspace {
     /// How often inference actually ran, to tell a cache hit from a miss in tests.
     inferences: AtomicUsize,
     stale: bool,
+    /// The files of each `:include` directory, in name order: one program each.
+    programs: Vec<(PathBuf, Vec<PathBuf>)>,
     /// What is reported beyond what a written signature rules out.
     mode: Mode,
 }
@@ -161,6 +163,7 @@ impl Workspace {
         if config == self.config {
             return;
         }
+        self.stale |= config.include() != self.config.include();
         self.config = config;
         lock(&self.types).clear();
         lock(&self.ambient).clear();
@@ -605,6 +608,12 @@ impl Workspace {
         self.search.native_sources(spec)
     }
 
+    /// The files the config's `:include` runs before the file at `path`, in order: in an included
+    /// directory, the files named before it there; anywhere else, every included file.
+    pub fn includes(&self, path: &Path) -> Vec<PathBuf> {
+        includes(&self.programs, path).cloned().collect()
+    }
+
     pub fn imports_of(&self, path: &Path) -> &[Edge] {
         self.imports.get(path).map_or(&[], Vec::as_slice)
     }
@@ -676,6 +685,8 @@ impl Workspace {
             .flat_map(|(file, dir)| native_modules(&file.document, dir))
             .collect();
 
+        self.programs = programs(files, self.config.include());
+        let programs = &self.programs;
         let search = &self.search;
         let config = &self.config;
         // A `*.d.janet` is not a module: nothing imports it, and it imports nothing.
@@ -687,10 +698,17 @@ impl Workspace {
             .values()
             .filter(|file| !is_declaration(&file.path))
             .map(|file| {
-                let edges = file
-                    .imports
-                    .iter()
-                    .filter_map(|import| {
+                // As `# janet-zed: include` would name them, ahead of the file's own imports.
+                let included = includes(programs, &file.path).map(|path| Edge {
+                    spec: path.to_string_lossy().into_owned(),
+                    prefix: String::new(),
+                    included: true,
+                    names: None,
+                    exported: false,
+                    path: path.clone(),
+                });
+                let edges = included
+                    .chain(file.imports.iter().filter_map(|import| {
                         let path = search.resolve(&file.path, &import.spec, exists)?;
                         Some(Edge {
                             spec: import.spec.clone(),
@@ -700,7 +718,7 @@ impl Workspace {
                             exported: import.exported,
                             path,
                         })
-                    })
+                    }))
                     .collect();
                 (file.path.clone(), edges)
             })
@@ -788,6 +806,35 @@ impl Tarjan<'_> {
             self.components.push(component);
         }
         low
+    }
+}
+
+/// The workspace files directly in each of `dirs`, in name order.
+fn programs(
+    files: &HashMap<PathBuf, SourceFile>,
+    dirs: &[PathBuf],
+) -> Vec<(PathBuf, Vec<PathBuf>)> {
+    dirs.iter()
+        .map(|dir| {
+            let mut members: Vec<PathBuf> = files
+                .keys()
+                .filter(|path| path.parent() == Some(dir) && !is_declaration(path))
+                .cloned()
+                .collect();
+            members.sort();
+            (dir.clone(), members)
+        })
+        .collect()
+}
+
+/// What [`Workspace::includes`] says, over the `programs` of the last refresh.
+fn includes<'p>(
+    programs: &'p [(PathBuf, Vec<PathBuf>)],
+    path: &'p Path,
+) -> Box<dyn Iterator<Item = &'p PathBuf> + 'p> {
+    match programs.iter().find(|(dir, _)| path.parent() == Some(dir)) {
+        Some((_, members)) => Box::new(members.iter().take_while(move |member| *member < path)),
+        None => Box::new(programs.iter().flat_map(|(_, members)| members)),
     }
 }
 
