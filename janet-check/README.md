@@ -320,24 +320,28 @@ merge with the others; the workspace's own config still wins.
 {:libraries ["../../crates/arc"]}
 ```
 
-### Directories that run as one program
+### Files that run as one program
 
-A host that loads a directory's `.janet` files one after another, in name order, into one
-environment, with no `import` between them, is described by `:include`: directories relative to
-the workspace root.
+A host that loads files one after another into one environment, with no `import` between them,
+is described by `:include`: files and directories, relative to the workspace root, in the order
+the host runs them. A directory stands for its own `.janet` files in name order — not its
+subdirectories', and not `*.d.janet`.
 
 ```janet
-{:include ["src"]}
+{:include ["workflows.janet" "src"]}
 ```
 
 Every workspace file is then read as if it had [`# janet-zed: include`](#comment-directives) for
-those files. A file in such a directory includes the files named before it there, never itself or
-the ones after it; any other file — tests, scripts — includes all of them, every listed directory
-in order. Private definitions are visible, go-to-definition, hover, references and types follow
-them, and the check runs them first. Only a directory's own files count, not its
-subdirectories', and not `*.d.janet`.
+those files. A file of the program includes the files before it, never itself or the ones after
+it; any other file — tests, scripts — includes all of them. Private definitions are visible,
+go-to-definition, hover, references and types follow them, and the check runs them first.
 
-`janet-check` warns about a `:libraries` or `:include` directory that does not exist.
+A library macro that `:lint-as` reads as a core definer and that a `*.d.janet` declares with
+`defmacro` defines its name in the check too: `(deftask name [x] …)` read as `defn` binds `name`
+and compiles the body with `x` bound. A definer that is not a function's, like `def`, binds the
+name to a function of the body, with a leading `[name value …]` bound by `let`.
+
+`janet-check` warns about a `:libraries` directory or an `:include` path that does not exist.
 
 ### Comment directives
 

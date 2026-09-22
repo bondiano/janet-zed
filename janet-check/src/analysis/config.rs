@@ -16,10 +16,10 @@
 //! libraries are: their `janet-zed.exports/<lib>/config.jdn` and `*.d.janet`, for a library its
 //! users do not install on the syspath: `{:libraries ["../../crates/arc"]}`.
 //!
-//! `:include` names directories, relative to the workspace root, whose `.janet` files a host runs
-//! as one program, in name order, in one environment: `{:include ["src"]}`. A file in one sees
-//! the files named before it as if it had `# janet-zed: include` for them; any other workspace
-//! file sees all of them.
+//! `:include` names the files a host runs as one program in one environment, relative to the
+//! workspace root: files, and directories standing for their own `.janet` files in name order,
+//! `{:include ["src" "workflows.janet"]}`. A file of the program sees the files before it as if
+//! it had `# janet-zed: include` for them; any other workspace file sees all of them.
 
 use std::collections::{HashMap, HashSet};
 use std::ops::Range;
@@ -45,8 +45,8 @@ pub struct Config {
     disabled: HashSet<String>,
     /// `:libraries`: directories read as installed libraries, as written.
     libraries: Vec<PathBuf>,
-    /// `:include`: directories whose files run as one program, as written until [`Self::read`]
-    /// resolves them against their root.
+    /// `:include`: files and directories that run as one program, as written until
+    /// [`Self::read`] resolves them against their root.
     include: Vec<PathBuf>,
 }
 
@@ -110,7 +110,7 @@ impl Config {
         &self.declarations
     }
 
-    /// The `:include` directories, canonical.
+    /// The `:include` files and directories, canonical.
     pub fn include(&self) -> &[PathBuf] {
         &self.include
     }
@@ -183,17 +183,18 @@ impl Config {
                 if matches!(name, ":libraries" | ":include") {
                     return syntax::forms(value)
                         .into_iter()
-                        .filter_map(|dir| {
-                            let message = match string(&doc, dir) {
-                                None => {
-                                    format!("{} is not a directory path string", doc.text_of(dir))
+                        .filter_map(|entry| {
+                            let path = string(&doc, entry);
+                            let found = path.map(|path| workspace.join(path));
+                            let message = match (path, found) {
+                                (Some(path), Some(found)) if name == ":libraries" => {
+                                    (!found.is_dir()).then(|| format!("no directory {path}"))?
                                 }
-                                Some(path) if !workspace.join(path).is_dir() => {
-                                    format!("no directory {path}")
-                                }
-                                Some(_) => return None,
+                                (Some(path), Some(found)) => (!found.exists())
+                                    .then(|| format!("no file or directory {path}"))?,
+                                _ => format!("{} is not a path string", doc.text_of(entry)),
                             };
-                            Some(problem(dir, false, message))
+                            Some(problem(entry, false, message))
                         })
                         .collect();
                 }
@@ -272,7 +273,7 @@ fn entries(node: Node<'_>) -> Vec<(Node<'_>, Node<'_>)> {
         .collect()
 }
 
-/// The path strings of the `key` entries: `{:include ["src"]}`.
+/// The path strings of the `key` entries: `{:libraries ["../lib"]}`.
 fn directories(doc: &Document, key: &str) -> Vec<PathBuf> {
     top_entries(doc)
         .into_iter()

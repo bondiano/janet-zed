@@ -439,7 +439,7 @@ fn a_config_is_validated() {
         [
             ".janet-zed/config.jdn:1:14: unknown key :disable, expected one of :lint-as \
              :disable-lints :libraries :include",
-            ".janet-zed/config.jdn:1:38: no directory nowhere",
+            ".janet-zed/config.jdn:1:38: no file or directory nowhere",
         ]
     );
     assert_eq!(warned.status.code(), Some(1));

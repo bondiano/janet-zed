@@ -72,15 +72,21 @@ fn libraries_are_read_as_installed_ones() {
 }
 
 #[test]
-fn an_included_file_sees_the_files_named_before_it_and_others_see_all() {
+fn an_included_file_sees_the_files_before_it_and_others_see_all() {
     use crate::analysis::SourceFile;
     use crate::analysis::workspace::Workspace;
     let config = Config {
-        include: vec![PathBuf::from("/ws/src")],
+        include: vec!["/ws/src".into(), "/ws/workflows.janet".into()],
         ..Config::default()
     };
     let mut workspace = Workspace::new(vec!["/ws".into()], None);
-    for path in ["/ws/src/b.janet", "/ws/src/a.janet", "/ws/test.janet"] {
+    let paths = [
+        "/ws/src/b.janet",
+        "/ws/src/a.janet",
+        "/ws/workflows.janet",
+        "/ws/test.janet",
+    ];
+    for path in paths {
         let uri = format!("file://{path}").parse().unwrap();
         let file = SourceFile::new(path.into(), uri, "(defn- f [] 1)".to_string(), &config);
         workspace.insert(file);
@@ -93,20 +99,20 @@ fn an_included_file_sees_the_files_named_before_it_and_others_see_all() {
             .map(|edge| (edge.path.clone(), edge.included))
             .collect()
     };
-    let (a, b) = (
-        PathBuf::from("/ws/src/a.janet"),
-        PathBuf::from("/ws/src/b.janet"),
-    );
+    let a = (PathBuf::from("/ws/src/a.janet"), true);
+    let b = (PathBuf::from("/ws/src/b.janet"), true);
+    let workflows = (PathBuf::from("/ws/workflows.janet"), true);
     assert_eq!(seen("/ws/src/a.janet"), []);
-    assert_eq!(seen("/ws/src/b.janet"), [(a.clone(), true)]);
-    assert_eq!(seen("/ws/test.janet"), [(a, true), (b, true)]);
+    assert_eq!(seen("/ws/src/b.janet"), std::slice::from_ref(&a));
+    assert_eq!(seen("/ws/workflows.janet"), [a.clone(), b.clone()]);
+    assert_eq!(seen("/ws/test.janet"), [a, b, workflows]);
 }
 
 #[test]
 fn a_missing_directory_is_a_warning() {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../fixtures/libraries");
     let messages: Vec<_> = Config::problems(
-        "{:include [\"nowhere\" :src] :libraries [\"../exports\"]}",
+        "{:include [\"nowhere\" :src \".janet-zed/config.jdn\"] :libraries [\"../exports\"]}",
         &root,
     )
     .into_iter()
@@ -115,8 +121,8 @@ fn a_missing_directory_is_a_warning() {
     assert_eq!(
         messages,
         [
-            ("no directory nowhere".to_string(), false),
-            (":src is not a directory path string".to_string(), false),
+            ("no file or directory nowhere".to_string(), false),
+            (":src is not a path string".to_string(), false),
         ]
     );
 }

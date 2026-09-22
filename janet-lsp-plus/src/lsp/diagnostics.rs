@@ -42,6 +42,8 @@ pub struct Job {
     pub declared: Vec<String>,
     /// Files the config's `:include` runs before this one.
     pub includes: Vec<PathBuf>,
+    /// Declared macros read as core definers: see [`Check::definers`].
+    pub definers: Vec<(String, &'static str)>,
 }
 
 pub struct Checked {
@@ -116,6 +118,7 @@ fn check_one(worker: Option<&mut janet::Worker>, job: &Job) -> Result<Report> {
                 natives: &job.natives,
                 declared: &job.declared,
                 includes: &job.includes,
+                definers: &job.definers,
             })
         },
     )

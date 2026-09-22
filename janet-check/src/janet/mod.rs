@@ -338,6 +338,9 @@ pub struct Check<'c> {
     /// Files the config's `:include` runs first in the same environment, as
     /// `# janet-zed: include` does.
     pub includes: &'c [PathBuf],
+    /// Declared macros a `:lint-as` entry reads as a core definer, and that definer: a stand-in
+    /// macro defines the name as the definer would.
+    pub definers: &'c [(String, &'static str)],
 }
 
 /// A request line for `check.janet`: a Janet struct.
@@ -361,9 +364,15 @@ fn line(job: &Check) -> Result<String> {
         .map(string)
         .collect::<Result<Vec<_>, _>>()?
         .join(" ");
+    let definers = job
+        .definers
+        .iter()
+        .map(|(name, definer)| Ok(format!("[{} {}]", string(name)?, string(definer)?)))
+        .collect::<Result<Vec<_>, serde_json::Error>>()?
+        .join(" ");
     Ok(format!(
         "{{:file {} :cwd {} :text {} :includes [{includes}] :declared [{declared}] \
-         :packages [{}] :natives [{}]}}",
+         :definers [{definers}] :packages [{}] :natives [{}]}}",
         string(&path.to_string_lossy())?,
         string(&job.cwd.to_string_lossy())?,
         string(text)?,

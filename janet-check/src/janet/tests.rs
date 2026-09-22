@@ -38,6 +38,7 @@ fn check(
             natives,
             declared: &[],
             includes: &[],
+            definers: &[],
         })
         .map(|report| report.problems)
 }
@@ -258,6 +259,7 @@ fn keeps_imports_loaded_until_their_files_change() {
                 natives: &[],
                 declared: &[],
                 includes: &[],
+                definers: &[],
             })
             .unwrap()
             .problems
@@ -296,6 +298,7 @@ fn restarts_after_a_check_that_does_not_finish() {
         natives: &[],
         declared: &[],
         includes: &[],
+        definers: &[],
     });
     assert!(slow.unwrap_err().to_string().contains("did not finish"));
 
@@ -309,6 +312,7 @@ fn restarts_after_a_check_that_does_not_finish() {
             natives: &[],
             declared: &[],
             includes: &[],
+            definers: &[],
         })
         .unwrap()
         .problems;
@@ -337,6 +341,7 @@ fn reports_the_types_a_macro_declares() {
             natives: &[],
             declared: &[],
             includes: &[],
+            definers: &[],
         })
         .unwrap();
     let bound = report
@@ -394,6 +399,7 @@ fn reports_what_macros_bind() {
             natives: &[],
             declared: &[],
             includes: &[],
+            definers: &[],
         })
         .unwrap();
     assert_eq!(
@@ -412,6 +418,7 @@ fn reports_what_macros_bind() {
             natives: &[],
             declared: &[],
             includes: &[],
+            definers: &[],
         })
         .unwrap();
     assert_eq!(
@@ -438,10 +445,49 @@ fn declared_core_names_keep_their_bindings() {
             natives: &[],
             declared: &declared,
             includes: &[],
+            definers: &[],
         })
         .unwrap()
         .problems;
     assert_eq!(show_problems(&problems), "");
+}
+
+/// `deftest` read as `def` and `deftask` as `defn` bind their names, and the body compiles with
+/// what they bind; a declared macro without a definer is a value, as before.
+#[test]
+fn declared_macros_read_as_definers_define_their_names() {
+    let dir = std::env::temp_dir().join(format!(
+        "janet-tooling-declared-definers-test-{}",
+        std::process::id()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let declared = ["deftest", "deftask", "defproperty", "is"].map(String::from);
+    let text = "(deftest a (is (= 1 1)))\n\
+                (deftask b \"Doc.\" [x] (print x))\n\
+                (defproperty c {:runs 5} [n (+ 1 2)] (is n))\n\
+                (print a b c)\n";
+    let check = |definers: &[(String, &'static str)]| {
+        Worker::new("janet")
+            .check(&Check {
+                path: &dir.join("a.janet"),
+                text,
+                cwd: &dir,
+                packages: &[],
+                natives: &[],
+                declared: &declared,
+                includes: &[],
+                definers,
+            })
+            .unwrap()
+            .problems
+    };
+    let definers = [
+        ("deftest".to_string(), "def"),
+        ("deftask".to_string(), "defn"),
+        ("defproperty".to_string(), "def"),
+    ];
+    assert_eq!(show_problems(&check(&definers)), "");
+    assert_ne!(show_problems(&check(&[])), "");
 }
 
 #[test]
@@ -463,6 +509,7 @@ fn fails_fast_while_a_hung_check_has_not_changed() {
             natives: &[],
             declared: &[],
             includes: &[],
+            definers: &[],
         });
         (checked.unwrap_err().to_string(), started.elapsed())
     };
@@ -505,6 +552,7 @@ fn a_hung_check_takes_the_processes_it_started_along() {
         natives: &[],
         declared: &[],
         includes: &[],
+        definers: &[],
     });
     assert!(hung.is_err());
     let pid = std::fs::read_to_string(&pid).unwrap();

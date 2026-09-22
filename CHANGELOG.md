@@ -8,8 +8,8 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Added
 
 - `:libraries` in `.janet-zed/config.jdn` reads the exports of directories outside the syspath
-  as installed libraries; `:include` runs the files of a directory as one program in name order,
-  each seeing the ones before it and every other file seeing all of them.
+  as installed libraries; `:include` runs files and directories (their files in name order) as
+  one program, each file seeing the ones before it and every other file seeing all of them.
 - The REPL kernel interrupts an evaluation in progress, and the debugger pauses a running
   program or one of its `ev` tasks (not on Windows).
 - The REPL kernel streams output as it is printed, answers `getline` with the client's input,
@@ -29,6 +29,8 @@ format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- A declared macro that `:lint-as` reads as a core definer defines its name when the file is
+  compiled, instead of leaving it an unknown symbol.
 - Mutable literals, top-level `var`s and exhaustive dispatches hold the types they are given.
 - `~` expands in the `janet_source` setting; unknown-symbol diagnostics are matched by code.
 - Structural editing keeps reader macros on raise, and threading skips definitions.

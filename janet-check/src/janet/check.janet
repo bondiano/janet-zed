@@ -1,5 +1,5 @@
 # A long-lived checker. Each line on stdin is a request, `{:file :cwd :text :includes :declared
-# :packages :natives}`; each gets one line on stdout, `check/marker` and then, as JSON,
+# :definers :packages :natives}`; each gets one line on stdout, `check/marker` and then, as JSON,
 # `{:problems [...] :bindings {path [[name line col doc private types] ...]}}`, or `error` and the
 # message as a JSON string. `:bindings` are the names macros bound, which the host cannot read
 # from the source: in `:file`, and in each module loaded since the previous request. Like core `flycheck`,
@@ -197,9 +197,30 @@
 
 # -- checking --------------------------------------------------------------------------------
 
+(defn- check/definer
+  "A stand-in for a host macro `:lint-as` reads as the core `definer`: a call defines its name as
+  the definer would. A function definer takes the call's arguments as they are; any other defines
+  the name, when it is a symbol, as a function of the body, never run, which binds a leading
+  `[name value ...]` with `let`, after the doc, keywords and structs of its options."
+  [definer]
+  (def head (symbol definer))
+  (if (index-of definer ["defn" "defn-" "defmacro" "defmacro-" "varfn"])
+    (fn [& args] [head ;args])
+    (fn [name & more]
+      (def body (drop-while |(or (string? $) (keyword? $) (dictionary? $)) more))
+      (def [bindings & rest] body)
+      (def inner
+        (if (and (tuple? bindings) (= :brackets (tuple/type bindings)) (even? (length bindings)))
+          [~(let ,bindings ,;rest)]
+          body))
+      # `(defmigration "0100-x" ...)` names no binding.
+      (if (symbol? name)
+        ~(,head ,name (fn [] ,;inner))
+        ~(fn [] ,;inner)))))
+
 (defn- check/run [request]
   (def {:file file :cwd cwd :text text :includes includes :declared declared
-        :packages packages :natives natives} request)
+        :definers definers :packages packages :natives natives} request)
   (os/cd cwd)
   (set check/tree (if (os/stat "jpm_tree/lib") (string cwd "/jpm_tree/lib")))
   # Modules resolved against other workspace modules may hold the wrong imports.
@@ -219,6 +240,9 @@
   # `# janet-zed: declare` names get stand-ins; `# janet-zed: include` files load into this env,
   # as when the host concatenates them. A broken include is not this file's problem.
   # A declaration of a core name, like `core.d.janet`, must not shadow the real binding.
+  (each [name definer] definers
+    (unless (get env (symbol name))
+      (put env (symbol name) @{:macro true :value (check/definer definer)})))
   (each name declared
     (unless (get env (symbol name))
       (put env (symbol name) @{:value nil})))

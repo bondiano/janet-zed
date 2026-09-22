@@ -96,8 +96,8 @@ pub struct Workspace {
     /// How often inference actually ran, to tell a cache hit from a miss in tests.
     inferences: AtomicUsize,
     stale: bool,
-    /// The files of each `:include` directory, in name order: one program each.
-    programs: Vec<(PathBuf, Vec<PathBuf>)>,
+    /// The files `:include` names, in the order they run as one program.
+    program: Vec<PathBuf>,
     /// What is reported beyond what a written signature rules out.
     mode: Mode,
 }
@@ -586,6 +586,22 @@ impl Workspace {
             .collect()
     }
 
+    /// The declared macros the file at `path` sees that `:lint-as` reads as a core definer, with
+    /// that definer: `("deftest", "def")`.
+    pub fn definers(&self, path: &Path) -> Vec<(String, &'static str)> {
+        let Some(file) = self.file(path) else {
+            return Vec::new();
+        };
+        self.declarations(&file.imports)
+            .into_iter()
+            .filter(|declared| declared.info.definer == "defmacro")
+            .filter_map(|declared| {
+                let definer = self.config.definer(&declared.label, &file.imports)?;
+                Some((declared.label, definer))
+            })
+            .collect()
+    }
+
     /// Whether `path` is a workspace file (as opposed to a dependency or unknown).
     pub fn contains(&self, path: &Path) -> bool {
         self.files.contains_key(path)
@@ -608,10 +624,10 @@ impl Workspace {
         self.search.native_sources(spec)
     }
 
-    /// The files the config's `:include` runs before the file at `path`, in order: in an included
-    /// directory, the files named before it there; anywhere else, every included file.
-    pub fn includes(&self, path: &Path) -> Vec<PathBuf> {
-        includes(&self.programs, path).cloned().collect()
+    /// The files the config's `:include` runs before the file at `path`, in order: for one of
+    /// them, the ones before it; for any other file, all of them.
+    pub fn includes(&self, path: &Path) -> &[PathBuf] {
+        includes(&self.program, path)
     }
 
     pub fn imports_of(&self, path: &Path) -> &[Edge] {
@@ -685,8 +701,8 @@ impl Workspace {
             .flat_map(|(file, dir)| native_modules(&file.document, dir))
             .collect();
 
-        self.programs = programs(files, self.config.include());
-        let programs = &self.programs;
+        self.program = program(files, self.config.include());
+        let program = &self.program;
         let search = &self.search;
         let config = &self.config;
         // A `*.d.janet` is not a module: nothing imports it, and it imports nothing.
@@ -699,7 +715,7 @@ impl Workspace {
             .filter(|file| !is_declaration(&file.path))
             .map(|file| {
                 // As `# janet-zed: include` would name them, ahead of the file's own imports.
-                let included = includes(programs, &file.path).map(|path| Edge {
+                let included = includes(program, &file.path).iter().map(|path| Edge {
                     spec: path.to_string_lossy().into_owned(),
                     prefix: String::new(),
                     included: true,
@@ -809,32 +825,31 @@ impl Tarjan<'_> {
     }
 }
 
-/// The workspace files directly in each of `dirs`, in name order.
-fn programs(
-    files: &HashMap<PathBuf, SourceFile>,
-    dirs: &[PathBuf],
-) -> Vec<(PathBuf, Vec<PathBuf>)> {
-    dirs.iter()
-        .map(|dir| {
+/// The workspace files `entries` name, in order: a file itself, a directory's own files in name
+/// order.
+fn program(files: &HashMap<PathBuf, SourceFile>, entries: &[PathBuf]) -> Vec<PathBuf> {
+    entries
+        .iter()
+        .flat_map(|entry| {
+            if files.contains_key(entry) {
+                return vec![entry.clone()];
+            }
             let mut members: Vec<PathBuf> = files
                 .keys()
-                .filter(|path| path.parent() == Some(dir) && !is_declaration(path))
+                .filter(|path| path.parent() == Some(entry) && !is_declaration(path))
                 .cloned()
                 .collect();
             members.sort();
-            (dir.clone(), members)
+            members
         })
         .collect()
 }
 
-/// What [`Workspace::includes`] says, over the `programs` of the last refresh.
-fn includes<'p>(
-    programs: &'p [(PathBuf, Vec<PathBuf>)],
-    path: &'p Path,
-) -> Box<dyn Iterator<Item = &'p PathBuf> + 'p> {
-    match programs.iter().find(|(dir, _)| path.parent() == Some(dir)) {
-        Some((_, members)) => Box::new(members.iter().take_while(move |member| *member < path)),
-        None => Box::new(programs.iter().flat_map(|(_, members)| members)),
+/// What [`Workspace::includes`] says, over the `program` of the last refresh.
+fn includes<'p>(program: &'p [PathBuf], path: &Path) -> &'p [PathBuf] {
+    match program.iter().position(|member| member == path) {
+        Some(at) => &program[..at],
+        None => program,
     }
 }
 

@@ -381,7 +381,8 @@ fn problems(
         packages: workspace.packages(),
         natives: workspace.natives(),
         declared: &workspace.unbound(path),
-        includes: &workspace.includes(path),
+        includes: workspace.includes(path),
+        definers: &workspace.definers(path),
     });
     // One file Janet fails on is that file's problem: the rest are still checked.
     let report = match report {

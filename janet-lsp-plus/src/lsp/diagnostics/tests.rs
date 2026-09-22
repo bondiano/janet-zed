@@ -58,6 +58,7 @@ fn job(uri: &str, version: i32) -> Job {
         natives: Vec::new(),
         declared: Vec::new(),
         includes: Vec::new(),
+        definers: Vec::new(),
     }
 }
 
